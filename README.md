@@ -1,1 +1,0 @@
-# linux sun8i
