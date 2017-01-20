@@ -37,12 +37,13 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
 MODULE_DESCRIPTION("Driver for 1-wire Dallas network protocol, temperature family.");
 
-/* Added new features ( by Oleg Skydan <sov1178@gmail.com> ):  
- * 1. Read sensor memory without triggering temperature conversion. Just read 'w1_read' 
+/* Added new feature ( by Oleg Skydan <sov1178@gmail.com> ):  
+ *    Read sensor memory without triggering temperature conversion. Just read 'w1_read' 
  *    file instead of usual 'w1_slave' file.
- * 2. Ability to simultaneously trigger temperature conversion on all sonsors in the network.
- *    Reading the 'w1_convert_all' file on any temperature sensor in the w1 net will start
- *    temperature conversion on all sensors in the w1 net.
+ *   
+ *    Using the modified 'wire' module we can now simultaneously trigger temperature 
+ *    conversion on all sensors on all masters in the w1 network. Then 'w1_read' can be
+ *    used to read sensors without wasting time to measure temperature.
  */
 
 /* Allow the strong pullup to be disabled, but default to enabled.
@@ -70,22 +71,13 @@ static ssize_t w1_therm_read(struct device *device,
 static struct device_attribute w1_therm_attr_read =
     __ATTR(w1_read, S_IRUGO, w1_therm_read, NULL);
 
-static ssize_t w1_therm_convert_all(struct device *device,
-                             struct device_attribute *attr, char *buf);
-
-static struct device_attribute w1_therm_attr_convert_all =
-    __ATTR(w1_convert_all, S_IRUGO, w1_therm_convert_all, NULL);
-
 static int w1_therm_add_slave(struct w1_slave *sl)
 {
    int r;
    r = device_create_file(&sl->dev, &w1_therm_attr);
    if(r)
       return r;
-   r = device_create_file(&sl->dev, &w1_therm_attr_read);
-   if (r)
-      return r;
-   return device_create_file(&sl->dev, &w1_therm_attr_convert_all);
+   return device_create_file(&sl->dev, &w1_therm_attr_read);
 }
 
 static void w1_therm_remove_slave(struct w1_slave *sl)
@@ -353,42 +345,6 @@ static ssize_t w1_therm_read(struct device *device,
    return PAGE_SIZE - c;
 }
 
-static ssize_t w1_therm_convert_all(struct device *device,
-                                         struct device_attribute *attr, char *buf)
-{
-   struct w1_slave *sl = dev_to_w1_slave(device);
-   struct w1_master *dev = sl->master;
-   ssize_t c = PAGE_SIZE;
-   int i;
-   unsigned int tm = 750;
-   unsigned long sleep_rem;
-
-   i = mutex_lock_interruptible(&dev->mutex);
-   if (i != 0)
-      return i;
-
-   w1_reset_bus(sl->master);
-   w1_write_8(dev, W1_SKIP_ROM);
-
-   /* 750ms strong pullup (or delay) after the convert */
-   w1_write_8(dev, W1_CONVERT_TEMP);
-
-   mutex_unlock(&dev->mutex);
-
-   sleep_rem = msleep_interruptible(tm);
-   if (sleep_rem != 0)
-      return -EINTR;
-
-   i = mutex_lock_interruptible(&dev->mutex);
-   if (i != 0)
-      return i;
-
-   c = snprintf(buf, PAGE_SIZE, "OK");
-
-   mutex_unlock(&dev->mutex);
-
-   return c;
-}
 
 static int __init w1_therm_init(void)
 {
