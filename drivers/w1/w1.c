@@ -44,7 +44,14 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
 MODULE_DESCRIPTION("Driver for 1-wire Dallas network protocol.");
-
+/* Added new feature ( by Oleg Skydan <sov1178@gmail.com> ):  
+ *    Reading the 'w1_therm_convert_all' file (located in '/sys/bus/w1') will start
+ *    temperature conversion on all sensors in the w1 net and wait 750ms to finish 
+ *    conversion.
+ *
+ *    Then you can use the 'w1_read' (see modified w1_therm module) to read converted 
+ *    temperatures. So you will not need to wait 750ms reading each sensor (using 'w1_slave').
+ */
 static int w1_timeout = 10;
 int w1_max_slave_count = 10;
 int w1_max_slave_ttl = 10;
@@ -1003,6 +1010,38 @@ int w1_process(void *data)
 	return 0;
 }
 
+static ssize_t w1_therm_convert_all(struct bus_type *bus, char *buf)
+{
+   struct w1_master *dev;
+   ssize_t c = PAGE_SIZE;
+   unsigned int tm = 750;
+
+   mutex_lock(&w1_mlock);
+   list_for_each_entry(dev, &w1_masters, w1_master_entry)
+   {
+      mutex_lock(&dev->mutex);
+
+      w1_reset_bus(dev);
+      w1_write_8(dev, W1_SKIP_ROM);
+
+      w1_write_8(dev, W1_CONVERT_TEMP);
+
+      mutex_unlock(&dev->mutex);
+   }
+
+   /*wait 750ms while conversion in progress*/
+   msleep(tm);
+
+   c = snprintf(buf, PAGE_SIZE, "OK");
+
+   mutex_unlock(&w1_mlock);
+
+   return c;
+}
+
+static BUS_ATTR(w1_therm_convert_all, S_IRUGO, w1_therm_convert_all, NULL);
+
+
 static int __init w1_init(void)
 {
 	int retval;
@@ -1033,9 +1072,17 @@ static int __init w1_init(void)
 		goto err_out_master_unregister;
 	}
 
+   retval = bus_create_file(&w1_bus_type, &bus_attr_w1_therm_convert_all);
+   if (retval) {
+      printk(KERN_ERR
+             "Failed to create w1_convert_all entry. err=%d.\n",
+             retval);
+      goto err_out_slave_unregister;
+   }
+
 	return 0;
 
-#if 0
+#if 1
 /* For undoing the slave register if there was a step after it. */
 err_out_slave_unregister:
 	driver_unregister(&w1_slave_driver);
@@ -1054,6 +1101,8 @@ err_out_exit_init:
 static void __exit w1_fini(void)
 {
 	struct w1_master *dev;
+
+   bus_remove_file(&w1_bus_type, &bus_attr_w1_therm_convert_all);
 
 	/* Set netlink removal messages and some cleanup */
 	list_for_each_entry(dev, &w1_masters, w1_master_entry)
