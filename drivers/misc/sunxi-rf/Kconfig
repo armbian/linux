@@ -1,0 +1,9 @@
+#
+# Allwinner rfkill driver.
+#
+config SUNXI_RFKILL
+  bool "Allwinner rfkill driver"
+  depends on COMPAT_WIRELESS || WIRELESS || RFKILL
+  help
+    allwinner rfkill driver
+

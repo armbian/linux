@@ -1,0 +1,79 @@
+config COMPAT_WIRELESS
+	tristate "Compat Wireless for Xradio driver"
+	select AVERAGE
+	default y
+	---help---
+	     To compile this code as a module, choose M here.
+
+if COMPAT_WIRELESS
+
+config CFG80211
+	tristate "Compat CFG80211"
+	default y
+	---help---
+	  To compile this code as a module, choose M here.
+
+config MAC80211
+	tristate "Compat MAC80211"
+	default y
+	---help---
+	  To compile this code as a module, choose M here.
+
+config COMPAT_MAC80211_RC_DEFAULT
+	string "MAC80211_RC_DEFAULT"
+	default "minstrel_ht"
+	---help---
+
+config NL80211_TESTMODE
+	bool "Compat NL80211 testmode"
+	depends on COMPAT_WIRELESS
+	default y
+	---help---
+
+config CFG80211_DEFAULT_PS
+	bool "CFG80211_DEFAULT_PS"
+	depends on COMPAT_WIRELESS
+	default y
+	---help---
+
+config CFG80211_REG_DEBUG
+	bool "CFG80211_REG_DEBUG"
+	depends on COMPAT_WIRELESS
+	default n
+	---help---
+
+config MAC80211_RC_PID
+	bool "MAC80211_RC_PID"
+	depends on COMPAT_WIRELESS
+	default n
+	---help---
+
+config MAC80211_RC_MINSTREL
+	bool "MAC80211_RC_MINSTREL"
+	depends on COMPAT_WIRELESS
+	default y
+	---help---
+
+config MAC80211_RC_MINSTREL_HT
+	bool "Minstrel 802.11n support" if EXPERT
+	depends on MAC80211_RC_MINSTREL
+	default y
+	---help---
+	  This option enables the 'minstrel_ht' TX rate control algorithm
+
+config MAC80211_DEBUGFS
+	bool "MAC80211_DEBUGFS"
+	depends on MAC80211_RC_MINSTREL
+	default y
+	---help---
+	  This option enables the debugfs of 'minstrel'(TX rate control algorithm)
+
+config MAC80211_MESH
+	bool "MAC80211_MESH"
+	depends on COMPAT_WIRELESS
+	default y
+	---help---
+
+source "drivers/net/wireless/compat-wireless/drivers/xradio/Kconfig"
+
+endif

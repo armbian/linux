@@ -1,0 +1,211 @@
+if ARCH_SUNXI
+
+choice
+	prompt "Select the architecture of SoC"
+	default ARCH_SUN8I
+	help
+	  Select the architecture for SoC
+	  sunxi
+	  `-- sun8i ----- Cortex-A7 based Family SoCs
+
+config ARCH_SUN8I
+	bool "Allwinner A7 smp SoCs"
+	select ARM_GIC
+	select CPU_V7
+	select HAVE_SMP if !ARCH_SUN8IW8
+	select SUNXI_TIMER
+	select COMMON_CLK
+	select CLKDEV_LOOKUP
+	select NEED_MACH_IO_H
+	select MIGHT_HAVE_CACHE_L2X0
+	select PINCTRL
+	select PINCTRL_SUNXI
+	select ARCH_REQUIRE_GPIOLIB
+	select CLKSRC_MMIO
+	select CLKSRC_OF
+	select GENERIC_CLOCKEVENTS
+	select GENERIC_IRQ_CHIP
+	select SPARSE_IRQ
+	select SUN4I_TIMER
+	select HAVE_UNSTABLE_SCHED_CLOCK
+	select GENERIC_ALLOCATOR
+	help
+	  Allwinner A7 smp SoCs(sun8i)
+
+config ARCH_SUN50I
+	bool "Allwinner A53 smp SoCs"
+	select ARM_GIC
+	select CPU_V7
+	select HAVE_SMP if !ARCH_SUN8IW8
+	select SUNXI_TIMER
+	select COMMON_CLK
+	select CLKDEV_LOOKUP
+	select NEED_MACH_IO_H
+	select MIGHT_HAVE_CACHE_L2X0
+	select PINCTRL
+	select PINCTRL_SUNXI
+	select ARCH_REQUIRE_GPIOLIB
+	select CLKSRC_MMIO
+	select CLKSRC_OF
+	select GENERIC_CLOCKEVENTS
+	select GENERIC_IRQ_CHIP
+	select SPARSE_IRQ
+	select SUN4I_TIMER
+	select HAVE_UNSTABLE_SCHED_CLOCK
+	select GENERIC_ALLOCATOR
+	help
+	  Allwinner A53 smp SoCs(sun50i)
+endchoice
+
+# Select the wafer with sun8i
+
+if ARCH_SUN8I
+choice
+	prompt "Select the wafer with arch sun8i"
+	default ARCH_SUN8IW10
+	help
+	  Select the wafer with arch sun8i
+
+config ARCH_SUN8IW10
+        bool "Allwinner sun8iw10 SoCs"
+        help
+          Allwinner sun8iw10 SoCs
+
+config ARCH_SUN8IW11
+        bool "Allwinner sun8iw11 SoCs"
+        help
+          Allwinner sun8iw11 SoCs
+endchoice
+endif
+
+# Select the SoC with specific arch and wafer
+
+if ARCH_SUN8IW10
+choice
+       prompt "Select the SoC with wafer sun8iw10"
+       default ARCH_SUN8IW10P1
+       help
+        Select the SoC with wafer sun8iw10
+
+config ARCH_SUN8IW10P1
+       bool "Allwinner sun8iw10p1 SoC"
+       help
+         Allwinner sun8iw10p1 SoC
+endchoice
+endif
+
+if ARCH_SUN8IW11
+choice
+	prompt "Select the SoC with wafer sun8iw11"
+	default ARCH_SUN8IW11P1
+	help
+	 Select the SoC with wafer sun8iw11
+
+config ARCH_SUN8IW11P1
+	bool "Allwinner sun8iw11p1 SoC"
+	help
+	  Allwinner sun8iw11p1 SoC
+endchoice
+endif
+
+# Select the board between FPGA and EVB
+
+choice
+	prompt "Allwinner development Board"
+	depends on ARCH_SUNXI
+	default FPGA_V4_PLATFORM
+
+config FPGA_V4_PLATFORM
+       bool "FPGAv4 board"
+       help
+         Support for Allwinner's FPGAv4 board
+
+config FPGA_V7_PLATFORM
+       bool "FPGAv7 board"
+       help
+         Support for Allwinner's FPGAv4 board
+
+config EVB_PLATFORM
+       bool "EVB board"
+       help
+         Support for Allwinner's EVB board
+endchoice
+
+# Select the wafer with sun50i
+
+if ARCH_SUN50I
+choice
+	prompt "Select the wafer with arch sun50i"
+	default ARCH_SUN50IW1
+	help
+	  Select the wafer with arch sun50i
+
+config ARCH_SUN50IW1
+        bool "Allwinner sun50iw1 SoCs"
+        help
+          Allwinner sun50iw1 SoCs
+
+config ARCH_SUN50IW2
+        bool "Allwinner sun50iw2 SoCs"
+        help
+          Allwinner sun50iw2 SoCs
+endchoice
+endif
+
+# Select the SoC with specific arch and wafer
+
+if ARCH_SUN50IW1
+choice
+       prompt "Select the SoC with wafer sun50iw1"
+       default ARCH_SUN50IW1P1
+       help
+        Select the SoC with wafer sun50iw1
+
+config ARCH_SUN50IW1P1
+       bool "Allwinner sun50iw1p1 SoC"
+       help
+         Allwinner sun50iw1p1 SoC
+endchoice
+endif
+
+if ARCH_SUN50IW2
+choice
+	prompt "Select the SoC with wafer sun50iw2"
+	default ARCH_SUN50IW2P1
+	help
+	 Select the SoC with wafer sun50iw2
+
+config ARCH_SUN50IW2P1
+	bool "Allwinner sun50iw2p1 SoC"
+	help
+	  Allwinner sun50iw2p1 SoC
+endchoice
+endif
+
+config SUNXI_TRUSTZONE
+       bool "SUNXI trustzone security"
+       default n
+    help
+        Support for SUNXI trustzone security
+
+config HOMLET_PLATFORM
+       bool "Homlet platform Features"
+       default n
+       help
+         Enable special features for box then select Yes,
+         For example, fsync & sync immediatetly to nand disk.
+
+config SUNXI_BOOTUP_EXTEND
+        bool "Homlet platform bootup extend"
+        depends on HOMLET_PLATFORM
+        default n
+    help
+        Support system bootup triggered by ir, when system is poweroff.
+
+config SUNXI_SOC_NAME
+	string "The name of SUNXI SoC"
+	default ""
+	help
+	  Used for /proc/cpuinfo and /sysfs/.../sysinfo.
+
+endif
