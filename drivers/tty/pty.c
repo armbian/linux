@@ -173,6 +173,9 @@ static int pty_signal(struct tty_struct *tty, int sig)
 	unsigned long flags;
 	struct pid *pgrp;
 
+	if (sig != SIGINT && sig != SIGQUIT && sig != SIGTSTP)
+		return -EINVAL;
+
 	if (tty->link) {
 		spin_lock_irqsave(&tty->link->ctrl_lock, flags);
 		pgrp = get_pid(tty->link->pgrp);
@@ -606,6 +609,9 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 	int index;
 
 	nonseekable_open(inode, filp);
+
+	/* We refuse fsnotify events on ptmx, since it's a shared resource */
+	filp->f_mode |= FMODE_NONOTIFY;
 
 	retval = tty_alloc_file(filp);
 	if (retval)

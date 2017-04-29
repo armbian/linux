@@ -126,7 +126,6 @@ struct snd_usb_midi {
 		struct snd_usb_midi_in_endpoint *in;
 	} endpoints[MIDI_MAX_ENDPOINTS];
 	unsigned long input_triggered;
-	bool autopm_reference;
 	unsigned int opened[2];
 	unsigned char disconnected;
 	unsigned char input_running;
@@ -175,6 +174,8 @@ struct snd_usb_midi_in_endpoint {
 		u8 running_status_length;
 	} ports[0x10];
 	u8 seen_f5;
+	bool in_sysex;
+	u8 last_cin;
 	u8 error_resubmit;
 	int current_port;
 };
@@ -365,6 +366,8 @@ static void snd_usbmidi_error_timer(unsigned long data)
 		if (in && in->error_resubmit) {
 			in->error_resubmit = 0;
 			for (j = 0; j < INPUT_URBS; ++j) {
+				if (atomic_read(&in->urbs[j]->use_count))
+					continue;
 				in->urbs[j]->dev = umidi->dev;
 				snd_usbmidi_submit_urb(in->urbs[j], GFP_ATOMIC);
 			}
@@ -461,6 +464,39 @@ static void snd_usbmidi_maudio_broken_running_status_input(
 				port->running_status_length = 0;
 			snd_usbmidi_input_data(ep, cable, &buffer[i + 1], length);
 		}
+}
+
+/*
+ * QinHeng CH345 is buggy: every second packet inside a SysEx has not CIN 4
+ * but the previously seen CIN, but still with three data bytes.
+ */
+static void ch345_broken_sysex_input(struct snd_usb_midi_in_endpoint *ep,
+				     uint8_t *buffer, int buffer_length)
+{
+	unsigned int i, cin, length;
+
+	for (i = 0; i + 3 < buffer_length; i += 4) {
+		if (buffer[i] == 0 && i > 0)
+			break;
+		cin = buffer[i] & 0x0f;
+		if (ep->in_sysex &&
+		    cin == ep->last_cin &&
+		    (buffer[i + 1 + (cin == 0x6)] & 0x80) == 0)
+			cin = 0x4;
+#if 0
+		if (buffer[i + 1] == 0x90) {
+			/*
+			 * Either a corrupted running status or a real note-on
+			 * message; impossible to detect reliably.
+			 */
+		}
+#endif
+		length = snd_usbmidi_cin_length[cin];
+		snd_usbmidi_input_data(ep, 0, &buffer[i + 1], length);
+		ep->in_sysex = cin == 0x4;
+		if (!ep->in_sysex)
+			ep->last_cin = cin;
+	}
 }
 
 /*
@@ -645,6 +681,12 @@ static struct usb_protocol_ops snd_usbmidi_maudio_broken_running_status_ops = {
 
 static struct usb_protocol_ops snd_usbmidi_cme_ops = {
 	.input = snd_usbmidi_cme_input,
+	.output = snd_usbmidi_standard_output,
+	.output_packet = snd_usbmidi_output_standard_packet,
+};
+
+static struct usb_protocol_ops snd_usbmidi_ch345_broken_sysex_ops = {
+	.input = ch345_broken_sysex_input,
 	.output = snd_usbmidi_standard_output,
 	.output_packet = snd_usbmidi_output_standard_packet,
 };
@@ -1040,7 +1082,6 @@ static int substream_open(struct snd_rawmidi_substream *substream, int dir,
 {
 	struct snd_usb_midi* umidi = substream->rmidi->private_data;
 	struct snd_kcontrol *ctl;
-	int err;
 
 	down_read(&umidi->disc_rwsem);
 	if (umidi->disconnected) {
@@ -1051,13 +1092,6 @@ static int substream_open(struct snd_rawmidi_substream *substream, int dir,
 	mutex_lock(&umidi->mutex);
 	if (open) {
 		if (!umidi->opened[0] && !umidi->opened[1]) {
-			err = usb_autopm_get_interface(umidi->iface);
-			umidi->autopm_reference = err >= 0;
-			if (err < 0 && err != -EACCES) {
-				mutex_unlock(&umidi->mutex);
-				up_read(&umidi->disc_rwsem);
-				return -EIO;
-			}
 			if (umidi->roland_load_ctl) {
 				ctl = umidi->roland_load_ctl;
 				ctl->vd[0].access |= SNDRV_CTL_ELEM_ACCESS_INACTIVE;
@@ -1080,8 +1114,6 @@ static int substream_open(struct snd_rawmidi_substream *substream, int dir,
 				snd_ctl_notify(umidi->card,
 				       SNDRV_CTL_EVENT_MASK_INFO, &ctl->id);
 			}
-			if (umidi->autopm_reference)
-				usb_autopm_put_interface(umidi->iface);
 		}
 	}
 	mutex_unlock(&umidi->mutex);
@@ -1335,6 +1367,7 @@ static int snd_usbmidi_out_endpoint_create(struct snd_usb_midi* umidi,
 		 * Various chips declare a packet size larger than 4 bytes, but
 		 * do not actually work with larger packets:
 		 */
+	case USB_ID(0x0a67, 0x5011): /* Medeli DD305 */
 	case USB_ID(0x0a92, 0x1020): /* ESI M4U */
 	case USB_ID(0x1430, 0x474b): /* RedOctane GH MIDI INTERFACE */
 	case USB_ID(0x15ca, 0x0101): /* Textech USB Midi Cable */
@@ -2223,6 +2256,10 @@ int snd_usbmidi_create(struct snd_card *card,
 
 		err = snd_usbmidi_detect_per_port_endpoints(umidi, endpoints);
 		break;
+	case QUIRK_MIDI_CH345:
+		umidi->usb_protocol_ops = &snd_usbmidi_ch345_broken_sysex_ops;
+		err = snd_usbmidi_detect_per_port_endpoints(umidi, endpoints);
+		break;
 	default:
 		snd_printd(KERN_ERR "invalid quirk type %d\n", quirk->type);
 		err = -ENXIO;
@@ -2255,6 +2292,8 @@ int snd_usbmidi_create(struct snd_card *card,
 		snd_usbmidi_free(umidi);
 		return err;
 	}
+
+	usb_autopm_get_interface_no_resume(umidi->iface);
 
 	list_add_tail(&umidi->list, midi_list);
 	return 0;

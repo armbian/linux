@@ -129,6 +129,9 @@ static ssize_t hash_sendpage(struct socket *sock, struct page *page,
 	struct hash_ctx *ctx = ask->private;
 	int err;
 
+	if (flags & MSG_SENDPAGE_NOTLAST)
+		flags |= MSG_MORE;
+
 	lock_sock(sk);
 	sg_init_table(ctx->sgl.sg, 1);
 	sg_set_page(ctx->sgl.sg, page, size, offset);
@@ -204,9 +207,14 @@ static int hash_accept(struct socket *sock, struct socket *newsock, int flags)
 	struct sock *sk2;
 	struct alg_sock *ask2;
 	struct hash_ctx *ctx2;
+	bool more;
 	int err;
 
-	err = crypto_ahash_export(req, state);
+	lock_sock(sk);
+	more = ctx->more;
+	err = more ? crypto_ahash_export(req, state) : 0;
+	release_sock(sk);
+
 	if (err)
 		return err;
 
@@ -217,7 +225,10 @@ static int hash_accept(struct socket *sock, struct socket *newsock, int flags)
 	sk2 = newsock->sk;
 	ask2 = alg_sk(sk2);
 	ctx2 = ask2->private;
-	ctx2->more = 1;
+	ctx2->more = more;
+
+	if (!more)
+		return err;
 
 	err = crypto_ahash_import(&ctx2->req, state);
 	if (err) {
