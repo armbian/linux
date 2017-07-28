@@ -2,7 +2,7 @@
  *	w1_therm.c
  *
  * Copyright (c) 2004 Evgeniy Polyakov <zbr@ioremap.net>
- *
+ * Modified by Oleg Skydan <sov1178@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the therms of the GNU General Public License as published by
@@ -34,10 +34,11 @@
 #include "../w1_family.h"
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
+MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>, Oleg Skydan <sov1178@gmail.com>");
 MODULE_DESCRIPTION("Driver for 1-wire Dallas network protocol, temperature family.");
 
-/* Added new feature ( by Oleg Skydan <sov1178@gmail.com> ):  
+/* 20.01.2017:
+ *    Added new feature ( by Oleg Skydan <sov1178@gmail.com> ):  
  *    Read sensor memory without triggering temperature conversion. Just read 'w1_read' 
  *    file instead of usual 'w1_slave' file.
  *   
@@ -73,7 +74,7 @@ static struct device_attribute w1_therm_attr_read =
 
 static int w1_therm_add_slave(struct w1_slave *sl)
 {
-   int r;
+	int r;
    r = device_create_file(&sl->dev, &w1_therm_attr);
    if(r)
       return r;
