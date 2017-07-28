@@ -2,7 +2,7 @@
  *	w1.c
  *
  * Copyright (c) 2004 Evgeniy Polyakov <zbr@ioremap.net>
- *
+ * Modified by Oleg Skydan <sov1178@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -42,9 +42,23 @@
 #include "w1_netlink.h"
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
+MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>, Oleg Skydan <sov1178@gmail.com>");
 MODULE_DESCRIPTION("Driver for 1-wire Dallas network protocol.");
-
+/*  20.01.2017
+ *    Added new feature ( by Oleg Skydan <sov1178@gmail.com> ):  
+ *    Reading the 'w1_therm_convert_all' file (located in '/sys/bus/w1') will start
+ *    temperature conversion on all sensors in the w1 net and wait 750ms to finish 
+ *    conversion.
+ *
+ *    Then you can use the 'w1_read' (see modified w1_therm module) to read converted 
+ *    temperatures. So you will not need to wait 750ms reading each sensor (using 'w1_slave').
+ *
+ *  28.01.2017
+ *    Added new feature ( by Oleg Skydan <sov1178@gmail.com> ):
+ *    Now each master has 'w1_master_therm_convert_all' file its functionality is the 
+ *    same as the 'w1_therm_convert_all' (located in '/sys/bus/w1'), but reading will start
+ *    temperature conversion on sensors connected to this master only.  
+ */
 static int w1_timeout = 10;
 int w1_max_slave_count = 10;
 int w1_max_slave_ttl = 10;
@@ -499,6 +513,31 @@ static ssize_t w1_master_attribute_store_remove(struct device *dev,
 	return result;
 }
 
+static ssize_t w1_master_attribute_show_therm_convert_all(struct device *dev,
+						struct device_attribute *attr,
+						char *buf)
+{
+	struct w1_master *md = dev_to_w1_master(dev);   
+   ssize_t c;
+   unsigned int tm = 750;
+
+   mutex_lock(&md->mutex);
+
+   w1_reset_bus(md);
+   w1_write_8(md, W1_SKIP_ROM);
+
+   w1_write_8(md, W1_CONVERT_TEMP);
+
+   mutex_unlock(&md->mutex);
+
+   /*wait 750ms while conversion in progress*/
+   msleep(tm);
+
+   c = snprintf(buf, PAGE_SIZE, "OK");
+
+   return c;
+}
+
 #define W1_MASTER_ATTR_RO(_name, _mode)				\
 	struct device_attribute w1_master_attribute_##_name =	\
 		__ATTR(w1_master_##_name, _mode,		\
@@ -517,6 +556,7 @@ static W1_MASTER_ATTR_RO(max_slave_count, S_IRUGO);
 static W1_MASTER_ATTR_RO(attempts, S_IRUGO);
 static W1_MASTER_ATTR_RO(timeout, S_IRUGO);
 static W1_MASTER_ATTR_RO(pointer, S_IRUGO);
+static W1_MASTER_ATTR_RO(therm_convert_all, S_IRUGO);
 static W1_MASTER_ATTR_RW(search, S_IRUGO | S_IWUSR | S_IWGRP);
 static W1_MASTER_ATTR_RW(pullup, S_IRUGO | S_IWUSR | S_IWGRP);
 static W1_MASTER_ATTR_RW(add, S_IRUGO | S_IWUSR | S_IWGRP);
@@ -530,6 +570,7 @@ static struct attribute *w1_master_default_attrs[] = {
 	&w1_master_attribute_attempts.attr,
 	&w1_master_attribute_timeout.attr,
 	&w1_master_attribute_pointer.attr,
+   &w1_master_attribute_therm_convert_all.attr,
 	&w1_master_attribute_search.attr,
 	&w1_master_attribute_pullup.attr,
 	&w1_master_attribute_add.attr,
@@ -1003,6 +1044,38 @@ int w1_process(void *data)
 	return 0;
 }
 
+static ssize_t w1_therm_convert_all(struct bus_type *bus, char *buf)
+{
+   struct w1_master *dev;
+   ssize_t c = PAGE_SIZE;
+   unsigned int tm = 750;
+
+   mutex_lock(&w1_mlock);
+   list_for_each_entry(dev, &w1_masters, w1_master_entry)
+   {
+      mutex_lock(&dev->mutex);
+
+      w1_reset_bus(dev);
+      w1_write_8(dev, W1_SKIP_ROM);
+
+      w1_write_8(dev, W1_CONVERT_TEMP);
+
+      mutex_unlock(&dev->mutex);
+   }
+
+   /*wait 750ms while conversion in progress*/
+   msleep(tm);
+
+   c = snprintf(buf, PAGE_SIZE, "OK");
+
+   mutex_unlock(&w1_mlock);
+
+   return c;
+}
+
+static BUS_ATTR(w1_therm_convert_all, S_IRUGO, w1_therm_convert_all, NULL);
+
+
 static int __init w1_init(void)
 {
 	int retval;
@@ -1033,9 +1106,17 @@ static int __init w1_init(void)
 		goto err_out_master_unregister;
 	}
 
-	return 0;
+   retval = bus_create_file(&w1_bus_type, &bus_attr_w1_therm_convert_all);
+   if (retval) {
+      printk(KERN_ERR
+             "Failed to create w1_convert_all entry. err=%d.\n",
+             retval);
+      goto err_out_slave_unregister;
+   }
 
-#if 0
+   return 0;
+
+#if 1
 /* For undoing the slave register if there was a step after it. */
 err_out_slave_unregister:
 	driver_unregister(&w1_slave_driver);
@@ -1054,6 +1135,8 @@ err_out_exit_init:
 static void __exit w1_fini(void)
 {
 	struct w1_master *dev;
+
+   bus_remove_file(&w1_bus_type, &bus_attr_w1_therm_convert_all);
 
 	/* Set netlink removal messages and some cleanup */
 	list_for_each_entry(dev, &w1_masters, w1_master_entry)
