@@ -34,11 +34,13 @@
 static int sdc_id = -1;
 static signed int gpio_eint_wlan = -1;
 static u32 eint_wlan_handle = 0;
+
 #if defined(CONFIG_PLATFORM_ARM_SUN6I) || defined(CONFIG_PLATFORM_ARM_SUN7I)
 extern void sw_mci_rescan_card(unsigned id, unsigned insert);
 #elif defined(CONFIG_PLATFORM_ARM_SUN8I)
 extern void sunxi_mci_rescan_card(unsigned id, unsigned insert);
 #endif
+
 extern void wifi_pm_power(int on);
 #ifdef CONFIG_GPIO_WAKEUP
 extern unsigned int oob_irq;
@@ -67,8 +69,6 @@ int platform_wifi_power_on(void)
 		sdc_id = val.val;
 		DBG_871X("----- %s sdc_id: %d\n", __FUNCTION__, sdc_id);
 
-		wifi_pm_power(0);
-		mdelay(50);
 #if defined(CONFIG_PLATFORM_ARM_SUN6I) || defined(CONFIG_PLATFORM_ARM_SUN7I)
 		sw_mci_rescan_card(sdc_id, 1);
 #elif defined(CONFIG_PLATFORM_ARM_SUN8I)
