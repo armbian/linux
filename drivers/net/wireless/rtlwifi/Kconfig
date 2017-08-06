@@ -32,18 +32,6 @@ config RTL8192DE
 
 	If you choose to build it as a module, it will be called rtl8192de
 
-config RTL8192CU
-	tristate "Realtek RTL8192CU/RTL8188CU USB Wireless Network Adapter"
-	depends on MAC80211 && USB && EXPERIMENTAL
-	select FW_LOADER
-	select RTLWIFI
-	select RTL8192C_COMMON
-	---help---
-	This is the driver for Realtek RTL8192CU/RTL8188CU 802.11n USB
-	wireless network adapters.
-
-	If you choose to build it as a module, it will be called rtl8192cu
-
 config RTLWIFI
 	tristate
 	depends on RTL8192CE || RTL8192CU || RTL8192SE || RTL8192DE
