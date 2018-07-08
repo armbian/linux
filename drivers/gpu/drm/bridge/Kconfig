@@ -1,0 +1,47 @@
+config DRM_BRIDGE
+	def_bool y
+	depends on DRM
+	help
+	  Bridge registration and lookup framework.
+
+menu "Display Interface Bridges"
+	depends on DRM && DRM_BRIDGE
+
+config DRM_NXP_PTN3460
+	tristate "NXP PTN3460 DP/LVDS bridge"
+	depends on OF
+	select DRM_KMS_HELPER
+	select DRM_PANEL
+	---help---
+	  NXP PTN3460 eDP-LVDS bridge chip driver.
+
+config DRM_PARADE_PS8622
+	tristate "Parade eDP/LVDS bridge"
+	depends on OF
+	select DRM_PANEL
+	select DRM_KMS_HELPER
+	select BACKLIGHT_LCD_SUPPORT
+	select BACKLIGHT_CLASS_DEVICE
+	---help---
+	  Parade eDP-LVDS bridge chip driver.
+
+config DRM_RK1000
+	tristate "ROCKCHIP TVE bridge"
+	depends on OF
+	select DRM_KMS_HELPER
+	select MFD_RK1000
+	---help---
+	  ROCKCHIP TVE bridge chip RK1000 driver.
+
+config DRM_DUMB_VGA_DAC
+	tristate "Dumb VGA DAC Bridge support"
+	depends on OF
+	select DRM_KMS_HELPER
+	help
+	  Support for RGB to VGA DAC based bridges
+
+source "drivers/gpu/drm/bridge/analogix/Kconfig"
+
+source "drivers/gpu/drm/bridge/synopsys/Kconfig"
+
+endmenu

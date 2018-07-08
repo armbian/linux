@@ -1,0 +1,1 @@
+source "drivers/tinkerboard/dsi/Kconfig"

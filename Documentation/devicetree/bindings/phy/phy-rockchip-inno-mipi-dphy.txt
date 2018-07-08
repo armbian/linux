@@ -1,0 +1,51 @@
+ROCKCHIP MIPI DPHY WITH INNO IP BLOCK
+
+Required properties:
+ - compatible : must be one of:
+	"rockchip,px30-mipi-dphy";
+	"rockchip,rk3128-mipi-dphy";
+	"rockchip,rk3366-mipi-dphy";
+	"rockchip,rk3368-mipi-dphy";
+ - reg : the address offset of register for mipi-dphy configuration.
+ - #phy-cells : must be 0. See ./phy-bindings.txt for details.
+ - clocks and clock-names:
+	- the "pclk" clock is required by the phy module, used to register
+	  configuration
+	- the "ref" clock is used to get the rate of the reference clock
+	  provided to the PHY module
+ - clock-output-names: from common clock binding.
+	See ../clocks/clock-bindings.txt for details.
+ - #clock-cells : from common clock binding; shall be set to 0.
+ - resets : phandle to the reset of MIPI DSI PHY APB clock.
+ - reset-names : should be "apb".
+
+Optional properties
+ - clocks: phandle to the h2p clock.
+ - clock-names: should be "h2p".
+
+Example:
+
+For Rockchip RK3368
+
+	mipi_dphy: mipi-dphy@ff968000 {
+		compatible = "rockchip,rk3368-mipi-dphy";
+		reg = <0x0 0xff968000 0x0 0x4000>;
+		clocks = <&cru SCLK_MIPIDSI_24M>, <&cru PCLK_DPHYTX0>;
+		clock-names = "ref", "pclk";
+		clock-output-names = "mipi_dphy_pll";
+		#clock-cells = <0>;
+		resets = <&cru SRST_MIPIDPHYTX>;
+		reset-names = "apb";
+		#phy-cells = <0>;
+	};
+
+Then the PHY can be used in other nodes such as:
+
+	dsi@ff960000 {
+		...
+		clocks = <&cru PCLK_MIPI_DSI0>, <&mipi_dphy>;
+		clock-names = "pclk", "hs_clk";
+		phys = <&mipi_dphy>;
+		phy-names = "mipi_dphy";
+		...
+	};
