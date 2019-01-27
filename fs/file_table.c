@@ -322,7 +322,7 @@ EXPORT_SYMBOL(fget_raw);
  * The fput_needed flag returned by fget_light should be passed to the
  * corresponding fput_light.
  */
-struct file *fget_light(unsigned int fd, int *fput_needed)
+struct file *__fget_light(unsigned int fd, fmode_t mode, int *fput_needed)
 {
 	struct file *file;
 	struct files_struct *files = current->files;
@@ -330,13 +330,13 @@ struct file *fget_light(unsigned int fd, int *fput_needed)
 	*fput_needed = 0;
 	if (atomic_read(&files->count) == 1) {
 		file = fcheck_files(files, fd);
-		if (file && (file->f_mode & FMODE_PATH))
+		if (file && (file->f_mode & mode))
 			file = NULL;
 	} else {
 		rcu_read_lock();
 		file = fcheck_files(files, fd);
 		if (file) {
-			if (!(file->f_mode & FMODE_PATH) &&
+			if (!(file->f_mode & mode) &&
 			    atomic_long_inc_not_zero(&file->f_count))
 				*fput_needed = 1;
 			else
@@ -347,6 +347,11 @@ struct file *fget_light(unsigned int fd, int *fput_needed)
 	}
 
 	return file;
+}
+
+struct file *fget_light(unsigned int fd, int *fput_needed)
+{
+	return __fget_light(fd, FMODE_PATH, fput_needed);
 }
 
 struct file *fget_raw_light(unsigned int fd, int *fput_needed)
