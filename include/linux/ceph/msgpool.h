@@ -1,8 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _FS_CEPH_MSGPOOL
 #define _FS_CEPH_MSGPOOL
 
 #include <linux/mempool.h>
-#include "messenger.h"
 
 /*
  * we use memory pools for preallocating messages we may receive, to

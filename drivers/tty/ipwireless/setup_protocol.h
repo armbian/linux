@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * IPWireless 3G PCMCIA Network Driver
  *
@@ -59,7 +60,7 @@ struct tl_setup_config_done_msg {
 	unsigned char sig_no;		/* TL_SETUP_SIGNO_CONFIG_DONE_MSG */
 } __attribute__ ((__packed__));
 
-/* Asyncronous messages */
+/* Asynchronous messages */
 struct tl_setup_open_msg {
 	unsigned char sig_no;		/* TL_SETUP_SIGNO_OPEN_MSG */
 	unsigned char port_no;

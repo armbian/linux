@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * highmem.c: virtual kernel memory mappings for high memory
  *
@@ -34,7 +35,7 @@ void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 	unsigned long vaddr;
 	int idx, type;
 
-	/* even !CONFIG_PREEMPT needs this, for in_atomic in do_page_fault */
+	preempt_disable();
 	pagefault_disable();
 	if (!PageHighMem(page))
 		return page_address(page);
@@ -59,6 +60,7 @@ void __kunmap_atomic(void *kvaddr)
 
 	if (vaddr < __fix_to_virt(FIX_KMAP_END)) {
 		pagefault_enable();
+		preempt_enable();
 		return;
 	}
 
@@ -82,5 +84,6 @@ void __kunmap_atomic(void *kvaddr)
 
 	kmap_atomic_idx_pop();
 	pagefault_enable();
+	preempt_enable();
 }
 EXPORT_SYMBOL(__kunmap_atomic);

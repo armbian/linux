@@ -28,7 +28,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/init.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /**************************************************/
 /* the actual current config file                 */
@@ -79,7 +79,7 @@ static int __init ikconfig_init(void)
 	if (!entry)
 		return -ENOMEM;
 
-	entry->size = kernel_config_data_size;
+	proc_set_size(entry, kernel_config_data_size);
 
 	return 0;
 }

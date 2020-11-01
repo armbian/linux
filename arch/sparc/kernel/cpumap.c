@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* cpumap.c: used for optimizing CPU assignment
  *
  * Copyright (C) 2009 Hong H. Pham <hong.pham@windriver.com>
@@ -6,7 +7,6 @@
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/cpumask.h>
 #include <linux/spinlock.h>
 #include <asm/cpudata.h>
@@ -327,6 +327,11 @@ static int iterate_cpu(struct cpuinfo_tree *t, unsigned int root_index)
 	case SUN4V_CHIP_NIAGARA3:
 	case SUN4V_CHIP_NIAGARA4:
 	case SUN4V_CHIP_NIAGARA5:
+	case SUN4V_CHIP_SPARC_M6:
+	case SUN4V_CHIP_SPARC_M7:
+	case SUN4V_CHIP_SPARC_M8:
+	case SUN4V_CHIP_SPARC_SN:
+	case SUN4V_CHIP_SPARC64X:
 		rover_inc_table = niagara_iterate_method;
 		break;
 	default:

@@ -46,7 +46,7 @@ MODULE_LICENSE("GPL");
 #define KEY_CENTER		KEY_F15
 
 static const unsigned char
-locomokbd_keycode[LOCOMOKBD_NUMKEYS] __devinitconst = {
+locomokbd_keycode[LOCOMOKBD_NUMKEYS] = {
 	0, KEY_ESC, KEY_ACTIVITY, 0, 0, 0, 0, 0, 0, 0,				/* 0 - 9 */
 	0, 0, 0, 0, 0, 0, 0, KEY_MENU, KEY_HOME, KEY_CONTACT,			/* 10 - 19 */
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0,						/* 20 - 29 */
@@ -236,7 +236,7 @@ static void locomokbd_close(struct input_dev *dev)
 	locomo_writel(r, locomokbd->base + LOCOMO_KIC);
 }
 
-static int __devinit locomokbd_probe(struct locomo_dev *dev)
+static int locomokbd_probe(struct locomo_dev *dev)
 {
 	struct locomokbd *locomokbd;
 	struct input_dev *input_dev;
@@ -264,9 +264,8 @@ static int __devinit locomokbd_probe(struct locomo_dev *dev)
 
 	spin_lock_init(&locomokbd->lock);
 
-	init_timer(&locomokbd->timer);
-	locomokbd->timer.function = locomokbd_timer_callback;
-	locomokbd->timer.data = (unsigned long) locomokbd;
+	setup_timer(&locomokbd->timer, locomokbd_timer_callback,
+		    (unsigned long)locomokbd);
 
 	locomokbd->suspend_jiffies = jiffies;
 
@@ -321,7 +320,7 @@ static int __devinit locomokbd_probe(struct locomo_dev *dev)
 	return err;
 }
 
-static int __devexit locomokbd_remove(struct locomo_dev *dev)
+static int locomokbd_remove(struct locomo_dev *dev)
 {
 	struct locomokbd *locomokbd = locomo_get_drvdata(dev);
 
@@ -345,7 +344,7 @@ static struct locomo_driver keyboard_driver = {
 	},
 	.devid	= LOCOMO_DEVID_KEYBOARD,
 	.probe	= locomokbd_probe,
-	.remove	= __devexit_p(locomokbd_remove),
+	.remove	= locomokbd_remove,
 };
 
 static int __init locomokbd_init(void)

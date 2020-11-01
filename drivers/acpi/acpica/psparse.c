@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,9 +43,9 @@
 
 /*
  * Parse the AML and build an operation tree as most interpreters,
- * like Perl, do.  Parsing is done by hand rather than with a YACC
+ * like Perl, do. Parsing is done by hand rather than with a YACC
  * generated parser to tightly constrain stack and dynamic memory
- * usage.  At the same time, parsing is kept flexible and the code
+ * usage. At the same time, parsing is kept flexible and the code
  * fairly compact by parsing based on a list of AML opcode
  * templates in aml_op_info[]
  */
@@ -56,6 +56,7 @@
 #include "acdispat.h"
 #include "amlcode.h"
 #include "acinterp.h"
+#include "acnamesp.h"
 
 #define _COMPONENT          ACPI_PARSER
 ACPI_MODULE_NAME("psparse")
@@ -64,7 +65,7 @@ ACPI_MODULE_NAME("psparse")
  *
  * FUNCTION:    acpi_ps_get_opcode_size
  *
- * PARAMETERS:  Opcode          - An AML opcode
+ * PARAMETERS:  opcode          - An AML opcode
  *
  * RETURN:      Size of the opcode, in bytes (1 or 2)
  *
@@ -105,7 +106,7 @@ u16 acpi_ps_peek_opcode(struct acpi_parse_state * parser_state)
 	aml = parser_state->aml;
 	opcode = (u16) ACPI_GET8(aml);
 
-	if (opcode == AML_EXTENDED_OP_PREFIX) {
+	if (opcode == AML_EXTENDED_PREFIX) {
 
 		/* Extended opcode, get the second opcode byte */
 
@@ -121,7 +122,7 @@ u16 acpi_ps_peek_opcode(struct acpi_parse_state * parser_state)
  * FUNCTION:    acpi_ps_complete_this_op
  *
  * PARAMETERS:  walk_state      - Current State
- *              Op              - Op to complete
+ *              op              - Op to complete
  *
  * RETURN:      Status
  *
@@ -130,8 +131,8 @@ u16 acpi_ps_peek_opcode(struct acpi_parse_state * parser_state)
  ******************************************************************************/
 
 acpi_status
-acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
-			 union acpi_parse_object * op)
+acpi_ps_complete_this_op(struct acpi_walk_state *walk_state,
+			 union acpi_parse_object *op)
 {
 	union acpi_parse_object *prev;
 	union acpi_parse_object *next;
@@ -146,6 +147,8 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 	if (!op) {
 		return_ACPI_STATUS(AE_OK);	/* OK for now */
 	}
+
+	acpi_ex_stop_trace_opcode(op, walk_state);
 
 	/* Delete this op and the subtree below it if asked to */
 
@@ -176,23 +179,23 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 
 		switch (parent_info->class) {
 		case AML_CLASS_CONTROL:
+
 			break;
 
 		case AML_CLASS_CREATE:
-
 			/*
 			 * These opcodes contain term_arg operands. The current
 			 * op must be replaced by a placeholder return op
 			 */
 			replacement_op =
-			    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP);
+			    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP,
+					     op->common.aml);
 			if (!replacement_op) {
 				status = AE_NO_MEMORY;
 			}
 			break;
 
 		case AML_CLASS_NAMED_OBJECT:
-
 			/*
 			 * These opcodes contain term_arg operands. The current
 			 * op must be replaced by a placeholder return op
@@ -208,9 +211,10 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 			    || (op->common.parent->common.aml_opcode ==
 				AML_BANK_FIELD_OP)
 			    || (op->common.parent->common.aml_opcode ==
-				AML_VAR_PACKAGE_OP)) {
+				AML_VARIABLE_PACKAGE_OP)) {
 				replacement_op =
-				    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP);
+				    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP,
+						     op->common.aml);
 				if (!replacement_op) {
 					status = AE_NO_MEMORY;
 				}
@@ -222,10 +226,11 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 				if ((op->common.aml_opcode == AML_BUFFER_OP)
 				    || (op->common.aml_opcode == AML_PACKAGE_OP)
 				    || (op->common.aml_opcode ==
-					AML_VAR_PACKAGE_OP)) {
+					AML_VARIABLE_PACKAGE_OP)) {
 					replacement_op =
 					    acpi_ps_alloc_op(op->common.
-							     aml_opcode);
+							     aml_opcode,
+							     op->common.aml);
 					if (!replacement_op) {
 						status = AE_NO_MEMORY;
 					} else {
@@ -241,7 +246,8 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 		default:
 
 			replacement_op =
-			    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP);
+			    acpi_ps_alloc_op(AML_INT_RETURN_VALUE_OP,
+					     op->common.aml);
 			if (!replacement_op) {
 				status = AE_NO_MEMORY;
 			}
@@ -298,7 +304,7 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
 			}
 	}
 
-      cleanup:
+cleanup:
 
 	/* Now we can actually delete the subtree rooted at Op */
 
@@ -311,7 +317,7 @@ acpi_ps_complete_this_op(struct acpi_walk_state * walk_state,
  * FUNCTION:    acpi_ps_next_parse_state
  *
  * PARAMETERS:  walk_state          - Current state
- *              Op                  - Current parse op
+ *              op                  - Current parse op
  *              callback_status     - Status from previous operation
  *
  * RETURN:      Status
@@ -379,7 +385,7 @@ acpi_ps_next_parse_state(struct acpi_walk_state *walk_state,
 	case AE_CTRL_FALSE:
 		/*
 		 * Either an IF/WHILE Predicate was false or we encountered a BREAK
-		 * opcode.  In both cases, we do not execute the rest of the
+		 * opcode. In both cases, we do not execute the rest of the
 		 * package;  We simply close out the parent (finishing the walk of
 		 * this branch of the tree) and continue execution at the parent
 		 * level.
@@ -459,8 +465,9 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 
 			/* Executing a control method - additional cleanup */
 
-			acpi_ds_terminate_control_method(
-				walk_state->method_desc, walk_state);
+			acpi_ds_terminate_control_method(walk_state->
+							 method_desc,
+							 walk_state);
 		}
 
 		acpi_ds_delete_walk_state(walk_state);
@@ -487,7 +494,7 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 	acpi_gbl_current_walk_list = thread;
 
 	/*
-	 * Execute the walk loop as long as there is a valid Walk State.  This
+	 * Execute the walk loop as long as there is a valid Walk State. This
 	 * handles nested control method invocations without recursion.
 	 */
 	ACPI_DEBUG_PRINT((ACPI_DB_PARSE, "State=%p\n", walk_state));
@@ -520,8 +527,8 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 			}
 
 			/*
-			 * If the transfer to the new method method call worked, a new walk
-			 * state was created -- get it
+			 * If the transfer to the new method method call worked
+			 *, a new walk state was created -- get it
 			 */
 			walk_state = acpi_ds_get_current_walk_state(thread);
 			continue;
@@ -531,15 +538,24 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 
 			/* Either the method parse or actual execution failed */
 
-			ACPI_ERROR_METHOD("Method parse/execution failed",
-					  walk_state->method_node, NULL,
-					  status);
+			acpi_ex_exit_interpreter();
+			if (status == AE_ABORT_METHOD) {
+				acpi_ns_print_node_pathname(walk_state->
+							    method_node,
+							    "Method aborted:");
+				acpi_os_printf("\n");
+			} else {
+				ACPI_ERROR_METHOD
+				    ("Method parse/execution failed",
+				     walk_state->method_node, NULL, status);
+			}
+			acpi_ex_enter_interpreter();
 
 			/* Check for possible multi-thread reentrancy problem */
 
 			if ((status == AE_ALREADY_EXISTS) &&
-			    (!(walk_state->method_desc->method.
-			       info_flags & ACPI_METHOD_SERIALIZED))) {
+			    (!(walk_state->method_desc->method.info_flags &
+			       ACPI_METHOD_SERIALIZED))) {
 				/*
 				 * Method is not serialized and tried to create an object
 				 * twice. The probable cause is that the method cannot
@@ -565,7 +581,9 @@ acpi_status acpi_ps_parse_aml(struct acpi_walk_state *walk_state)
 		 * cleanup to do
 		 */
 		if (((walk_state->parse_flags & ACPI_PARSE_MODE_MASK) ==
-		     ACPI_PARSE_EXECUTE) || (ACPI_FAILURE(status))) {
+		     ACPI_PARSE_EXECUTE &&
+		     !(walk_state->parse_flags & ACPI_PARSE_MODULE_LEVEL)) ||
+		    (ACPI_FAILURE(status))) {
 			acpi_ds_terminate_control_method(walk_state->
 							 method_desc,
 							 walk_state);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ext4/block_validity.c
  *
@@ -16,7 +17,6 @@
 #include <linux/swap.h>
 #include <linux/pagemap.h>
 #include <linux/blkdev.h>
-#include <linux/mutex.h>
 #include <linux/slab.h>
 #include "ext4.h"
 
@@ -129,12 +129,55 @@ static void debug_print_tree(struct ext4_sb_info *sbi)
 	node = rb_first(&sbi->system_blks);
 	while (node) {
 		entry = rb_entry(node, struct ext4_system_zone, node);
-		printk("%s%llu-%llu", first ? "" : ", ",
+		printk(KERN_CONT "%s%llu-%llu", first ? "" : ", ",
 		       entry->start_blk, entry->start_blk + entry->count - 1);
 		first = 0;
 		node = rb_next(node);
 	}
-	printk("\n");
+	printk(KERN_CONT "\n");
+}
+
+static int ext4_protect_reserved_inode(struct super_block *sb, u32 ino)
+{
+	struct inode *inode;
+	struct ext4_sb_info *sbi = EXT4_SB(sb);
+	struct ext4_map_blocks map;
+	u32 i = 0, num;
+	int err = 0, n;
+
+	if ((ino < EXT4_ROOT_INO) ||
+	    (ino > le32_to_cpu(sbi->s_es->s_inodes_count)))
+		return -EINVAL;
+	inode = ext4_iget(sb, ino, EXT4_IGET_SPECIAL);
+	if (IS_ERR(inode))
+		return PTR_ERR(inode);
+	num = (inode->i_size + sb->s_blocksize - 1) >> sb->s_blocksize_bits;
+	while (i < num) {
+		map.m_lblk = i;
+		map.m_len = num - i;
+		n = ext4_map_blocks(NULL, inode, &map, 0);
+		if (n < 0) {
+			err = n;
+			break;
+		}
+		if (n == 0) {
+			i++;
+		} else {
+			if (!ext4_data_block_valid(sbi, map.m_pblk, n)) {
+				ext4_error(sb, "blocks %llu-%llu from inode %u "
+					   "overlap system zone", map.m_pblk,
+					   map.m_pblk + map.m_len - 1, ino);
+				err = -EFSCORRUPTED;
+				break;
+			}
+			err = add_system_zone(sbi, map.m_pblk, n);
+			if (err < 0)
+				break;
+			i += n;
+		}
+	}
+	iput(inode);
+	return err;
 }
 
 int ext4_setup_system_zone(struct super_block *sb)
@@ -171,6 +214,12 @@ int ext4_setup_system_zone(struct super_block *sb)
 		if (ret)
 			return ret;
 	}
+	if (ext4_has_feature_journal(sb) && sbi->s_es->s_journal_inum) {
+		ret = ext4_protect_reserved_inode(sb,
+				le32_to_cpu(sbi->s_es->s_journal_inum));
+		if (ret)
+			return ret;
+	}
 
 	if (test_opt(sb, DEBUG))
 		debug_print_tree(EXT4_SB(sb));
@@ -180,37 +229,12 @@ int ext4_setup_system_zone(struct super_block *sb)
 /* Called when the filesystem is unmounted */
 void ext4_release_system_zone(struct super_block *sb)
 {
-	struct rb_node	*n = EXT4_SB(sb)->system_blks.rb_node;
-	struct rb_node	*parent;
-	struct ext4_system_zone	*entry;
+	struct ext4_system_zone	*entry, *n;
 
-	while (n) {
-		/* Do the node's children first */
-		if (n->rb_left) {
-			n = n->rb_left;
-			continue;
-		}
-		if (n->rb_right) {
-			n = n->rb_right;
-			continue;
-		}
-		/*
-		 * The node has no children; free it, and then zero
-		 * out parent's link to it.  Finally go to the
-		 * beginning of the loop and try to free the parent
-		 * node.
-		 */
-		parent = rb_parent(n);
-		entry = rb_entry(n, struct ext4_system_zone, node);
+	rbtree_postorder_for_each_entry_safe(entry, n,
+			&EXT4_SB(sb)->system_blks, node)
 		kmem_cache_free(ext4_system_zone_cachep, entry);
-		if (!parent)
-			EXT4_SB(sb)->system_blks = RB_ROOT;
-		else if (parent->rb_left == n)
-			parent->rb_left = NULL;
-		else if (parent->rb_right == n)
-			parent->rb_right = NULL;
-		n = parent;
-	}
+
 	EXT4_SB(sb)->system_blks = RB_ROOT;
 }
 
@@ -252,6 +276,11 @@ int ext4_check_blockref(const char *function, unsigned int line,
 	__le32 *bref = p;
 	unsigned int blk;
 
+	if (ext4_has_feature_journal(inode->i_sb) &&
+	    (inode->i_ino ==
+	     le32_to_cpu(EXT4_SB(inode->i_sb)->s_es->s_journal_inum)))
+		return 0;
+
 	while (bref < p+max) {
 		blk = le32_to_cpu(*bref++);
 		if (blk &&
@@ -260,7 +289,7 @@ int ext4_check_blockref(const char *function, unsigned int line,
 			es->s_last_error_block = cpu_to_le64(blk);
 			ext4_error_inode(inode, function, line, blk,
 					 "invalid block");
-			return -EIO;
+			return -EFSCORRUPTED;
 		}
 	}
 	return 0;

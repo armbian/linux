@@ -20,7 +20,7 @@
 #include <linux/mutex.h>
 #include <linux/nsc_gpio.h>
 #include <linux/platform_device.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #define DEVNAME "pc8736x_gpio"
 
@@ -345,8 +345,7 @@ static void __exit pc8736x_gpio_cleanup(void)
 	unregister_chrdev_region(MKDEV(major,0), PC8736X_GPIO_CT);
 	release_region(pc8736x_gpio_base, PC8736X_GPIO_RANGE);
 
-	platform_device_del(pdev);
-	platform_device_put(pdev);
+	platform_device_unregister(pdev);
 }
 
 module_init(pc8736x_gpio_init);

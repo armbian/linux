@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef SCSI_TRANSPORT_SAS_H
 #define SCSI_TRANSPORT_SAS_H
 
@@ -5,17 +6,20 @@
 #include <linux/types.h>
 #include <linux/mutex.h>
 #include <scsi/sas.h>
+#include <linux/bsg-lib.h>
 
 struct scsi_transport_template;
 struct sas_rphy;
 struct request;
 
-enum sas_device_type {
-	SAS_PHY_UNUSED = 0,
-	SAS_END_DEVICE = 1,
-	SAS_EDGE_EXPANDER_DEVICE = 2,
-	SAS_FANOUT_EXPANDER_DEVICE = 3,
-};
+#if !IS_ENABLED(CONFIG_SCSI_SAS_ATTRS)
+static inline int scsi_is_sas_rphy(const struct device *sdev)
+{
+	return 0;
+}
+#else
+extern int scsi_is_sas_rphy(const struct device *);
+#endif
 
 static inline int sas_protocol_ata(enum sas_protocol proto)
 {
@@ -36,6 +40,7 @@ enum sas_linkrate {
 	SAS_LINK_RATE_3_0_GBPS = 9,
 	SAS_LINK_RATE_G2 = SAS_LINK_RATE_3_0_GBPS,
 	SAS_LINK_RATE_6_0_GBPS = 10,
+	SAS_LINK_RATE_12_0_GBPS = 11,
 	/* These are virtual to the transport class and may never
 	 * be signalled normally since the standard defined field
 	 * is only 4 bits */
@@ -173,7 +178,8 @@ struct sas_function_template {
 	int (*phy_setup)(struct sas_phy *);
 	void (*phy_release)(struct sas_phy *);
 	int (*set_phy_speed)(struct sas_phy *, struct sas_phy_linkrates *);
-	int (*smp_handler)(struct Scsi_Host *, struct sas_rphy *, struct request *);
+	void (*smp_handler)(struct bsg_job *, struct Scsi_Host *,
+			struct sas_rphy *);
 };
 
 
@@ -186,6 +192,7 @@ extern int sas_phy_add(struct sas_phy *);
 extern void sas_phy_delete(struct sas_phy *);
 extern int scsi_is_sas_phy(const struct device *);
 
+u64 sas_get_address(struct scsi_device *);
 unsigned int sas_tlr_supported(struct scsi_device *);
 unsigned int sas_is_tlr_enabled(struct scsi_device *);
 void sas_disable_tlr(struct scsi_device *);
@@ -198,7 +205,6 @@ extern int sas_rphy_add(struct sas_rphy *);
 extern void sas_rphy_remove(struct sas_rphy *);
 extern void sas_rphy_delete(struct sas_rphy *);
 extern void sas_rphy_unlink(struct sas_rphy *);
-extern int scsi_is_sas_rphy(const struct device *);
 
 struct sas_port *sas_port_alloc(struct device *, int);
 struct sas_port *sas_port_alloc_num(struct device *);

@@ -24,6 +24,10 @@
  * Authors: Serge E. Hallyn <serue@us.ibm.com>
  */
 
+
+/* NOTE: we really do want to use the kernel headers here */
+#define __EXPORTED_HEADERS__
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -98,6 +102,7 @@ int main(int argc, char *argv[])
 
 	/* types, roles, and allows */
 	fprintf(fout, "type base_t;\n");
+	fprintf(fout, "role base_r;\n");
 	fprintf(fout, "role base_r types { base_t };\n");
 	for (i = 0; secclass_map[i].name; i++)
 		fprintf(fout, "allow base_t base_t:%s *;\n",

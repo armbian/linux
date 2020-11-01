@@ -334,11 +334,8 @@ static bool hgpk_is_byte_valid(struct psmouse *psmouse, unsigned char *packet)
 
 	if (!valid)
 		psmouse_dbg(psmouse,
-			    "bad data, mode %d (%d) %02x %02x %02x %02x %02x %02x\n",
-			    priv->mode, pktcnt,
-			    psmouse->packet[0], psmouse->packet[1],
-			    psmouse->packet[2], psmouse->packet[3],
-			    psmouse->packet[4], psmouse->packet[5]);
+			    "bad data, mode %d (%d) %*ph\n",
+			    priv->mode, pktcnt, 6, psmouse->packet);
 
 	return valid;
 }
@@ -716,8 +713,7 @@ static int hgpk_toggle_powersave(struct psmouse *psmouse, int enable)
 		 * the upper bound. (in practice, it takes about 3 loops.)
 		 */
 		for (timeo = 20; timeo > 0; timeo--) {
-			if (!ps2_sendbyte(&psmouse->ps2dev,
-					PSMOUSE_CMD_DISABLE, 20))
+			if (!ps2_sendbyte(ps2dev, PSMOUSE_CMD_DISABLE, 20))
 				break;
 			msleep(25);
 		}
@@ -743,7 +739,7 @@ static int hgpk_toggle_powersave(struct psmouse *psmouse, int enable)
 		psmouse_set_state(psmouse, PSMOUSE_IGNORE);
 
 		/* probably won't see an ACK, the touchpad will be off */
-		ps2_sendbyte(&psmouse->ps2dev, 0xec, 20);
+		ps2_sendbyte(ps2dev, 0xec, 20);
 	}
 
 	return 0;
@@ -1030,7 +1026,7 @@ static enum hgpk_model_t hgpk_get_model(struct psmouse *psmouse)
 		return -EIO;
 	}
 
-	psmouse_dbg(psmouse, "ID: %02x %02x %02x\n", param[0], param[1], param[2]);
+	psmouse_dbg(psmouse, "ID: %*ph\n", 3, param);
 
 	/* HGPK signature: 0x67, 0x00, 0x<model> */
 	if (param[0] != 0x67 || param[1] != 0x00)

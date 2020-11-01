@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #define TS7800_FPGA_MAGIC 0x00b480
 #define FPGAID(_magic, _rev) ((_magic << 8) + _rev)
 
@@ -28,9 +29,9 @@ struct fpga_device {
 
 struct fpga_devices {
 	/* Technologic Systems */
-	struct fpga_device 	ts_rtc;
-	struct fpga_device 	ts_nand;
-	struct fpga_device 	ts_rng;
+	struct fpga_device	ts_rtc;
+	struct fpga_device	ts_nand;
+	struct fpga_device	ts_rng;
 };
 
 struct ts78xx_fpga_data {

@@ -12,28 +12,49 @@
 # Author: Wu Zhangjin <wuzhangjin@gmail.com>
 #
 
+include $(srctree)/arch/mips/Kbuild.platforms
+
 # set the default size of the mallocing area for decompressing
 BOOT_HEAP_SIZE := 0x400000
 
 # Disable Function Tracer
-KBUILD_CFLAGS := $(shell echo $(KBUILD_CFLAGS) | sed -e "s/-pg//")
+KBUILD_CFLAGS := $(filter-out -pg, $(KBUILD_CFLAGS))
 
-KBUILD_CFLAGS := $(LINUXINCLUDE) $(KBUILD_CFLAGS) -D__KERNEL__ \
+KBUILD_CFLAGS := $(filter-out -fstack-protector, $(KBUILD_CFLAGS))
+
+KBUILD_CFLAGS := $(KBUILD_CFLAGS) -D__KERNEL__ \
 	-DBOOT_HEAP_SIZE=$(BOOT_HEAP_SIZE) -D"VMLINUX_LOAD_ADDRESS_ULL=$(VMLINUX_LOAD_ADDRESS)ull"
 
-KBUILD_AFLAGS := $(LINUXINCLUDE) $(KBUILD_AFLAGS) -D__ASSEMBLY__ \
+KBUILD_AFLAGS := $(KBUILD_AFLAGS) -D__ASSEMBLY__ \
 	-DBOOT_HEAP_SIZE=$(BOOT_HEAP_SIZE) \
-	-DKERNEL_ENTRY=0x$(shell $(NM) $(objtree)/$(KBUILD_IMAGE) 2>/dev/null | grep " kernel_entry" | cut -f1 -d \ )
+	-DKERNEL_ENTRY=$(VMLINUX_ENTRY_ADDRESS)
 
-targets := head.o decompress.o dbg.o uart-16550.o uart-alchemy.o
+# Prevents link failures: __sanitizer_cov_trace_pc() is not linked in.
+KCOV_INSTRUMENT		:= n
 
 # decompressor objects (linked with vmlinuz)
-vmlinuzobjs-y := $(obj)/head.o $(obj)/decompress.o $(obj)/dbg.o
+vmlinuzobjs-y := $(obj)/head.o $(obj)/decompress.o $(obj)/string.o
 
 ifdef CONFIG_DEBUG_ZBOOT
+vmlinuzobjs-$(CONFIG_DEBUG_ZBOOT)		   += $(obj)/dbg.o
 vmlinuzobjs-$(CONFIG_SYS_SUPPORTS_ZBOOT_UART16550) += $(obj)/uart-16550.o
+vmlinuzobjs-$(CONFIG_SYS_SUPPORTS_ZBOOT_UART_PROM) += $(obj)/uart-prom.o
 vmlinuzobjs-$(CONFIG_MIPS_ALCHEMY)		   += $(obj)/uart-alchemy.o
+vmlinuzobjs-$(CONFIG_ATH79)			   += $(obj)/uart-ath79.o
 endif
+
+extra-y += uart-ath79.c
+$(obj)/uart-ath79.c: $(srctree)/arch/mips/ath79/early_printk.c
+	$(call cmd,shipped)
+
+vmlinuzobjs-$(CONFIG_KERNEL_XZ) += $(obj)/ashldi3.o $(obj)/bswapsi.o
+
+extra-y += ashldi3.c bswapsi.c
+$(obj)/ashldi3.o $(obj)/bswapsi.o: KBUILD_CFLAGS += -I$(srctree)/arch/mips/lib
+$(obj)/ashldi3.c $(obj)/bswapsi.c: $(obj)/%.c: $(srctree)/arch/mips/lib/%.c
+	$(call cmd,shipped)
+
+targets := $(notdir $(vmlinuzobjs-y))
 
 targets += vmlinux.bin
 OBJCOPYFLAGS_vmlinux.bin := $(OBJCOPYFLAGS) -O binary -R .comment -S
@@ -42,30 +63,39 @@ $(obj)/vmlinux.bin: $(KBUILD_IMAGE) FORCE
 
 tool_$(CONFIG_KERNEL_GZIP)    = gzip
 tool_$(CONFIG_KERNEL_BZIP2)   = bzip2
+tool_$(CONFIG_KERNEL_LZ4)     = lz4
 tool_$(CONFIG_KERNEL_LZMA)    = lzma
 tool_$(CONFIG_KERNEL_LZO)     = lzo
+tool_$(CONFIG_KERNEL_XZ)      = xzkern
 
 targets += vmlinux.bin.z
 $(obj)/vmlinux.bin.z: $(obj)/vmlinux.bin FORCE
 	$(call if_changed,$(tool_y))
 
-targets += piggy.o
+targets += piggy.o dummy.o
 OBJCOPYFLAGS_piggy.o := --add-section=.image=$(obj)/vmlinux.bin.z \
-                        --set-section-flags=.image=contents,alloc,load,readonly,data
+			--set-section-flags=.image=contents,alloc,load,readonly,data
 $(obj)/piggy.o: $(obj)/dummy.o $(obj)/vmlinux.bin.z FORCE
 	$(call if_changed,objcopy)
+
+HOSTCFLAGS_calc_vmlinuz_load_addr.o += $(LINUXINCLUDE)
 
 # Calculate the load address of the compressed kernel image
 hostprogs-y := calc_vmlinuz_load_addr
 
+ifneq ($(zload-y),)
+VMLINUZ_LOAD_ADDRESS := $(zload-y)
+else
 VMLINUZ_LOAD_ADDRESS = $(shell $(obj)/calc_vmlinuz_load_addr \
 		$(obj)/vmlinux.bin $(VMLINUX_LOAD_ADDRESS))
+endif
+UIMAGE_LOADADDR = $(VMLINUZ_LOAD_ADDRESS)
 
 vmlinuzobjs-y += $(obj)/piggy.o
 
 quiet_cmd_zld = LD      $@
       cmd_zld = $(LD) $(LDFLAGS) -Ttext $(VMLINUZ_LOAD_ADDRESS) -T $< $(vmlinuzobjs-y) -o $@
-quiet_cmd_strip = STRIP   $@
+quiet_cmd_strip = STRIP	  $@
       cmd_strip = $(STRIP) -s $@
 vmlinuz: $(src)/ld.script $(vmlinuzobjs-y) $(obj)/calc_vmlinuz_load_addr
 	$(call cmd,zld)
@@ -92,7 +122,7 @@ quiet_cmd_32 = OBJCOPY $@
 vmlinuz.32: vmlinuz
 	$(call cmd,32)
 
-quiet_cmd_ecoff = ECOFF   $@
+quiet_cmd_ecoff = ECOFF	  $@
       cmd_ecoff = $< $(VMLINUZ) $@ $(e2eflag)
 vmlinuz.ecoff: $(obj)/../elf2ecoff $(VMLINUZ)
 	$(call cmd,ecoff)
@@ -105,4 +135,11 @@ OBJCOPYFLAGS_vmlinuz.srec := $(OBJCOPYFLAGS) -S -O srec
 vmlinuz.srec: vmlinuz
 	$(call cmd,objcopy)
 
-clean-files := $(objtree)/vmlinuz $(objtree)/vmlinuz.{32,ecoff,bin,srec}
+uzImage.bin: vmlinuz.bin FORCE
+	$(call if_changed,uimage,none)
+
+clean-files += $(objtree)/vmlinuz
+clean-files += $(objtree)/vmlinuz.32
+clean-files += $(objtree)/vmlinuz.ecoff
+clean-files += $(objtree)/vmlinuz.bin
+clean-files += $(objtree)/vmlinuz.srec

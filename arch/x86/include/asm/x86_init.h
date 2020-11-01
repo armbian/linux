@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_PLATFORM_H
 #define _ASM_X86_PLATFORM_H
 
-#include <asm/pgtable_types.h>
 #include <asm/bootparam.h>
 
 struct mpc_bus;
@@ -60,7 +60,7 @@ struct x86_init_irqs {
 
 /**
  * struct x86_init_oem - oem platform specific customizing functions
- * @arch_setup:			platform specific architecure setup
+ * @arch_setup:			platform specific architecture setup
  * @banner:			print a platform specific banner
  */
 struct x86_init_oem {
@@ -69,37 +69,25 @@ struct x86_init_oem {
 };
 
 /**
- * struct x86_init_mapping - platform specific initial kernel pagetable setup
- * @pagetable_reserve:	reserve a range of addresses for kernel pagetable usage
- *
- * For more details on the purpose of this hook, look in
- * init_memory_mapping and the commit that added it.
- */
-struct x86_init_mapping {
-	void (*pagetable_reserve)(u64 start, u64 end);
-};
-
-/**
  * struct x86_init_paging - platform specific paging functions
- * @pagetable_setup_start:	platform specific pre paging_init() call
- * @pagetable_setup_done:	platform specific post paging_init() call
+ * @pagetable_init:	platform specific paging initialization call to setup
+ *			the kernel pagetables and prepare accessors functions.
+ *			Callback must call paging_init(). Called once after the
+ *			direct mapping for phys memory is available.
  */
 struct x86_init_paging {
-	void (*pagetable_setup_start)(pgd_t *base);
-	void (*pagetable_setup_done)(pgd_t *base);
+	void (*pagetable_init)(void);
 };
 
 /**
  * struct x86_init_timers - platform specific timer setup
  * @setup_perpcu_clockev:	set up the per cpu clock event device for the
  *				boot cpu
- * @tsc_pre_init:		platform function called before TSC init
  * @timer_init:			initialize the platform timer (default PIT/HPET)
  * @wallclock_init:		init the wallclock device
  */
 struct x86_init_timers {
 	void (*setup_percpu_clockev)(void);
-	void (*tsc_pre_init)(void);
 	void (*timer_init)(void);
 	void (*wallclock_init)(void);
 };
@@ -127,6 +115,18 @@ struct x86_init_pci {
 };
 
 /**
+ * struct x86_hyper_init - x86 hypervisor init functions
+ * @init_platform:		platform setup
+ * @x2apic_available:		X2APIC detection
+ * @init_mem_mapping:		setup early mappings during init_mem_mapping()
+ */
+struct x86_hyper_init {
+	void (*init_platform)(void);
+	bool (*x2apic_available)(void);
+	void (*init_mem_mapping)(void);
+};
+
+/**
  * struct x86_init_ops - functions for platform specific setup
  *
  */
@@ -135,11 +135,11 @@ struct x86_init_ops {
 	struct x86_init_mpparse		mpparse;
 	struct x86_init_irqs		irqs;
 	struct x86_init_oem		oem;
-	struct x86_init_mapping		mapping;
 	struct x86_init_paging		paging;
 	struct x86_init_timers		timers;
 	struct x86_init_iommu		iommu;
 	struct x86_init_pci		pci;
+	struct x86_hyper_init		hyper;
 };
 
 /**
@@ -153,30 +153,110 @@ struct x86_cpuinit_ops {
 	void (*fixup_cpu_id)(struct cpuinfo_x86 *c, int node);
 };
 
+struct timespec;
+
+/**
+ * struct x86_legacy_devices - legacy x86 devices
+ *
+ * @pnpbios: this platform can have a PNPBIOS. If this is disabled the platform
+ * 	is known to never have a PNPBIOS.
+ *
+ * These are devices known to require LPC or ISA bus. The definition of legacy
+ * devices adheres to the ACPI 5.2.9.3 IA-PC Boot Architecture flag
+ * ACPI_FADT_LEGACY_DEVICES. These devices consist of user visible devices on
+ * the LPC or ISA bus. User visible devices are devices that have end-user
+ * accessible connectors (for example, LPT parallel port). Legacy devices on
+ * the LPC bus consist for example of serial and parallel ports, PS/2 keyboard
+ * / mouse, and the floppy disk controller. A system that lacks all known
+ * legacy devices can assume all devices can be detected exclusively via
+ * standard device enumeration mechanisms including the ACPI namespace.
+ *
+ * A system which has does not have ACPI_FADT_LEGACY_DEVICES enabled must not
+ * have any of the legacy devices enumerated below present.
+ */
+struct x86_legacy_devices {
+	int pnpbios;
+};
+
+/**
+ * enum x86_legacy_i8042_state - i8042 keyboard controller state
+ * @X86_LEGACY_I8042_PLATFORM_ABSENT: the controller is always absent on
+ *	given platform/subarch.
+ * @X86_LEGACY_I8042_FIRMWARE_ABSENT: firmware reports that the controller
+ *	is absent.
+ * @X86_LEGACY_i8042_EXPECTED_PRESENT: the controller is likely to be
+ *	present, the i8042 driver should probe for controller existence.
+ */
+enum x86_legacy_i8042_state {
+	X86_LEGACY_I8042_PLATFORM_ABSENT,
+	X86_LEGACY_I8042_FIRMWARE_ABSENT,
+	X86_LEGACY_I8042_EXPECTED_PRESENT,
+};
+
+/**
+ * struct x86_legacy_features - legacy x86 features
+ *
+ * @i8042: indicated if we expect the device to have i8042 controller
+ *	present.
+ * @rtc: this device has a CMOS real-time clock present
+ * @reserve_bios_regions: boot code will search for the EBDA address and the
+ * 	start of the 640k - 1M BIOS region.  If false, the platform must
+ * 	ensure that its memory map correctly reserves sub-1MB regions as needed.
+ * @devices: legacy x86 devices, refer to struct x86_legacy_devices
+ * 	documentation for further details.
+ */
+struct x86_legacy_features {
+	enum x86_legacy_i8042_state i8042;
+	int rtc;
+	int reserve_bios_regions;
+	struct x86_legacy_devices devices;
+};
+
+/**
+ * struct x86_hyper_runtime - x86 hypervisor specific runtime callbacks
+ *
+ * @pin_vcpu:		pin current vcpu to specified physical cpu (run rarely)
+ */
+struct x86_hyper_runtime {
+	void (*pin_vcpu)(int cpu);
+};
+
 /**
  * struct x86_platform_ops - platform specific runtime functions
- * @calibrate_tsc:		calibrate TSC
- * @wallclock_init:		init the wallclock device
+ * @calibrate_cpu:		calibrate CPU
+ * @calibrate_tsc:		calibrate TSC, if different from CPU
  * @get_wallclock:		get time from HW clock like RTC etc.
  * @set_wallclock:		set time back to HW clock
  * @is_untracked_pat_range	exclude from PAT logic
  * @nmi_init			enable NMI on cpus
- * @i8042_detect		pre-detect if i8042 controller exists
  * @save_sched_clock_state:	save state for sched_clock() on suspend
  * @restore_sched_clock_state:	restore state for sched_clock() on resume
+ * @apic_post_init:		adjust apic if needed
+ * @legacy:			legacy features
+ * @set_legacy_features:	override legacy features. Use of this callback
+ * 				is highly discouraged. You should only need
+ * 				this if your hardware platform requires further
+ * 				custom fine tuning far beyond what may be
+ * 				possible in x86_early_init_platform_quirks() by
+ * 				only using the current x86_hardware_subarch
+ * 				semantics.
+ * @hyper:			x86 hypervisor specific runtime callbacks
  */
 struct x86_platform_ops {
+	unsigned long (*calibrate_cpu)(void);
 	unsigned long (*calibrate_tsc)(void);
-	void (*wallclock_init)(void);
-	unsigned long (*get_wallclock)(void);
-	int (*set_wallclock)(unsigned long nowtime);
+	void (*get_wallclock)(struct timespec *ts);
+	int (*set_wallclock)(const struct timespec *ts);
 	void (*iommu_shutdown)(void);
 	bool (*is_untracked_pat_range)(u64 start, u64 end);
 	void (*nmi_init)(void);
 	unsigned char (*get_nmi_reason)(void);
-	int (*i8042_detect)(void);
 	void (*save_sched_clock_state)(void);
 	void (*restore_sched_clock_state)(void);
+	void (*apic_post_init)(void);
+	struct x86_legacy_features legacy;
+	void (*set_legacy_features)(void);
+	struct x86_hyper_runtime hyper;
 };
 
 struct pci_dev;
@@ -185,14 +265,21 @@ struct x86_msi_ops {
 	int (*setup_msi_irqs)(struct pci_dev *dev, int nvec, int type);
 	void (*teardown_msi_irq)(unsigned int irq);
 	void (*teardown_msi_irqs)(struct pci_dev *dev);
-	void (*restore_msi_irqs)(struct pci_dev *dev, int irq);
+	void (*restore_msi_irqs)(struct pci_dev *dev);
+};
+
+struct x86_io_apic_ops {
+	unsigned int	(*read)   (unsigned int apic, unsigned int reg);
+	void		(*disable)(void);
 };
 
 extern struct x86_init_ops x86_init;
 extern struct x86_cpuinit_ops x86_cpuinit;
 extern struct x86_platform_ops x86_platform;
 extern struct x86_msi_ops x86_msi;
+extern struct x86_io_apic_ops x86_io_apic_ops;
 
+extern void x86_early_init_platform_quirks(void);
 extern void x86_init_noop(void);
 extern void x86_init_uint_noop(unsigned int unused);
 

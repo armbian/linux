@@ -1,10 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __SOUND_SND_WAVEFRONT_H__
 #define __SOUND_SND_WAVEFRONT_H__
 
-#include "mpu401.h"
-#include "hwdep.h"
-#include "rawmidi.h"
-#include "wavefront.h"  /* generic OSS/ALSA/user-level wavefront header */
+#include <sound/mpu401.h>
+#include <sound/hwdep.h>
+#include <sound/rawmidi.h>
+#include <sound/wavefront.h>  /* generic OSS/ALSA/user-level wavefront header */
 
 /* MIDI interface */
 
@@ -37,8 +38,8 @@ struct _snd_wavefront_midi {
 #define	MPU_ACK		0xFE
 #define	UART_MODE_ON	0x3F
 
-extern struct snd_rawmidi_ops snd_wavefront_midi_output;
-extern struct snd_rawmidi_ops snd_wavefront_midi_input;
+extern const struct snd_rawmidi_ops snd_wavefront_midi_output;
+extern const struct snd_rawmidi_ops snd_wavefront_midi_input;
 
 extern void   snd_wavefront_midi_enable_virtual (snd_wavefront_card_t *);
 extern void   snd_wavefront_midi_disable_virtual (snd_wavefront_card_t *);

@@ -31,7 +31,6 @@
 #include <linux/slab.h>
 #include <linux/input.h>
 #include <linux/serio.h>
-#include <linux/init.h>
 
 #define DRIVER_DESC	"Logitech WingMan Warrior joystick driver"
 
@@ -194,7 +193,7 @@ static int warrior_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static struct serio_device_id warrior_serio_ids[] = {
+static const struct serio_device_id warrior_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_WARRIOR,
@@ -217,19 +216,4 @@ static struct serio_driver warrior_drv = {
 	.disconnect	= warrior_disconnect,
 };
 
-/*
- * The functions for inserting/removing us as a module.
- */
-
-static int __init warrior_init(void)
-{
-	return serio_register_driver(&warrior_drv);
-}
-
-static void __exit warrior_exit(void)
-{
-	serio_unregister_driver(&warrior_drv);
-}
-
-module_init(warrior_init);
-module_exit(warrior_exit);
+module_serio_driver(warrior_drv);

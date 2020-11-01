@@ -51,8 +51,7 @@
  * firmware. Normal hardware takes only signed firmware.
  *
  * On boot mode, in USB, we write to the device using the bulk out
- * endpoint and read from it in the notification endpoint. In SDIO we
- * talk to it via the write address and read from the read address.
+ * endpoint and read from it in the notification endpoint.
  *
  * Upon entrance to boot mode, the device sends (preceded with a few
  * zero length packets (ZLPs) on the notification endpoint in USB) a
@@ -327,8 +326,10 @@ int i2400m_barker_db_init(const char *_options)
 		unsigned barker;
 
 		options_orig = kstrdup(_options, GFP_KERNEL);
-		if (options_orig == NULL)
+		if (options_orig == NULL) {
+			result = -ENOMEM;
 			goto error_parse;
+		}
 		options = options_orig;
 
 		while ((token = strsep(&options, ",")) != NULL) {
@@ -350,13 +351,15 @@ int i2400m_barker_db_init(const char *_options)
 			}
 			result = i2400m_barker_db_add(barker);
 			if (result < 0)
-				goto error_add;
+				goto error_parse_add;
 		}
 		kfree(options_orig);
 	}
 	return 0;
 
+error_parse_add:
 error_parse:
+	kfree(options_orig);
 error_add:
 	kfree(i2400m_barker_db);
 	return result;
@@ -651,7 +654,7 @@ static int i2400m_download_chunk(struct i2400m *i2400m, const void *chunk,
 	struct device *dev = i2400m_dev(i2400m);
 	struct {
 		struct i2400m_bootrom_header cmd;
-		u8 cmd_payload[chunk_len];
+		u8 cmd_payload[];
 	} __packed *buf;
 	struct i2400m_bootrom_header ack;
 
@@ -1054,7 +1057,6 @@ int i2400m_read_mac_addr(struct i2400m *i2400m)
 		result = 0;
 	}
 	net_dev->addr_len = ETH_ALEN;
-	memcpy(net_dev->perm_addr, ack_buf.ack_pl, ETH_ALEN);
 	memcpy(net_dev->dev_addr, ack_buf.ack_pl, ETH_ALEN);
 error_read_mac:
 	d_fnend(5, dev, "(i2400m %p) = %d\n", i2400m, result);
@@ -1268,7 +1270,7 @@ int i2400m_fw_check(struct i2400m *i2400m, const void *bcf, size_t bcf_size)
 		size_t leftover, offset, header_len, size;
 
 		leftover = top - itr;
-		offset = itr - (const void *) bcf;
+		offset = itr - bcf;
 		if (leftover <= sizeof(*bcf_hdr)) {
 			dev_err(dev, "firmware %s: %zu B left at @%zx, "
 				"not enough for BCF header\n",

@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * General MIPS MT support routines, usable in AP/SP, SMVP, or SMTC kernels
+ * General MIPS MT support routines, usable in AP/SP and SMVP.
  * Copyright (C) 2005 Mips Technologies, Inc
  */
 #include <linux/cpu.h>
@@ -9,9 +10,11 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/sched.h>
+#include <linux/sched/task.h>
+#include <linux/cred.h>
 #include <linux/security.h>
 #include <linux/types.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /*
  * CPU mask used to set process affinity for MT VPEs/TCs with FPUs
@@ -27,12 +30,12 @@ unsigned long mt_fpemul_threshold;
  * FPU affinity with the user's requested processor affinity.
  * This code is 98% identical with the sys_sched_setaffinity()
  * and sys_sched_getaffinity() system calls, and should be
- * updated when kernel/sched.c changes.
+ * updated when kernel/sched/core.c changes.
  */
 
 /*
  * find_process_by_pid - find a process with a matching PID value.
- * used in sys_sched_set/getaffinity() in kernel/sched.c, so
+ * used in sys_sched_set/getaffinity() in kernel/sched/core.c, so
  * cloned here.
  */
 static inline struct task_struct *find_process_by_pid(pid_t pid)
@@ -50,8 +53,8 @@ static bool check_same_owner(struct task_struct *p)
 
 	rcu_read_lock();
 	pcred = __task_cred(p);
-	match = (cred->euid == pcred->euid ||
-		 cred->euid == pcred->uid);
+	match = (uid_eq(cred->euid, pcred->euid) ||
+		 uid_eq(cred->euid, pcred->uid));
 	rcu_read_unlock();
 	return match;
 }
@@ -99,9 +102,10 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 		retval = -ENOMEM;
 		goto out_free_new_mask;
 	}
-	retval = -EPERM;
-	if (!check_same_owner(p) && !capable(CAP_SYS_NICE))
+	if (!check_same_owner(p) && !capable(CAP_SYS_NICE)) {
+		retval = -EPERM;
 		goto out_unlock;
+	}
 
 	retval = security_task_setscheduler(p);
 	if (retval)
@@ -114,8 +118,8 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 	/* Compute new global allowed CPU set if necessary */
 	ti = task_thread_info(p);
 	if (test_ti_thread_flag(ti, TIF_FPUBOUND) &&
-	    cpus_intersects(*new_mask, mt_fpu_cpumask)) {
-		cpus_and(*effective_mask, *new_mask, mt_fpu_cpumask);
+	    cpumask_intersects(new_mask, &mt_fpu_cpumask)) {
+		cpumask_and(effective_mask, new_mask, &mt_fpu_cpumask);
 		retval = set_cpus_allowed_ptr(p, effective_mask);
 	} else {
 		cpumask_copy(effective_mask, new_mask);

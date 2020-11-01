@@ -1,7 +1,7 @@
 /*
  *  sata_sx4.c - Promise SATA
  *
- *  Maintained by:  Jeff Garzik <jgarzik@pobox.com>
+ *  Maintained by:  Tejun Heo <tj@kernel.org>
  *  		    Please ALWAYS copy linux-ide@vger.kernel.org
  *		    on emails.
  *
@@ -24,7 +24,7 @@
  *
  *
  *  libata documentation is available via 'make {ps|pdf}docs',
- *  as Documentation/DocBook/libata.*
+ *  as Documentation/driver-api/libata.rst
  *
  *  Hardware documentation available under NDA.
  *
@@ -82,7 +82,6 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -315,9 +314,8 @@ static int pdc_port_start(struct ata_port *ap)
 	return 0;
 }
 
-static inline void pdc20621_ata_sg(struct ata_taskfile *tf, u8 *buf,
-				   unsigned int portno,
-					   unsigned int total_len)
+static inline void pdc20621_ata_sg(u8 *buf, unsigned int portno,
+				   unsigned int total_len)
 {
 	u32 addr;
 	unsigned int dw = PDC_DIMM_APKT_PRD >> 2;
@@ -337,9 +335,8 @@ static inline void pdc20621_ata_sg(struct ata_taskfile *tf, u8 *buf,
 		buf32[dw], buf32[dw + 1]);
 }
 
-static inline void pdc20621_host_sg(struct ata_taskfile *tf, u8 *buf,
-				    unsigned int portno,
-					    unsigned int total_len)
+static inline void pdc20621_host_sg(u8 *buf, unsigned int portno,
+				    unsigned int total_len)
 {
 	u32 addr;
 	unsigned int dw = PDC_DIMM_HPKT_PRD >> 2;
@@ -486,10 +483,10 @@ static void pdc20621_dma_prep(struct ata_queued_cmd *qc)
 	/*
 	 * Build ATA, host DMA packets
 	 */
-	pdc20621_host_sg(&qc->tf, &pp->dimm_buf[0], portno, total_len);
+	pdc20621_host_sg(&pp->dimm_buf[0], portno, total_len);
 	pdc20621_host_pkt(&qc->tf, &pp->dimm_buf[0], portno);
 
-	pdc20621_ata_sg(&qc->tf, &pp->dimm_buf[0], portno, total_len);
+	pdc20621_ata_sg(&pp->dimm_buf[0], portno, total_len);
 	i = pdc20621_ata_pkt(&qc->tf, qc->dev->devno, &pp->dimm_buf[0], portno);
 
 	if (qc->tf.flags & ATA_TFLAG_LBA48)
@@ -1023,8 +1020,7 @@ static void pdc20621_get_from_dimm(struct ata_host *host, void *psource,
 	idx++;
 	dist = ((long) (window_size - (offset + size))) >= 0 ? size :
 		(long) (window_size - offset);
-	memcpy_fromio((char *) psource, (char *) (dimm_mmio + offset / 4),
-		      dist);
+	memcpy_fromio(psource, dimm_mmio + offset / 4, dist);
 
 	psource += dist;
 	size -= dist;
@@ -1033,8 +1029,7 @@ static void pdc20621_get_from_dimm(struct ata_host *host, void *psource,
 		readl(mmio + PDC_GENERAL_CTLR);
 		writel(((idx) << page_mask), mmio + PDC_DIMM_WINDOW_CTLR);
 		readl(mmio + PDC_DIMM_WINDOW_CTLR);
-		memcpy_fromio((char *) psource, (char *) (dimm_mmio),
-			      window_size / 4);
+		memcpy_fromio(psource, dimm_mmio, window_size / 4);
 		psource += window_size;
 		size -= window_size;
 		idx++;
@@ -1045,8 +1040,7 @@ static void pdc20621_get_from_dimm(struct ata_host *host, void *psource,
 		readl(mmio + PDC_GENERAL_CTLR);
 		writel(((idx) << page_mask), mmio + PDC_DIMM_WINDOW_CTLR);
 		readl(mmio + PDC_DIMM_WINDOW_CTLR);
-		memcpy_fromio((char *) psource, (char *) (dimm_mmio),
-			      size / 4);
+		memcpy_fromio(psource, dimm_mmio, size / 4);
 	}
 }
 #endif
@@ -1244,8 +1238,12 @@ static unsigned int pdc20621_prog_dimm_global(struct ata_host *host)
 	readl(mmio + PDC_SDRAM_CONTROL);
 
 	/* Turn on for ECC */
-	pdc20621_i2c_read(host, PDC_DIMM0_SPD_DEV_ADDRESS,
-			  PDC_DIMM_SPD_TYPE, &spd0);
+	if (!pdc20621_i2c_read(host, PDC_DIMM0_SPD_DEV_ADDRESS,
+			       PDC_DIMM_SPD_TYPE, &spd0)) {
+		pr_err("Failed in i2c read: device=%#x, subaddr=%#x\n",
+		       PDC_DIMM0_SPD_DEV_ADDRESS, PDC_DIMM_SPD_TYPE);
+		return 1;
+	}
 	if (spd0 == 0x02) {
 		data |= (0x01 << 16);
 		writel(data, mmio + PDC_SDRAM_CONTROL);
@@ -1386,14 +1384,20 @@ static unsigned int pdc20621_dimm_init(struct ata_host *host)
 
 	/* ECC initiliazation. */
 
-	pdc20621_i2c_read(host, PDC_DIMM0_SPD_DEV_ADDRESS,
-			  PDC_DIMM_SPD_TYPE, &spd0);
+	if (!pdc20621_i2c_read(host, PDC_DIMM0_SPD_DEV_ADDRESS,
+			       PDC_DIMM_SPD_TYPE, &spd0)) {
+		pr_err("Failed in i2c read: device=%#x, subaddr=%#x\n",
+		       PDC_DIMM0_SPD_DEV_ADDRESS, PDC_DIMM_SPD_TYPE);
+		return 1;
+	}
 	if (spd0 == 0x02) {
 		void *buf;
 		VPRINTK("Start ECC initialization\n");
 		addr = 0;
 		length = size * 1024 * 1024;
 		buf = kzalloc(ECC_ERASE_BUF_SZ, GFP_KERNEL);
+		if (!buf)
+			return 1;
 		while (addr < length) {
 			pdc20621_put_to_dimm(host, buf, addr,
 					     ECC_ERASE_BUF_SZ);
@@ -1482,10 +1486,10 @@ static int pdc_sata_init_one(struct pci_dev *pdev,
 	}
 
 	/* configure and activate */
-	rc = pci_set_dma_mask(pdev, ATA_DMA_MASK);
+	rc = dma_set_mask(&pdev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
-	rc = pci_set_consistent_dma_mask(pdev, ATA_DMA_MASK);
+	rc = dma_set_coherent_mask(&pdev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 
@@ -1498,24 +1502,10 @@ static int pdc_sata_init_one(struct pci_dev *pdev,
 				 IRQF_SHARED, &pdc_sata_sht);
 }
 
-
-static int __init pdc_sata_init(void)
-{
-	return pci_register_driver(&pdc_sata_pci_driver);
-}
-
-
-static void __exit pdc_sata_exit(void)
-{
-	pci_unregister_driver(&pdc_sata_pci_driver);
-}
-
+module_pci_driver(pdc_sata_pci_driver);
 
 MODULE_AUTHOR("Jeff Garzik");
 MODULE_DESCRIPTION("Promise SATA low-level driver");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, pdc_sata_pci_tbl);
 MODULE_VERSION(DRV_VERSION);
-
-module_init(pdc_sata_init);
-module_exit(pdc_sata_exit);

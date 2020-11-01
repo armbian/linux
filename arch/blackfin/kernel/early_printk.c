@@ -8,6 +8,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/sched/debug.h>
 #include <linux/init.h>
 #include <linux/serial_core.h>
 #include <linux/console.h>
@@ -24,8 +25,6 @@ extern struct console *bfin_earlyserial_init(unsigned int port,
 #ifdef CONFIG_BFIN_JTAG_COMM
 extern struct console *bfin_jc_early_init(void);
 #endif
-
-static struct console *early_console;
 
 /* Default console */
 #define DEFAULT_PORT 0

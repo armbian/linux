@@ -47,6 +47,7 @@ relocate_kernel:
 	 * %rsi page_list
 	 * %rdx start address
 	 * %rcx preserve_context
+	 * %r8  sme_active
 	 */
 
 	/* Save the CPU context, used for jumping back */
@@ -67,9 +68,15 @@ relocate_kernel:
 	movq	%cr4, %rax
 	movq	%rax, CR4(%r11)
 
+	/* Save CR4. Required to enable the right paging mode later. */
+	movq	%rax, %r13
+
 	/* zero out flags, and disable interrupts */
 	pushq $0
 	popfq
+
+	/* Save SME active flag */
+	movq	%r8, %r12
 
 	/*
 	 * get physical address of control page now
@@ -122,8 +129,13 @@ identity_mapped:
 	/*
 	 * Set cr4 to a known state:
 	 *  - physical address extension enabled
+	 *  - 5-level paging, if it was enabled before
 	 */
-	movq	$X86_CR4_PAE, %rax
+	movl	$X86_CR4_PAE, %eax
+	testq	$X86_CR4_LA57, %r13
+	jz	1f
+	orl	$X86_CR4_LA57, %eax
+1:
 	movq	%rax, %cr4
 
 	jmp 1f
@@ -131,6 +143,16 @@ identity_mapped:
 
 	/* Flush the TLB (needed?) */
 	movq	%r9, %cr3
+
+	/*
+	 * If SME is active, there could be old encrypted cache line
+	 * entries that will conflict with the now unencrypted memory
+	 * used by kexec. Flush the caches before copying the kernel.
+	 */
+	testq	%r12, %r12
+	jz 1f
+	wbinvd
+1:
 
 	movq	%rcx, %r11
 	call	swap_pages
@@ -151,21 +173,21 @@ identity_mapped:
 
 	testq	%r11, %r11
 	jnz 1f
-	xorq	%rax, %rax
-	xorq	%rbx, %rbx
-	xorq    %rcx, %rcx
-	xorq    %rdx, %rdx
-	xorq    %rsi, %rsi
-	xorq    %rdi, %rdi
-	xorq    %rbp, %rbp
-	xorq	%r8,  %r8
-	xorq	%r9,  %r9
-	xorq	%r10, %r10
-	xorq	%r11, %r11
-	xorq	%r12, %r12
-	xorq	%r13, %r13
-	xorq	%r14, %r14
-	xorq	%r15, %r15
+	xorl	%eax, %eax
+	xorl	%ebx, %ebx
+	xorl    %ecx, %ecx
+	xorl    %edx, %edx
+	xorl    %esi, %esi
+	xorl    %edi, %edi
+	xorl    %ebp, %ebp
+	xorl	%r8d, %r8d
+	xorl	%r9d, %r9d
+	xorl	%r10d, %r10d
+	xorl	%r11d, %r11d
+	xorl	%r12d, %r12d
+	xorl	%r13d, %r13d
+	xorl	%r14d, %r14d
+	xorl	%r15d, %r15d
 
 	ret
 
@@ -212,8 +234,8 @@ virtual_mapped:
 	/* Do the copies */
 swap_pages:
 	movq	%rdi, %rcx 	/* Put the page_list in %rcx */
-	xorq	%rdi, %rdi
-	xorq	%rsi, %rsi
+	xorl	%edi, %edi
+	xorl	%esi, %esi
 	jmp	1f
 
 0:	/* top, read another word for the indirection page */
@@ -221,23 +243,23 @@ swap_pages:
 	movq	(%rbx), %rcx
 	addq	$8,	%rbx
 1:
-	testq	$0x1,	%rcx  /* is it a destination page? */
+	testb	$0x1,	%cl   /* is it a destination page? */
 	jz	2f
 	movq	%rcx,	%rdi
 	andq	$0xfffffffffffff000, %rdi
 	jmp	0b
 2:
-	testq	$0x2,	%rcx  /* is it an indirection page? */
+	testb	$0x2,	%cl   /* is it an indirection page? */
 	jz	2f
 	movq	%rcx,   %rbx
 	andq	$0xfffffffffffff000, %rbx
 	jmp	0b
 2:
-	testq	$0x4,	%rcx  /* is it the done indicator? */
+	testb	$0x4,	%cl   /* is it the done indicator? */
 	jz	2f
 	jmp	3f
 2:
-	testq	$0x8,	%rcx  /* is it the source indicator? */
+	testb	$0x8,	%cl   /* is it the source indicator? */
 	jz	0b	      /* Ignore it otherwise */
 	movq	%rcx,   %rsi  /* For ever source page do a copy */
 	andq	$0xfffffffffffff000, %rsi
@@ -246,17 +268,17 @@ swap_pages:
 	movq	%rsi, %rax
 
 	movq	%r10, %rdi
-	movq	$512,   %rcx
+	movl	$512, %ecx
 	rep ; movsq
 
 	movq	%rax, %rdi
 	movq	%rdx, %rsi
-	movq	$512,   %rcx
+	movl	$512, %ecx
 	rep ; movsq
 
 	movq	%rdx, %rdi
 	movq	%r10, %rsi
-	movq	$512,   %rcx
+	movl	$512, %ecx
 	rep ; movsq
 
 	lea	PAGE_SIZE(%rax), %rsi

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* $Id: sunhme.h,v 1.33 2001/08/03 06:23:04 davem Exp $
  * sunhme.h: Definitions for Sparc HME/BigMac 10/100baseT ethernet driver.
  *           Also known as the "Happy Meal".
@@ -13,9 +14,9 @@
 /* Happy Meal global registers. */
 #define GREG_SWRESET	0x000UL	/* Software Reset  */
 #define GREG_CFG	0x004UL	/* Config Register */
-#define GREG_STAT	0x108UL	/* Status          */
-#define GREG_IMASK	0x10cUL	/* Interrupt Mask  */
-#define GREG_REG_SIZE	0x110UL
+#define GREG_STAT	0x100UL	/* Status          */
+#define GREG_IMASK	0x104UL	/* Interrupt Mask  */
+#define GREG_REG_SIZE	0x108UL
 
 /* Global reset register. */
 #define GREG_RESET_ETX         0x01
@@ -302,7 +303,7 @@
  * Always write the address first before setting the ownership
  * bits to avoid races with the hardware scanning the ring.
  */
-typedef u32 __bitwise__ hme32;
+typedef u32 __bitwise hme32;
 
 struct happy_meal_rxd {
 	hme32 rx_flags;
@@ -418,8 +419,6 @@ struct happy_meal {
 
 	int rx_new, tx_new, rx_old, tx_old;
 
-	struct net_device_stats	  net_stats;      /* Statistical counters              */
-
 #if defined(CONFIG_SBUS) && defined(CONFIG_PCI)
 	u32 (*read32)(void __iomem *);
 	void (*write32)(void __iomem *, u32);
@@ -432,6 +431,7 @@ struct happy_meal {
 
 	dma_addr_t                hblock_dvma;    /* DVMA visible address happy block  */
 	unsigned int              happy_flags;    /* Driver state flags                */
+	int                       irq;
 	enum happy_transceiver    tcvr_type;      /* Kind of transceiver in use        */
 	unsigned int              happy_bursts;   /* Get your mind out of the gutter   */
 	unsigned int              paddr;          /* PHY address for transceiver       */

@@ -25,7 +25,7 @@
 static struct mtd_partition cobalt_mtd_partitions[] = {
 	{
 		.name	= "firmware",
-		.offset	= 0x0,
+		.offset = 0x0,
 		.size	= 0x80000,
 	},
 };
@@ -57,5 +57,4 @@ static int __init cobalt_mtd_init(void)
 
 	return 0;
 }
-
-module_init(cobalt_mtd_init);
+device_initcall(cobalt_mtd_init);

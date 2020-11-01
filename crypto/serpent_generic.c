@@ -229,6 +229,52 @@
 	x4 ^= x2;					\
 	})
 
+/*
+ * both gcc and clang have misoptimized this function in the past,
+ * producing horrible object code from spilling temporary variables
+ * on the stack. Forcing this part out of line avoids that.
+ */
+static noinline void __serpent_setkey_sbox(u32 r0, u32 r1, u32 r2,
+					   u32 r3, u32 r4, u32 *k)
+{
+	k += 100;
+	S3(r3, r4, r0, r1, r2); store_and_load_keys(r1, r2, r4, r3, 28, 24);
+	S4(r1, r2, r4, r3, r0); store_and_load_keys(r2, r4, r3, r0, 24, 20);
+	S5(r2, r4, r3, r0, r1); store_and_load_keys(r1, r2, r4, r0, 20, 16);
+	S6(r1, r2, r4, r0, r3); store_and_load_keys(r4, r3, r2, r0, 16, 12);
+	S7(r4, r3, r2, r0, r1); store_and_load_keys(r1, r2, r0, r4, 12, 8);
+	S0(r1, r2, r0, r4, r3); store_and_load_keys(r0, r2, r4, r1, 8, 4);
+	S1(r0, r2, r4, r1, r3); store_and_load_keys(r3, r4, r1, r0, 4, 0);
+	S2(r3, r4, r1, r0, r2); store_and_load_keys(r2, r4, r3, r0, 0, -4);
+	S3(r2, r4, r3, r0, r1); store_and_load_keys(r0, r1, r4, r2, -4, -8);
+	S4(r0, r1, r4, r2, r3); store_and_load_keys(r1, r4, r2, r3, -8, -12);
+	S5(r1, r4, r2, r3, r0); store_and_load_keys(r0, r1, r4, r3, -12, -16);
+	S6(r0, r1, r4, r3, r2); store_and_load_keys(r4, r2, r1, r3, -16, -20);
+	S7(r4, r2, r1, r3, r0); store_and_load_keys(r0, r1, r3, r4, -20, -24);
+	S0(r0, r1, r3, r4, r2); store_and_load_keys(r3, r1, r4, r0, -24, -28);
+	k -= 50;
+	S1(r3, r1, r4, r0, r2); store_and_load_keys(r2, r4, r0, r3, 22, 18);
+	S2(r2, r4, r0, r3, r1); store_and_load_keys(r1, r4, r2, r3, 18, 14);
+	S3(r1, r4, r2, r3, r0); store_and_load_keys(r3, r0, r4, r1, 14, 10);
+	S4(r3, r0, r4, r1, r2); store_and_load_keys(r0, r4, r1, r2, 10, 6);
+	S5(r0, r4, r1, r2, r3); store_and_load_keys(r3, r0, r4, r2, 6, 2);
+	S6(r3, r0, r4, r2, r1); store_and_load_keys(r4, r1, r0, r2, 2, -2);
+	S7(r4, r1, r0, r2, r3); store_and_load_keys(r3, r0, r2, r4, -2, -6);
+	S0(r3, r0, r2, r4, r1); store_and_load_keys(r2, r0, r4, r3, -6, -10);
+	S1(r2, r0, r4, r3, r1); store_and_load_keys(r1, r4, r3, r2, -10, -14);
+	S2(r1, r4, r3, r2, r0); store_and_load_keys(r0, r4, r1, r2, -14, -18);
+	S3(r0, r4, r1, r2, r3); store_and_load_keys(r2, r3, r4, r0, -18, -22);
+	k -= 50;
+	S4(r2, r3, r4, r0, r1); store_and_load_keys(r3, r4, r0, r1, 28, 24);
+	S5(r3, r4, r0, r1, r2); store_and_load_keys(r2, r3, r4, r1, 24, 20);
+	S6(r2, r3, r4, r1, r0); store_and_load_keys(r4, r0, r3, r1, 20, 16);
+	S7(r4, r0, r3, r1, r2); store_and_load_keys(r2, r3, r1, r4, 16, 12);
+	S0(r2, r3, r1, r4, r0); store_and_load_keys(r1, r3, r4, r2, 12, 8);
+	S1(r1, r3, r4, r2, r0); store_and_load_keys(r0, r4, r2, r1, 8, 4);
+	S2(r0, r4, r2, r1, r3); store_and_load_keys(r3, r4, r0, r1, 4, 0);
+	S3(r3, r4, r0, r1, r2); storekeys(r1, r2, r4, r3, 0);
+}
+
 int __serpent_setkey(struct serpent_ctx *ctx, const u8 *key,
 		     unsigned int keylen)
 {
@@ -395,42 +441,7 @@ int __serpent_setkey(struct serpent_ctx *ctx, const u8 *key,
 	keyiter(k[23], r1, r0, r3, 131, 31);
 
 	/* Apply S-boxes */
-
-	S3(r3, r4, r0, r1, r2); store_and_load_keys(r1, r2, r4, r3, 28, 24);
-	S4(r1, r2, r4, r3, r0); store_and_load_keys(r2, r4, r3, r0, 24, 20);
-	S5(r2, r4, r3, r0, r1); store_and_load_keys(r1, r2, r4, r0, 20, 16);
-	S6(r1, r2, r4, r0, r3); store_and_load_keys(r4, r3, r2, r0, 16, 12);
-	S7(r4, r3, r2, r0, r1); store_and_load_keys(r1, r2, r0, r4, 12, 8);
-	S0(r1, r2, r0, r4, r3); store_and_load_keys(r0, r2, r4, r1, 8, 4);
-	S1(r0, r2, r4, r1, r3); store_and_load_keys(r3, r4, r1, r0, 4, 0);
-	S2(r3, r4, r1, r0, r2); store_and_load_keys(r2, r4, r3, r0, 0, -4);
-	S3(r2, r4, r3, r0, r1); store_and_load_keys(r0, r1, r4, r2, -4, -8);
-	S4(r0, r1, r4, r2, r3); store_and_load_keys(r1, r4, r2, r3, -8, -12);
-	S5(r1, r4, r2, r3, r0); store_and_load_keys(r0, r1, r4, r3, -12, -16);
-	S6(r0, r1, r4, r3, r2); store_and_load_keys(r4, r2, r1, r3, -16, -20);
-	S7(r4, r2, r1, r3, r0); store_and_load_keys(r0, r1, r3, r4, -20, -24);
-	S0(r0, r1, r3, r4, r2); store_and_load_keys(r3, r1, r4, r0, -24, -28);
-	k -= 50;
-	S1(r3, r1, r4, r0, r2); store_and_load_keys(r2, r4, r0, r3, 22, 18);
-	S2(r2, r4, r0, r3, r1); store_and_load_keys(r1, r4, r2, r3, 18, 14);
-	S3(r1, r4, r2, r3, r0); store_and_load_keys(r3, r0, r4, r1, 14, 10);
-	S4(r3, r0, r4, r1, r2); store_and_load_keys(r0, r4, r1, r2, 10, 6);
-	S5(r0, r4, r1, r2, r3); store_and_load_keys(r3, r0, r4, r2, 6, 2);
-	S6(r3, r0, r4, r2, r1); store_and_load_keys(r4, r1, r0, r2, 2, -2);
-	S7(r4, r1, r0, r2, r3); store_and_load_keys(r3, r0, r2, r4, -2, -6);
-	S0(r3, r0, r2, r4, r1); store_and_load_keys(r2, r0, r4, r3, -6, -10);
-	S1(r2, r0, r4, r3, r1); store_and_load_keys(r1, r4, r3, r2, -10, -14);
-	S2(r1, r4, r3, r2, r0); store_and_load_keys(r0, r4, r1, r2, -14, -18);
-	S3(r0, r4, r1, r2, r3); store_and_load_keys(r2, r3, r4, r0, -18, -22);
-	k -= 50;
-	S4(r2, r3, r4, r0, r1); store_and_load_keys(r3, r4, r0, r1, 28, 24);
-	S5(r3, r4, r0, r1, r2); store_and_load_keys(r2, r3, r4, r1, 24, 20);
-	S6(r2, r3, r4, r1, r0); store_and_load_keys(r4, r0, r3, r1, 20, 16);
-	S7(r4, r0, r3, r1, r2); store_and_load_keys(r2, r3, r1, r4, 16, 12);
-	S0(r2, r3, r1, r4, r0); store_and_load_keys(r1, r3, r4, r2, 12, 8);
-	S1(r1, r3, r4, r2, r0); store_and_load_keys(r0, r4, r2, r1, 8, 4);
-	S2(r0, r4, r2, r1, r3); store_and_load_keys(r3, r4, r0, r1, 4, 0);
-	S3(r3, r4, r0, r1, r2); storekeys(r1, r2, r4, r3, 0);
+	__serpent_setkey_sbox(r0, r1, r2, r3, r4, ctx->expkey);
 
 	return 0;
 }
@@ -567,24 +578,6 @@ static void serpent_decrypt(struct crypto_tfm *tfm, u8 *dst, const u8 *src)
 	__serpent_decrypt(ctx, dst, src);
 }
 
-static struct crypto_alg serpent_alg = {
-	.cra_name		=	"serpent",
-	.cra_driver_name	=	"serpent-generic",
-	.cra_priority		=	100,
-	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
-	.cra_blocksize		=	SERPENT_BLOCK_SIZE,
-	.cra_ctxsize		=	sizeof(struct serpent_ctx),
-	.cra_alignmask		=	3,
-	.cra_module		=	THIS_MODULE,
-	.cra_list		=	LIST_HEAD_INIT(serpent_alg.cra_list),
-	.cra_u			=	{ .cipher = {
-	.cia_min_keysize	=	SERPENT_MIN_KEY_SIZE,
-	.cia_max_keysize	=	SERPENT_MAX_KEY_SIZE,
-	.cia_setkey		=	serpent_setkey,
-	.cia_encrypt		=	serpent_encrypt,
-	.cia_decrypt		=	serpent_decrypt } }
-};
-
 static int tnepres_setkey(struct crypto_tfm *tfm, const u8 *key,
 			  unsigned int keylen)
 {
@@ -637,41 +630,44 @@ static void tnepres_decrypt(struct crypto_tfm *tfm, u8 *dst, const u8 *src)
 	d[3] = swab32(rd[0]);
 }
 
-static struct crypto_alg tnepres_alg = {
+static struct crypto_alg srp_algs[2] = { {
+	.cra_name		=	"serpent",
+	.cra_driver_name	=	"serpent-generic",
+	.cra_priority		=	100,
+	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
+	.cra_blocksize		=	SERPENT_BLOCK_SIZE,
+	.cra_ctxsize		=	sizeof(struct serpent_ctx),
+	.cra_alignmask		=	3,
+	.cra_module		=	THIS_MODULE,
+	.cra_u			=	{ .cipher = {
+	.cia_min_keysize	=	SERPENT_MIN_KEY_SIZE,
+	.cia_max_keysize	=	SERPENT_MAX_KEY_SIZE,
+	.cia_setkey		=	serpent_setkey,
+	.cia_encrypt		=	serpent_encrypt,
+	.cia_decrypt		=	serpent_decrypt } }
+}, {
 	.cra_name		=	"tnepres",
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	SERPENT_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct serpent_ctx),
 	.cra_alignmask		=	3,
 	.cra_module		=	THIS_MODULE,
-	.cra_list		=	LIST_HEAD_INIT(serpent_alg.cra_list),
 	.cra_u			=	{ .cipher = {
 	.cia_min_keysize	=	SERPENT_MIN_KEY_SIZE,
 	.cia_max_keysize	=	SERPENT_MAX_KEY_SIZE,
 	.cia_setkey		=	tnepres_setkey,
 	.cia_encrypt		=	tnepres_encrypt,
 	.cia_decrypt		=	tnepres_decrypt } }
-};
+} };
 
 static int __init serpent_mod_init(void)
 {
-	int ret = crypto_register_alg(&serpent_alg);
-
-	if (ret)
-		return ret;
-
-	ret = crypto_register_alg(&tnepres_alg);
-
-	if (ret)
-		crypto_unregister_alg(&serpent_alg);
-
-	return ret;
+	return crypto_register_algs(srp_algs, ARRAY_SIZE(srp_algs));
 }
 
 static void __exit serpent_mod_fini(void)
 {
-	crypto_unregister_alg(&tnepres_alg);
-	crypto_unregister_alg(&serpent_alg);
+	crypto_unregister_algs(srp_algs, ARRAY_SIZE(srp_algs));
 }
 
 module_init(serpent_mod_init);
@@ -680,5 +676,6 @@ module_exit(serpent_mod_fini);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Serpent and tnepres (kerneli compatible serpent reversed) Cipher Algorithm");
 MODULE_AUTHOR("Dag Arne Osvik <osvik@ii.uib.no>");
-MODULE_ALIAS("tnepres");
-MODULE_ALIAS("serpent");
+MODULE_ALIAS_CRYPTO("tnepres");
+MODULE_ALIAS_CRYPTO("serpent");
+MODULE_ALIAS_CRYPTO("serpent-generic");

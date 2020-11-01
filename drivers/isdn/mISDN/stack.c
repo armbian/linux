@@ -18,6 +18,10 @@
 #include <linux/slab.h>
 #include <linux/mISDNif.h>
 #include <linux/kthread.h>
+#include <linux/sched.h>
+#include <linux/sched/cputime.h>
+#include <linux/signal.h>
+
 #include "core.h"
 
 static u_int	*debug;
@@ -63,16 +67,15 @@ unlock:
 static void
 send_socklist(struct mISDN_sock_list *sl, struct sk_buff *skb)
 {
-	struct hlist_node	*node;
 	struct sock		*sk;
 	struct sk_buff		*cskb = NULL;
 
 	read_lock(&sl->lock);
-	sk_for_each(sk, node, &sl->head) {
+	sk_for_each(sk, &sl->head) {
 		if (sk->sk_state != MISDN_BOUND)
 			continue;
 		if (!cskb)
-			cskb = skb_copy(skb, GFP_KERNEL);
+			cskb = skb_copy(skb, GFP_ATOMIC);
 		if (!cskb) {
 			printk(KERN_WARNING "%s no skb\n", __func__);
 			break;
@@ -135,8 +138,8 @@ send_layer2(struct mISDNstack *st, struct sk_buff *skb)
 			skb = NULL;
 		else if (*debug & DEBUG_SEND_ERR)
 			printk(KERN_DEBUG
-			       "%s ch%d mgr prim(%x) addr(%x) err %d\n",
-			       __func__, ch->nr, hh->prim, ch->addr, ret);
+			       "%s mgr prim(%x) err %d\n",
+			       __func__, hh->prim, ret);
 	}
 out:
 	mutex_unlock(&st->lmutex);
@@ -202,6 +205,9 @@ static int
 mISDNStackd(void *data)
 {
 	struct mISDNstack *st = data;
+#ifdef MISDN_MSG_STATS
+	u64 utime, stime;
+#endif
 	int err = 0;
 
 	sigfillset(&current->blocked);
@@ -303,9 +309,10 @@ mISDNStackd(void *data)
 	       "msg %d sleep %d stopped\n",
 	       dev_name(&st->dev->dev), st->msg_cnt, st->sleep_cnt,
 	       st->stopped_cnt);
+	task_cputime(st->thread, &utime, &stime);
 	printk(KERN_DEBUG
-	       "mISDNStackd daemon for %s utime(%ld) stime(%ld)\n",
-	       dev_name(&st->dev->dev), st->thread->utime, st->thread->stime);
+	       "mISDNStackd daemon for %s utime(%llu) stime(%llu)\n",
+	       dev_name(&st->dev->dev), utime, stime);
 	printk(KERN_DEBUG
 	       "mISDNStackd daemon for %s nvcsw(%ld) nivcsw(%ld)\n",
 	       dev_name(&st->dev->dev), st->thread->nvcsw, st->thread->nivcsw);

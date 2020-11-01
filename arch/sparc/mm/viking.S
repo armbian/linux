@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * viking.S: High speed Viking cache/mmu operations
  *
@@ -14,7 +15,6 @@
 #include <asm/page.h>
 #include <asm/pgtsrmmu.h>
 #include <asm/viking.h>
-#include <asm/btfixup.h>
 
 #ifdef CONFIG_SMP
 	.data

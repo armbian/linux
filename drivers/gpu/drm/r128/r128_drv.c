@@ -31,12 +31,11 @@
 
 #include <linux/module.h>
 
-#include "drmP.h"
-#include "drm.h"
-#include "r128_drm.h"
+#include <drm/drmP.h>
+#include <drm/r128_drm.h>
 #include "r128_drv.h"
 
-#include "drm_pciids.h"
+#include <drm/drm_pciids.h>
 
 static struct pci_device_id pciidlist[] = {
 	r128_PCI_IDS
@@ -47,9 +46,8 @@ static const struct file_operations r128_driver_fops = {
 	.open = drm_open,
 	.release = drm_release,
 	.unlocked_ioctl = drm_ioctl,
-	.mmap = drm_mmap,
+	.mmap = drm_legacy_mmap,
 	.poll = drm_poll,
-	.fasync = drm_fasync,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = r128_compat_ioctl,
 #endif
@@ -58,7 +56,7 @@ static const struct file_operations r128_driver_fops = {
 
 static struct drm_driver driver = {
 	.driver_features =
-	    DRIVER_USE_AGP | DRIVER_USE_MTRR | DRIVER_PCI_DMA | DRIVER_SG |
+	    DRIVER_USE_AGP | DRIVER_PCI_DMA | DRIVER_SG | DRIVER_LEGACY |
 	    DRIVER_HAVE_DMA | DRIVER_HAVE_IRQ | DRIVER_IRQ_SHARED,
 	.dev_priv_size = sizeof(drm_r128_buf_priv_t),
 	.load = r128_driver_load,
@@ -71,7 +69,6 @@ static struct drm_driver driver = {
 	.irq_postinstall = r128_driver_irq_postinstall,
 	.irq_uninstall = r128_driver_irq_uninstall,
 	.irq_handler = r128_driver_irq_handler,
-	.reclaim_buffers = drm_core_reclaim_buffers,
 	.ioctls = r128_ioctls,
 	.dma_ioctl = r128_cce_buffers,
 	.fops = &r128_driver_fops,
@@ -98,12 +95,12 @@ static int __init r128_init(void)
 {
 	driver.num_ioctls = r128_max_ioctl;
 
-	return drm_pci_init(&driver, &r128_pci_driver);
+	return drm_legacy_pci_init(&driver, &r128_pci_driver);
 }
 
 static void __exit r128_exit(void)
 {
-	drm_pci_exit(&driver, &r128_pci_driver);
+	drm_legacy_pci_exit(&driver, &r128_pci_driver);
 }
 
 module_init(r128_init);

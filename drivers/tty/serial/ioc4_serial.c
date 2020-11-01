@@ -210,7 +210,7 @@
 #define IOC4_SSCR_PAUSE_STATE   0x40000000  /* Sets when PAUSE takes effect */
 #define IOC4_SSCR_RESET	        0x80000000  /* Reset DMA channels */
 
-/* All producer/comsumer pointers are the same bitfield */
+/* All producer/consumer pointers are the same bitfield */
 #define IOC4_PROD_CONS_PTR_4K   0x00000ff8	/* For 4K buffers */
 #define IOC4_PROD_CONS_PTR_1K   0x000003f8	/* For 1K buffers */
 #define IOC4_PROD_CONS_PTR_OFF           3
@@ -297,7 +297,7 @@ struct ioc4_serial {
 	struct ioc4_uartregs uart_1;
 	struct ioc4_uartregs uart_2;
 	struct ioc4_uartregs uart_3;
-} ioc4_serial;
+};
 
 /* UART clock speed */
 #define IOC4_SER_XIN_CLK_66     66666667
@@ -824,7 +824,7 @@ pending_intrs(struct ioc4_soft *soft, int type)
  *			called per port from attach...
  * @port: port to initialize
  */
-static int inline port_init(struct ioc4_port *port)
+static inline int port_init(struct ioc4_port *port)
 {
 	uint32_t sio_cr;
 	struct hooks *hooks = port->ip_hooks;
@@ -1011,7 +1011,8 @@ static irqreturn_t ioc4_intr(int irq, void *arg)
 		 */
 		for (xx = 0; xx < num_intrs; xx++) {
 			intr_info = &soft->is_intr_type[intr_type].is_intr_info[xx];
-			if ((this_mir = this_ir & intr_info->sd_bits)) {
+			this_mir = this_ir & intr_info->sd_bits;
+			if (this_mir) {
 				/* Disable owned interrupts, call handler */
 				handled++;
 				write_ireg(soft, intr_info->sd_bits, IOC4_W_IEC,
@@ -1047,7 +1048,7 @@ static irqreturn_t ioc4_intr(int irq, void *arg)
  *			IOC4 with serial ports in the system.
  * @idd: Master module data for this IOC4
  */
-static int inline ioc4_attach_local(struct ioc4_driver_data *idd)
+static inline int ioc4_attach_local(struct ioc4_driver_data *idd)
 {
 	struct ioc4_port *port;
 	struct ioc4_port *ports[IOC4_NUM_SERIAL_PORTS];
@@ -1081,7 +1082,7 @@ static int inline ioc4_attach_local(struct ioc4_driver_data *idd)
 		if (!port) {
 			printk(KERN_WARNING
 				"IOC4 serial memory not available for port\n");
-			return -ENOMEM;
+			goto free;
 		}
 		spin_lock_init(&port->ip_lock);
 
@@ -1189,6 +1190,11 @@ static int inline ioc4_attach_local(struct ioc4_driver_data *idd)
 				handle_dma_error_intr, port);
 	}
 	return 0;
+
+free:
+	while (port_number)
+		kfree(ports[--port_number]);
+	return -ENOMEM;
 }
 
 /**
@@ -1740,7 +1746,7 @@ ioc4_change_speed(struct uart_port *the_port,
 
 	the_port->ignore_status_mask = N_ALL_INPUT;
 
-	state->port.tty->low_latency = 1;
+	state->port.low_latency = 1;
 
 	if (iflag & IGNPAR)
 		the_port->ignore_status_mask &= ~(N_PARITY_ERROR
@@ -1803,7 +1809,7 @@ static inline int ic4_startup_local(struct uart_port *the_port)
 	ioc4_set_proto(port, the_port->mapbase);
 
 	/* set the speed of the serial port */
-	ioc4_change_speed(the_port, state->port.tty->termios,
+	ioc4_change_speed(the_port, &state->port.tty->termios,
 			  (struct ktermios *)0);
 
 	return 0;
@@ -2069,13 +2075,14 @@ static inline int do_read(struct uart_port *the_port, unsigned char *buf,
 	struct ioc4_port *port = get_ioc4_port(the_port, 0);
 	struct ring *inring;
 	struct ring_entry *entry;
-	struct hooks *hooks = port->ip_hooks;
+	struct hooks *hooks;
 	int byte_num;
 	char *sc;
 	int loop_counter;
 
 	BUG_ON(!(len >= 0));
 	BUG_ON(!port);
+	hooks = port->ip_hooks;
 
 	/* There is a nasty timing issue in the IOC4. When the rx_timer
 	 * expires or the rx_high condition arises, we take an interrupt.
@@ -2339,7 +2346,6 @@ static inline int do_read(struct uart_port *the_port, unsigned char *buf,
  */
 static void receive_chars(struct uart_port *the_port)
 {
-	struct tty_struct *tty;
 	unsigned char ch[IOC4_MAX_CHARS];
 	int read_count, request_count = IOC4_MAX_CHARS;
 	struct uart_icount *icount;
@@ -2349,26 +2355,23 @@ static void receive_chars(struct uart_port *the_port)
 	/* Make sure all the pointers are "good" ones */
 	if (!state)
 		return;
-	if (!state->port.tty)
-		return;
 
 	spin_lock_irqsave(&the_port->lock, pflags);
-	tty = state->port.tty;
 
-	request_count = tty_buffer_request_room(tty, IOC4_MAX_CHARS);
+	request_count = tty_buffer_request_room(&state->port, IOC4_MAX_CHARS);
 
 	if (request_count > 0) {
 		icount = &the_port->icount;
 		read_count = do_read(the_port, ch, request_count);
 		if (read_count > 0) {
-			tty_insert_flip_string(tty, ch, read_count);
+			tty_insert_flip_string(&state->port, ch, read_count);
 			icount->rx += read_count;
 		}
 	}
 
 	spin_unlock_irqrestore(&the_port->lock, pflags);
 
-	tty_flip_buffer_push(tty);
+	tty_flip_buffer_push(&state->port);
 }
 
 /**
@@ -2593,14 +2596,13 @@ static int ic4_request_port(struct uart_port *port)
 
 /* Associate the uart functions above - given to serial core */
 
-static struct uart_ops ioc4_ops = {
+static const struct uart_ops ioc4_ops = {
 	.tx_empty	= ic4_tx_empty,
 	.set_mctrl	= ic4_set_mctrl,
 	.get_mctrl	= ic4_get_mctrl,
 	.stop_tx	= ic4_stop_tx,
 	.start_tx	= ic4_start_tx,
 	.stop_rx	= null_void_function,
-	.enable_ms	= null_void_function,
 	.break_ctl	= ic4_break_ctl,
 	.startup	= ic4_startup,
 	.shutdown	= ic4_shutdown,
@@ -2770,7 +2772,7 @@ ioc4_serial_core_attach(struct pci_dev *pdev, int port_type)
  *		called per card found from IOC4 master module.
  * @idd: Master module data for this IOC4
  */
-int
+static int
 ioc4_serial_attach_one(struct ioc4_driver_data *idd)
 {
 	unsigned long tmp_addr1;
@@ -2869,10 +2871,12 @@ ioc4_serial_attach_one(struct ioc4_driver_data *idd)
 
 	/* register port with the serial core - 1 rs232, 1 rs422 */
 
-	if ((ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS232)))
+	ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS232);
+	if (ret)
 		goto out4;
 
-	if ((ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS422)))
+	ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS422);
+	if (ret)
 		goto out5;
 
 	Num_of_ioc4_cards++;
@@ -2882,6 +2886,7 @@ ioc4_serial_attach_one(struct ioc4_driver_data *idd)
 	/* error exits that give back resources */
 out5:
 	ioc4_serial_remove_one(idd);
+	return ret;
 out4:
 	kfree(soft);
 out3:

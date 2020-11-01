@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/mtd/physmap.h>
@@ -5,6 +6,7 @@
 #include <linux/serial_reg.h>
 #include <linux/usb/isp116x.h>
 #include <linux/delay.h>
+#include <linux/irqdomain.h>
 #include <asm/machvec.h>
 #include <mach-se/mach/se7343.h>
 #include <asm/heartbeat.h>
@@ -145,11 +147,12 @@ static struct platform_device *sh7343se_platform_devices[] __initdata = {
 static int __init sh7343se_devices_setup(void)
 {
 	/* Wire-up dynamic vectors */
-	serial_platform_data[0].irq = se7343_fpga_irq[SE7343_FPGA_IRQ_UARTA];
-	serial_platform_data[1].irq = se7343_fpga_irq[SE7343_FPGA_IRQ_UARTB];
-
+	serial_platform_data[0].irq = irq_find_mapping(se7343_irq_domain,
+						       SE7343_FPGA_IRQ_UARTA);
+	serial_platform_data[1].irq = irq_find_mapping(se7343_irq_domain,
+						       SE7343_FPGA_IRQ_UARTB);
 	usb_resources[2].start = usb_resources[2].end =
-		se7343_fpga_irq[SE7343_FPGA_IRQ_USB];
+		irq_find_mapping(se7343_irq_domain, SE7343_FPGA_IRQ_USB);
 
 	return platform_add_devices(sh7343se_platform_devices,
 				    ARRAY_SIZE(sh7343se_platform_devices));

@@ -109,6 +109,9 @@ struct dummy_timer_ops {
 	snd_pcm_uframes_t (*pointer)(struct snd_pcm_substream *);
 };
 
+#define get_dummy_ops(substream) \
+	(*(const struct dummy_timer_ops **)(substream)->runtime->private_data)
+
 struct dummy_model {
 	const char *name;
 	int (*playback_constraints)(struct snd_pcm_runtime *runtime);
@@ -134,7 +137,9 @@ struct snd_dummy {
 	spinlock_t mixer_lock;
 	int mixer_volume[MIXER_ADDR_LAST+1][2];
 	int capture_source[MIXER_ADDR_LAST+1][2];
-	const struct dummy_timer_ops *timer_ops;
+	int iobox;
+	struct snd_kcontrol *cd_volume_ctl;
+	struct snd_kcontrol *cd_switch_ctl;
 };
 
 /*
@@ -153,13 +158,13 @@ static int emu10k1_playback_constraints(struct snd_pcm_runtime *runtime)
 	return 0;
 }
 
-struct dummy_model model_emu10k1 = {
+static struct dummy_model model_emu10k1 = {
 	.name = "emu10k1",
 	.playback_constraints = emu10k1_playback_constraints,
 	.buffer_bytes_max = 128 * 1024,
 };
 
-struct dummy_model model_rme9652 = {
+static struct dummy_model model_rme9652 = {
 	.name = "rme9652",
 	.buffer_bytes_max = 26 * 64 * 1024,
 	.formats = SNDRV_PCM_FMTBIT_S32_LE,
@@ -169,7 +174,7 @@ struct dummy_model model_rme9652 = {
 	.periods_max = 2,
 };
 
-struct dummy_model model_ice1712 = {
+static struct dummy_model model_ice1712 = {
 	.name = "ice1712",
 	.buffer_bytes_max = 256 * 1024,
 	.formats = SNDRV_PCM_FMTBIT_S32_LE,
@@ -179,7 +184,7 @@ struct dummy_model model_ice1712 = {
 	.periods_max = 1024,
 };
 
-struct dummy_model model_uda1341 = {
+static struct dummy_model model_uda1341 = {
 	.name = "uda1341",
 	.buffer_bytes_max = 16380,
 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
@@ -189,7 +194,7 @@ struct dummy_model model_uda1341 = {
 	.periods_max = 255,
 };
 
-struct dummy_model model_ac97 = {
+static struct dummy_model model_ac97 = {
 	.name = "ac97",
 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	.channels_min = 2,
@@ -199,7 +204,7 @@ struct dummy_model model_ac97 = {
 	.rate_max = 48000,
 };
 
-struct dummy_model model_ca0106 = {
+static struct dummy_model model_ca0106 = {
 	.name = "ca0106",
 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	.buffer_bytes_max = ((65536-64)*8),
@@ -213,7 +218,7 @@ struct dummy_model model_ca0106 = {
 	.rate_max = 192000,
 };
 
-struct dummy_model *dummy_models[] = {
+static struct dummy_model *dummy_models[] = {
 	&model_emu10k1,
 	&model_rme9652,
 	&model_ice1712,
@@ -228,6 +233,8 @@ struct dummy_model *dummy_models[] = {
  */
 
 struct dummy_systimer_pcm {
+	/* ops must be the first item */
+	const struct dummy_timer_ops *timer_ops;
 	spinlock_t lock;
 	struct timer_list timer;
 	unsigned long base_time;
@@ -242,9 +249,8 @@ struct dummy_systimer_pcm {
 
 static void dummy_systimer_rearm(struct dummy_systimer_pcm *dpcm)
 {
-	dpcm->timer.expires = jiffies +
-		(dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate;
-	add_timer(&dpcm->timer);
+	mod_timer(&dpcm->timer, jiffies +
+		(dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate);
 }
 
 static void dummy_systimer_update(struct dummy_systimer_pcm *dpcm)
@@ -337,9 +343,8 @@ static int dummy_systimer_create(struct snd_pcm_substream *substream)
 	if (!dpcm)
 		return -ENOMEM;
 	substream->runtime->private_data = dpcm;
-	init_timer(&dpcm->timer);
-	dpcm->timer.data = (unsigned long) dpcm;
-	dpcm->timer.function = dummy_systimer_callback;
+	setup_timer(&dpcm->timer, dummy_systimer_callback,
+			(unsigned long) dpcm);
 	spin_lock_init(&dpcm->lock);
 	dpcm->substream = substream;
 	return 0;
@@ -350,7 +355,7 @@ static void dummy_systimer_free(struct snd_pcm_substream *substream)
 	kfree(substream->runtime->private_data);
 }
 
-static struct dummy_timer_ops dummy_systimer_ops = {
+static const struct dummy_timer_ops dummy_systimer_ops = {
 	.create =	dummy_systimer_create,
 	.free =		dummy_systimer_free,
 	.prepare =	dummy_systimer_prepare,
@@ -365,6 +370,8 @@ static struct dummy_timer_ops dummy_systimer_ops = {
  */
 
 struct dummy_hrtimer_pcm {
+	/* ops must be the first item */
+	const struct dummy_timer_ops *timer_ops;
 	ktime_t base_time;
 	ktime_t period_time;
 	atomic_t running;
@@ -413,6 +420,7 @@ static int dummy_hrtimer_stop(struct snd_pcm_substream *substream)
 
 static inline void dummy_hrtimer_sync(struct dummy_hrtimer_pcm *dpcm)
 {
+	hrtimer_cancel(&dpcm->timer);
 	tasklet_kill(&dpcm->tasklet);
 }
 
@@ -474,7 +482,7 @@ static void dummy_hrtimer_free(struct snd_pcm_substream *substream)
 	kfree(dpcm);
 }
 
-static struct dummy_timer_ops dummy_hrtimer_ops = {
+static const struct dummy_timer_ops dummy_hrtimer_ops = {
 	.create =	dummy_hrtimer_create,
 	.free =		dummy_hrtimer_free,
 	.prepare =	dummy_hrtimer_prepare,
@@ -491,34 +499,28 @@ static struct dummy_timer_ops dummy_hrtimer_ops = {
 
 static int dummy_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
-	struct snd_dummy *dummy = snd_pcm_substream_chip(substream);
-
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
-		return dummy->timer_ops->start(substream);
+		return get_dummy_ops(substream)->start(substream);
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
-		return dummy->timer_ops->stop(substream);
+		return get_dummy_ops(substream)->stop(substream);
 	}
 	return -EINVAL;
 }
 
 static int dummy_pcm_prepare(struct snd_pcm_substream *substream)
 {
-	struct snd_dummy *dummy = snd_pcm_substream_chip(substream);
-
-	return dummy->timer_ops->prepare(substream);
+	return get_dummy_ops(substream)->prepare(substream);
 }
 
 static snd_pcm_uframes_t dummy_pcm_pointer(struct snd_pcm_substream *substream)
 {
-	struct snd_dummy *dummy = snd_pcm_substream_chip(substream);
-
-	return dummy->timer_ops->pointer(substream);
+	return get_dummy_ops(substream)->pointer(substream);
 }
 
-static struct snd_pcm_hardware dummy_pcm_hardware = {
+static const struct snd_pcm_hardware dummy_pcm_hardware = {
 	.info =			(SNDRV_PCM_INFO_MMAP |
 				 SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_RESUME |
@@ -561,17 +563,19 @@ static int dummy_pcm_open(struct snd_pcm_substream *substream)
 	struct snd_dummy *dummy = snd_pcm_substream_chip(substream);
 	struct dummy_model *model = dummy->model;
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	const struct dummy_timer_ops *ops;
 	int err;
 
-	dummy->timer_ops = &dummy_systimer_ops;
+	ops = &dummy_systimer_ops;
 #ifdef CONFIG_HIGH_RES_TIMERS
 	if (hrtimer)
-		dummy->timer_ops = &dummy_hrtimer_ops;
+		ops = &dummy_hrtimer_ops;
 #endif
 
-	err = dummy->timer_ops->create(substream);
+	err = ops->create(substream);
 	if (err < 0)
 		return err;
+	get_dummy_ops(substream) = ops;
 
 	runtime->hw = dummy->pcm_hw;
 	if (substream->pcm->device & 1) {
@@ -593,7 +597,7 @@ static int dummy_pcm_open(struct snd_pcm_substream *substream)
 			err = model->capture_constraints(substream->runtime);
 	}
 	if (err < 0) {
-		dummy->timer_ops->free(substream);
+		get_dummy_ops(substream)->free(substream);
 		return err;
 	}
 	return 0;
@@ -601,8 +605,7 @@ static int dummy_pcm_open(struct snd_pcm_substream *substream)
 
 static int dummy_pcm_close(struct snd_pcm_substream *substream)
 {
-	struct snd_dummy *dummy = snd_pcm_substream_chip(substream);
-	dummy->timer_ops->free(substream);
+	get_dummy_ops(substream)->free(substream);
 	return 0;
 }
 
@@ -641,15 +644,22 @@ static int alloc_fake_buffer(void)
 }
 
 static int dummy_pcm_copy(struct snd_pcm_substream *substream,
-			  int channel, snd_pcm_uframes_t pos,
-			  void __user *dst, snd_pcm_uframes_t count)
+			  int channel, unsigned long pos,
+			  void __user *dst, unsigned long bytes)
+{
+	return 0; /* do nothing */
+}
+
+static int dummy_pcm_copy_kernel(struct snd_pcm_substream *substream,
+				 int channel, unsigned long pos,
+				 void *dst, unsigned long bytes)
 {
 	return 0; /* do nothing */
 }
 
 static int dummy_pcm_silence(struct snd_pcm_substream *substream,
-			     int channel, snd_pcm_uframes_t pos,
-			     snd_pcm_uframes_t count)
+			     int channel, unsigned long pos,
+			     unsigned long bytes)
 {
 	return 0; /* do nothing */
 }
@@ -680,13 +690,14 @@ static struct snd_pcm_ops dummy_pcm_ops_no_buf = {
 	.prepare =	dummy_pcm_prepare,
 	.trigger =	dummy_pcm_trigger,
 	.pointer =	dummy_pcm_pointer,
-	.copy =		dummy_pcm_copy,
-	.silence =	dummy_pcm_silence,
+	.copy_user =	dummy_pcm_copy,
+	.copy_kernel =	dummy_pcm_copy_kernel,
+	.fill_silence =	dummy_pcm_silence,
 	.page =		dummy_pcm_page,
 };
 
-static int __devinit snd_card_dummy_pcm(struct snd_dummy *dummy, int device,
-					int substreams)
+static int snd_card_dummy_pcm(struct snd_dummy *dummy, int device,
+			      int substreams)
 {
 	struct snd_pcm *pcm;
 	struct snd_pcm_ops *ops;
@@ -817,6 +828,57 @@ static int snd_dummy_capsrc_put(struct snd_kcontrol *kcontrol, struct snd_ctl_el
 	return change;
 }
 
+static int snd_dummy_iobox_info(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_info *info)
+{
+	const char *const names[] = { "None", "CD Player" };
+
+	return snd_ctl_enum_info(info, 1, 2, names);
+}
+
+static int snd_dummy_iobox_get(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *value)
+{
+	struct snd_dummy *dummy = snd_kcontrol_chip(kcontrol);
+
+	value->value.enumerated.item[0] = dummy->iobox;
+	return 0;
+}
+
+static int snd_dummy_iobox_put(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *value)
+{
+	struct snd_dummy *dummy = snd_kcontrol_chip(kcontrol);
+	int changed;
+
+	if (value->value.enumerated.item[0] > 1)
+		return -EINVAL;
+
+	changed = value->value.enumerated.item[0] != dummy->iobox;
+	if (changed) {
+		dummy->iobox = value->value.enumerated.item[0];
+
+		if (dummy->iobox) {
+			dummy->cd_volume_ctl->vd[0].access &=
+				~SNDRV_CTL_ELEM_ACCESS_INACTIVE;
+			dummy->cd_switch_ctl->vd[0].access &=
+				~SNDRV_CTL_ELEM_ACCESS_INACTIVE;
+		} else {
+			dummy->cd_volume_ctl->vd[0].access |=
+				SNDRV_CTL_ELEM_ACCESS_INACTIVE;
+			dummy->cd_switch_ctl->vd[0].access |=
+				SNDRV_CTL_ELEM_ACCESS_INACTIVE;
+		}
+
+		snd_ctl_notify(dummy->card, SNDRV_CTL_EVENT_MASK_INFO,
+			       &dummy->cd_volume_ctl->id);
+		snd_ctl_notify(dummy->card, SNDRV_CTL_EVENT_MASK_INFO,
+			       &dummy->cd_switch_ctl->id);
+	}
+
+	return changed;
+}
+
 static struct snd_kcontrol_new snd_dummy_controls[] = {
 DUMMY_VOLUME("Master Volume", 0, MIXER_ADDR_MASTER),
 DUMMY_CAPSRC("Master Capture Switch", 0, MIXER_ADDR_MASTER),
@@ -827,27 +889,42 @@ DUMMY_CAPSRC("Line Capture Switch", 0, MIXER_ADDR_LINE),
 DUMMY_VOLUME("Mic Volume", 0, MIXER_ADDR_MIC),
 DUMMY_CAPSRC("Mic Capture Switch", 0, MIXER_ADDR_MIC),
 DUMMY_VOLUME("CD Volume", 0, MIXER_ADDR_CD),
-DUMMY_CAPSRC("CD Capture Switch", 0, MIXER_ADDR_CD)
+DUMMY_CAPSRC("CD Capture Switch", 0, MIXER_ADDR_CD),
+{
+	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+	.name  = "External I/O Box",
+	.info  = snd_dummy_iobox_info,
+	.get   = snd_dummy_iobox_get,
+	.put   = snd_dummy_iobox_put,
+},
 };
 
-static int __devinit snd_card_dummy_new_mixer(struct snd_dummy *dummy)
+static int snd_card_dummy_new_mixer(struct snd_dummy *dummy)
 {
 	struct snd_card *card = dummy->card;
+	struct snd_kcontrol *kcontrol;
 	unsigned int idx;
 	int err;
 
 	spin_lock_init(&dummy->mixer_lock);
 	strcpy(card->mixername, "Dummy Mixer");
+	dummy->iobox = 1;
 
 	for (idx = 0; idx < ARRAY_SIZE(snd_dummy_controls); idx++) {
-		err = snd_ctl_add(card, snd_ctl_new1(&snd_dummy_controls[idx], dummy));
+		kcontrol = snd_ctl_new1(&snd_dummy_controls[idx], dummy);
+		err = snd_ctl_add(card, kcontrol);
 		if (err < 0)
 			return err;
+		if (!strcmp(kcontrol->id.name, "CD Volume"))
+			dummy->cd_volume_ctl = kcontrol;
+		else if (!strcmp(kcontrol->id.name, "CD Capture Switch"))
+			dummy->cd_switch_ctl = kcontrol;
+
 	}
 	return 0;
 }
 
-#if defined(CONFIG_SND_DEBUG) && defined(CONFIG_PROC_FS)
+#if defined(CONFIG_SND_DEBUG) && defined(CONFIG_SND_PROC_FS)
 /*
  * proc interface
  */
@@ -856,7 +933,7 @@ static void print_formats(struct snd_dummy *dummy,
 {
 	int i;
 
-	for (i = 0; i < SNDRV_PCM_FORMAT_LAST; i++) {
+	for (i = 0; i <= SNDRV_PCM_FORMAT_LAST; i++) {
 		if (dummy->pcm_hw.formats & (1ULL << i))
 			snd_iprintf(buffer, " %s", snd_pcm_format_name(i));
 	}
@@ -953,7 +1030,7 @@ static void dummy_proc_write(struct snd_info_entry *entry,
 		if (i >= ARRAY_SIZE(fields))
 			continue;
 		snd_info_get_str(item, ptr, sizeof(item));
-		if (strict_strtoull(item, 0, &val))
+		if (kstrtoull(item, 0, &val))
 			continue;
 		if (fields[i].size == sizeof(int))
 			*get_dummy_int_ptr(dummy, fields[i].offset) = val;
@@ -962,7 +1039,7 @@ static void dummy_proc_write(struct snd_info_entry *entry,
 	}
 }
 
-static void __devinit dummy_proc_init(struct snd_dummy *chip)
+static void dummy_proc_init(struct snd_dummy *chip)
 {
 	struct snd_info_entry *entry;
 
@@ -975,9 +1052,9 @@ static void __devinit dummy_proc_init(struct snd_dummy *chip)
 }
 #else
 #define dummy_proc_init(x)
-#endif /* CONFIG_SND_DEBUG && CONFIG_PROC_FS */
+#endif /* CONFIG_SND_DEBUG && CONFIG_SND_PROC_FS */
 
-static int __devinit snd_dummy_probe(struct platform_device *devptr)
+static int snd_dummy_probe(struct platform_device *devptr)
 {
 	struct snd_card *card;
 	struct snd_dummy *dummy;
@@ -985,8 +1062,8 @@ static int __devinit snd_dummy_probe(struct platform_device *devptr)
 	int idx, err;
 	int dev = devptr->id;
 
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE,
-			      sizeof(struct snd_dummy), &card);
+	err = snd_card_new(&devptr->dev, index[dev], id[dev], THIS_MODULE,
+			   sizeof(struct snd_dummy), &card);
 	if (err < 0)
 		return err;
 	dummy = card->private_data;
@@ -1045,8 +1122,6 @@ static int __devinit snd_dummy_probe(struct platform_device *devptr)
 
 	dummy_proc_init(dummy);
 
-	snd_card_set_dev(card, &devptr->dev);
-
 	err = snd_card_register(card);
 	if (err == 0) {
 		platform_set_drvdata(devptr, card);
@@ -1057,17 +1132,16 @@ static int __devinit snd_dummy_probe(struct platform_device *devptr)
 	return err;
 }
 
-static int __devexit snd_dummy_remove(struct platform_device *devptr)
+static int snd_dummy_remove(struct platform_device *devptr)
 {
 	snd_card_free(platform_get_drvdata(devptr));
-	platform_set_drvdata(devptr, NULL);
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int snd_dummy_suspend(struct platform_device *pdev, pm_message_t state)
+#ifdef CONFIG_PM_SLEEP
+static int snd_dummy_suspend(struct device *pdev)
 {
-	struct snd_card *card = platform_get_drvdata(pdev);
+	struct snd_card *card = dev_get_drvdata(pdev);
 	struct snd_dummy *dummy = card->private_data;
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
@@ -1075,26 +1149,28 @@ static int snd_dummy_suspend(struct platform_device *pdev, pm_message_t state)
 	return 0;
 }
 	
-static int snd_dummy_resume(struct platform_device *pdev)
+static int snd_dummy_resume(struct device *pdev)
 {
-	struct snd_card *card = platform_get_drvdata(pdev);
+	struct snd_card *card = dev_get_drvdata(pdev);
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
+
+static SIMPLE_DEV_PM_OPS(snd_dummy_pm, snd_dummy_suspend, snd_dummy_resume);
+#define SND_DUMMY_PM_OPS	&snd_dummy_pm
+#else
+#define SND_DUMMY_PM_OPS	NULL
 #endif
 
 #define SND_DUMMY_DRIVER	"snd_dummy"
 
 static struct platform_driver snd_dummy_driver = {
 	.probe		= snd_dummy_probe,
-	.remove		= __devexit_p(snd_dummy_remove),
-#ifdef CONFIG_PM
-	.suspend	= snd_dummy_suspend,
-	.resume		= snd_dummy_resume,
-#endif
+	.remove		= snd_dummy_remove,
 	.driver		= {
-		.name	= SND_DUMMY_DRIVER
+		.name	= SND_DUMMY_DRIVER,
+		.pm	= SND_DUMMY_PM_OPS,
 	},
 };
 

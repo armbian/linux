@@ -40,7 +40,7 @@
 #define FR_BUSY (1<<3)
 #define FR_TXFF (1<<5)
 
-static void putc(char c)
+static inline void putc(char c)
 {
 	unsigned long base;
 
@@ -73,4 +73,3 @@ static inline void flush(void)
  * nothing to do
  */
 #define arch_decomp_setup()
-#define arch_decomp_wdog()

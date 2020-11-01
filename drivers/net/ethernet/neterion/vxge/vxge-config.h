@@ -27,7 +27,7 @@
 	(((size) - (((u64)adrs) & ((size)-1))) & ((size)-1))
 #endif
 
-#define VXGE_HW_MIN_MTU				68
+#define VXGE_HW_MIN_MTU				ETH_MIN_MTU
 #define VXGE_HW_MAX_MTU				9600
 #define VXGE_HW_DEFAULT_MTU			1500
 
@@ -1846,11 +1846,11 @@ struct vxge_hw_vpath_attr {
 	struct vxge_hw_fifo_attr	fifo_attr;
 };
 
-enum vxge_hw_status __devinit vxge_hw_device_hw_info_get(
+enum vxge_hw_status vxge_hw_device_hw_info_get(
 	void __iomem *bar0,
 	struct vxge_hw_device_hw_info *hw_info);
 
-enum vxge_hw_status __devinit vxge_hw_device_config_default_get(
+enum vxge_hw_status vxge_hw_device_config_default_get(
 	struct vxge_hw_device_config *device_config);
 
 /**
@@ -1877,7 +1877,7 @@ u16 vxge_hw_device_link_width_get(struct __vxge_hw_device *devh);
 const u8 *
 vxge_hw_device_product_name_get(struct __vxge_hw_device *devh);
 
-enum vxge_hw_status __devinit vxge_hw_device_initialize(
+enum vxge_hw_status vxge_hw_device_initialize(
 	struct __vxge_hw_device **devh,
 	struct vxge_hw_device_attr *attr,
 	struct vxge_hw_device_config *device_config);
@@ -1922,7 +1922,7 @@ realloc:
 		/* misaligned, free current one and try allocating
 		 * size + VXGE_CACHE_LINE_SIZE memory
 		 */
-		kfree((void *) vaddr);
+		kfree(vaddr);
 		size += VXGE_CACHE_LINE_SIZE;
 		realloc_flag = 1;
 		goto realloc;
@@ -2065,7 +2065,7 @@ vxge_hw_vpath_strip_fcs_check(struct __vxge_hw_device *hldev, u64 vpath_mask);
 	if ((level >= VXGE_ERR && VXGE_COMPONENT_LL & VXGE_DEBUG_ERR_MASK) ||  \
 	    (level >= VXGE_TRACE && VXGE_COMPONENT_LL & VXGE_DEBUG_TRACE_MASK))\
 		if ((mask & VXGE_DEBUG_MASK) == mask)			       \
-			printk(fmt "\n", __VA_ARGS__);			       \
+			printk(fmt "\n", ##__VA_ARGS__);		       \
 } while (0)
 #else
 #define vxge_debug_ll(level, mask, fmt, ...)

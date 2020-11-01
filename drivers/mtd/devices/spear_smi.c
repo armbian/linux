@@ -1,12 +1,12 @@
 /*
  * SMI (Serial Memory Controller) device driver for Serial NOR Flash on
  * SPEAr platform
- * The serial nor interface is largely based on drivers/mtd/m25p80.c,
- * however the SPI interface has been replaced by SMI.
+ * The serial nor interface is largely based on m25p80.c, however the SPI
+ * interface has been replaced by SMI.
  *
  * Copyright © 2010 STMicroelectronics.
  * Ashish Priyadarshi
- * Shiraz Hashim <shiraz.hashim@st.com>
+ * Shiraz Hashim <shiraz.linux.kernel@gmail.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -26,6 +26,7 @@
 #include <linux/module.h>
 #include <linux/param.h>
 #include <linux/platform_device.h>
+#include <linux/pm.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/spear_smi.h>
@@ -240,8 +241,8 @@ static int spear_smi_read_sr(struct spear_smi *dev, u32 bank)
 	/* copy dev->status (lower 16 bits) in order to release lock */
 	if (ret > 0)
 		ret = dev->status & 0xffff;
-	else
-		ret = -EIO;
+	else if (ret == 0)
+		ret = -ETIMEDOUT;
 
 	/* restore the ctrl regs state */
 	writel(ctrlreg1, dev->io_base + SMI_CR1);
@@ -269,16 +270,19 @@ static int spear_smi_wait_till_ready(struct spear_smi *dev, u32 bank,
 	finish = jiffies + timeout;
 	do {
 		status = spear_smi_read_sr(dev, bank);
-		if (status < 0)
-			continue; /* try till timeout */
-		else if (!(status & SR_WIP))
+		if (status < 0) {
+			if (status == -ETIMEDOUT)
+				continue; /* try till finish */
+			return status;
+		} else if (!(status & SR_WIP)) {
 			return 0;
+		}
 
 		cond_resched();
 	} while (!time_after_eq(jiffies, finish));
 
 	dev_err(&dev->pdev->dev, "smi controller is busy, timeout\n");
-	return status;
+	return -EBUSY;
 }
 
 /**
@@ -335,6 +339,9 @@ static void spear_smi_hw_init(struct spear_smi *dev)
 	val = HOLD1 | BANK_EN | DSEL_TIME | (prescale << 8);
 
 	mutex_lock(&dev->lock);
+	/* clear all interrupt conditions */
+	writel(0, dev->io_base + SMI_SR);
+
 	writel(val, dev->io_base + SMI_CR1);
 	mutex_unlock(&dev->lock);
 }
@@ -391,11 +398,11 @@ static int spear_smi_write_enable(struct spear_smi *dev, u32 bank)
 	writel(ctrlreg1, dev->io_base + SMI_CR1);
 	writel(0, dev->io_base + SMI_CR2);
 
-	if (ret <= 0) {
+	if (ret == 0) {
 		ret = -EIO;
 		dev_err(&dev->pdev->dev,
 			"smi controller failed on write enable\n");
-	} else {
+	} else if (ret > 0) {
 		/* check whether write mode status is set for required bank */
 		if (dev->status & (1 << (bank + WM_SHIFT)))
 			ret = 0;
@@ -462,10 +469,10 @@ static int spear_smi_erase_sector(struct spear_smi *dev,
 	ret = wait_event_interruptible_timeout(dev->cmd_complete,
 			dev->status & TFF, SMI_CMD_TIMEOUT);
 
-	if (ret <= 0) {
+	if (ret == 0) {
 		ret = -EIO;
 		dev_err(&dev->pdev->dev, "sector erase failed\n");
-	} else
+	} else if (ret > 0)
 		ret = 0; /* success */
 
 	/* restore ctrl regs */
@@ -543,7 +550,7 @@ static int spear_mtd_read(struct mtd_info *mtd, loff_t from, size_t len,
 {
 	struct spear_snor_flash *flash = get_flash_data(mtd);
 	struct spear_smi *dev = mtd->priv;
-	void *src;
+	void __iomem *src;
 	u32 ctrlreg1, val;
 	int ret;
 
@@ -576,7 +583,7 @@ static int spear_mtd_read(struct mtd_info *mtd, loff_t from, size_t len,
 
 	writel(val, dev->io_base + SMI_CR1);
 
-	memcpy_fromio(buf, (u8 *)src, len);
+	memcpy_fromio(buf, src, len);
 
 	/* restore ctrl reg1 */
 	writel(ctrlreg1, dev->io_base + SMI_CR1);
@@ -588,8 +595,28 @@ static int spear_mtd_read(struct mtd_info *mtd, loff_t from, size_t len,
 	return 0;
 }
 
+/*
+ * The purpose of this function is to ensure a memcpy_toio() with byte writes
+ * only. Its structure is inspired from the ARM implementation of _memcpy_toio()
+ * which also does single byte writes but cannot be used here as this is just an
+ * implementation detail and not part of the API. Not mentioning the comment
+ * stating that _memcpy_toio() should be optimized.
+ */
+static void spear_smi_memcpy_toio_b(volatile void __iomem *dest,
+				    const void *src, size_t len)
+{
+	const unsigned char *from = src;
+
+	while (len) {
+		len--;
+		writeb(*from, dest);
+		from++;
+		dest++;
+	}
+}
+
 static inline int spear_smi_cpy_toio(struct spear_smi *dev, u32 bank,
-		void *dest, const void *src, size_t len)
+		void __iomem *dest, const void *src, size_t len)
 {
 	int ret;
 	u32 ctrlreg1;
@@ -610,7 +637,23 @@ static inline int spear_smi_cpy_toio(struct spear_smi *dev, u32 bank,
 	ctrlreg1 = readl(dev->io_base + SMI_CR1);
 	writel((ctrlreg1 | WB_MODE) & ~SW_MODE, dev->io_base + SMI_CR1);
 
-	memcpy_toio(dest, src, len);
+	/*
+	 * In Write Burst mode (WB_MODE), the specs states that writes must be:
+	 * - incremental
+	 * - of the same size
+	 * The ARM implementation of memcpy_toio() will optimize the number of
+	 * I/O by using as much 4-byte writes as possible, surrounded by
+	 * 2-byte/1-byte access if:
+	 * - the destination is not 4-byte aligned
+	 * - the length is not a multiple of 4-byte.
+	 * Avoid this alternance of write access size by using our own 'byte
+	 * access' helper if at least one of the two conditions above is true.
+	 */
+	if (IS_ALIGNED(len, sizeof(u32)) &&
+	    IS_ALIGNED((uintptr_t)dest, sizeof(u32)))
+		memcpy_toio(dest, src, len);
+	else
+		spear_smi_memcpy_toio_b(dest, src, len);
 
 	writel(ctrlreg1, dev->io_base + SMI_CR1);
 
@@ -636,7 +679,7 @@ static int spear_mtd_write(struct mtd_info *mtd, loff_t to, size_t len,
 {
 	struct spear_snor_flash *flash = get_flash_data(mtd);
 	struct spear_smi *dev = mtd->priv;
-	void *dest;
+	void __iomem *dest;
 	u32 page_offset, page_size;
 	int ret;
 
@@ -749,8 +792,8 @@ err_probe:
 
 
 #ifdef CONFIG_OF
-static int __devinit spear_smi_probe_config_dt(struct platform_device *pdev,
-					       struct device_node *np)
+static int spear_smi_probe_config_dt(struct platform_device *pdev,
+				     struct device_node *np)
 {
 	struct spear_smi_plat_data *pdata = dev_get_platdata(&pdev->dev);
 	struct device_node *pp = NULL;
@@ -768,6 +811,8 @@ static int __devinit spear_smi_probe_config_dt(struct platform_device *pdev,
 	pdata->board_flash_info = devm_kzalloc(&pdev->dev,
 					       sizeof(*pdata->board_flash_info),
 					       GFP_KERNEL);
+	if (!pdata->board_flash_info)
+		return -ENOMEM;
 
 	/* Fill structs for each subnode (flash device) */
 	while ((pp = of_get_next_child(np, pp))) {
@@ -792,8 +837,8 @@ static int __devinit spear_smi_probe_config_dt(struct platform_device *pdev,
 	return 0;
 }
 #else
-static int __devinit spear_smi_probe_config_dt(struct platform_device *pdev,
-					       struct device_node *np)
+static int spear_smi_probe_config_dt(struct platform_device *pdev,
+				     struct device_node *np)
 {
 	return -ENOSYS;
 }
@@ -803,7 +848,6 @@ static int spear_smi_setup_banks(struct platform_device *pdev,
 				 u32 bank, struct device_node *np)
 {
 	struct spear_smi *dev = platform_get_drvdata(pdev);
-	struct mtd_part_parser_data ppdata = {};
 	struct spear_smi_flash_info *flash_info;
 	struct spear_smi_plat_data *pdata;
 	struct spear_snor_flash *flash;
@@ -820,7 +864,7 @@ static int spear_smi_setup_banks(struct platform_device *pdev,
 	if (!flash_info)
 		return -ENODEV;
 
-	flash = kzalloc(sizeof(*flash), GFP_ATOMIC);
+	flash = devm_kzalloc(&pdev->dev, sizeof(*flash), GFP_ATOMIC);
 	if (!flash)
 		return -ENOMEM;
 	flash->bank = bank;
@@ -831,15 +875,13 @@ static int spear_smi_setup_banks(struct platform_device *pdev,
 	flash_index = spear_smi_probe_flash(dev, bank);
 	if (flash_index < 0) {
 		dev_info(&dev->pdev->dev, "smi-nor%d not found\n", bank);
-		ret = flash_index;
-		goto err_probe;
+		return flash_index;
 	}
 	/* map the memory for nor flash chip */
-	flash->base_addr = ioremap(flash_info->mem_base, flash_info->size);
-	if (!flash->base_addr) {
-		ret = -EIO;
-		goto err_probe;
-	}
+	flash->base_addr = devm_ioremap(&pdev->dev, flash_info->mem_base,
+					flash_info->size);
+	if (!flash->base_addr)
+		return -EIO;
 
 	dev->flash[bank] = flash;
 	flash->mtd.priv = dev;
@@ -849,6 +891,8 @@ static int spear_smi_setup_banks(struct platform_device *pdev,
 	else
 		flash->mtd.name = flash_devices[flash_index].name;
 
+	flash->mtd.dev.parent = &pdev->dev;
+	mtd_set_of_node(&flash->mtd, np);
 	flash->mtd.type = MTD_NORFLASH;
 	flash->mtd.writesize = 1;
 	flash->mtd.flags = MTD_CAP_NORFLASH;
@@ -875,23 +919,14 @@ static int spear_smi_setup_banks(struct platform_device *pdev,
 		count = flash_info->nr_partitions;
 	}
 #endif
-	ppdata.of_node = np;
 
-	ret = mtd_device_parse_register(&flash->mtd, NULL, &ppdata, parts,
-					count);
+	ret = mtd_device_register(&flash->mtd, parts, count);
 	if (ret) {
 		dev_err(&dev->pdev->dev, "Err MTD partition=%d\n", ret);
-		goto err_map;
+		return ret;
 	}
 
 	return 0;
-
-err_map:
-	iounmap(flash->base_addr);
-
-err_probe:
-	kfree(flash);
-	return ret;
 }
 
 /**
@@ -903,7 +938,7 @@ err_probe:
  * and do proper init for any found one.
  * Returns 0 on success, non zero otherwise
  */
-static int __devinit spear_smi_probe(struct platform_device *pdev)
+static int spear_smi_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct spear_smi_plat_data *pdata = NULL;
@@ -915,7 +950,6 @@ static int __devinit spear_smi_probe(struct platform_device *pdev)
 	if (np) {
 		pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 		if (!pdata) {
-			pr_err("%s: ERROR: no memory", __func__);
 			ret = -ENOMEM;
 			goto err;
 		}
@@ -928,18 +962,11 @@ static int __devinit spear_smi_probe(struct platform_device *pdev)
 		}
 	} else {
 		pdata = dev_get_platdata(&pdev->dev);
-		if (pdata < 0) {
+		if (!pdata) {
 			ret = -ENODEV;
 			dev_err(&pdev->dev, "no platform data\n");
 			goto err;
 		}
-	}
-
-	smi_base = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!smi_base) {
-		ret = -ENODEV;
-		dev_err(&pdev->dev, "invalid smi base address\n");
-		goto err;
 	}
 
 	irq = platform_get_irq(pdev, 0);
@@ -949,32 +976,24 @@ static int __devinit spear_smi_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	dev = kzalloc(sizeof(*dev), GFP_ATOMIC);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_ATOMIC);
 	if (!dev) {
 		ret = -ENOMEM;
-		dev_err(&pdev->dev, "mem alloc fail\n");
 		goto err;
 	}
 
-	smi_base = request_mem_region(smi_base->start, resource_size(smi_base),
-			pdev->name);
-	if (!smi_base) {
-		ret = -EBUSY;
-		dev_err(&pdev->dev, "request mem region fail\n");
-		goto err_mem;
-	}
+	smi_base = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 
-	dev->io_base = ioremap(smi_base->start, resource_size(smi_base));
-	if (!dev->io_base) {
-		ret = -EIO;
-		dev_err(&pdev->dev, "ioremap fail\n");
-		goto err_ioremap;
+	dev->io_base = devm_ioremap_resource(&pdev->dev, smi_base);
+	if (IS_ERR(dev->io_base)) {
+		ret = PTR_ERR(dev->io_base);
+		goto err;
 	}
 
 	dev->pdev = pdev;
 	dev->clk_rate = pdata->clk_rate;
 
-	if (dev->clk_rate < 0 || dev->clk_rate > SMI_MAX_CLOCK_FREQ)
+	if (dev->clk_rate > SMI_MAX_CLOCK_FREQ)
 		dev->clk_rate = SMI_MAX_CLOCK_FREQ;
 
 	dev->num_flashes = pdata->num_flashes;
@@ -984,17 +1003,18 @@ static int __devinit spear_smi_probe(struct platform_device *pdev)
 		dev->num_flashes = MAX_NUM_FLASH_CHIP;
 	}
 
-	dev->clk = clk_get(&pdev->dev, NULL);
+	dev->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(dev->clk)) {
 		ret = PTR_ERR(dev->clk);
-		goto err_clk;
+		goto err;
 	}
 
-	ret = clk_enable(dev->clk);
+	ret = clk_prepare_enable(dev->clk);
 	if (ret)
-		goto err_clk_enable;
+		goto err;
 
-	ret = request_irq(irq, spear_smi_int_handler, 0, pdev->name, dev);
+	ret = devm_request_irq(&pdev->dev, irq, spear_smi_int_handler, 0,
+			       pdev->name, dev);
 	if (ret) {
 		dev_err(&dev->pdev->dev, "SMI IRQ allocation failed\n");
 		goto err_irq;
@@ -1010,25 +1030,14 @@ static int __devinit spear_smi_probe(struct platform_device *pdev)
 		ret = spear_smi_setup_banks(pdev, i, pdata->np[i]);
 		if (ret) {
 			dev_err(&dev->pdev->dev, "bank setup failed\n");
-			goto err_bank_setup;
+			goto err_irq;
 		}
 	}
 
 	return 0;
 
-err_bank_setup:
-	free_irq(irq, dev);
-	platform_set_drvdata(pdev, NULL);
 err_irq:
-	clk_disable(dev->clk);
-err_clk_enable:
-	clk_put(dev->clk);
-err_clk:
-	iounmap(dev->io_base);
-err_ioremap:
-	release_mem_region(smi_base->start, resource_size(smi_base));
-err_mem:
-	kfree(dev);
+	clk_disable_unprepare(dev->clk);
 err:
 	return ret;
 }
@@ -1039,22 +1048,17 @@ err:
  *
  * free all allocations and delete the partitions.
  */
-static int __devexit spear_smi_remove(struct platform_device *pdev)
+static int spear_smi_remove(struct platform_device *pdev)
 {
 	struct spear_smi *dev;
-	struct spear_smi_plat_data *pdata;
 	struct spear_snor_flash *flash;
-	struct resource *smi_base;
-	int ret;
-	int i, irq;
+	int ret, i;
 
 	dev = platform_get_drvdata(pdev);
 	if (!dev) {
 		dev_err(&pdev->dev, "dev is null\n");
 		return -ENODEV;
 	}
-
-	pdata = dev_get_platdata(&pdev->dev);
 
 	/* clean up for all nor flash */
 	for (i = 0; i < dev->num_flashes; i++) {
@@ -1066,48 +1070,39 @@ static int __devexit spear_smi_remove(struct platform_device *pdev)
 		ret = mtd_device_unregister(&flash->mtd);
 		if (ret)
 			dev_err(&pdev->dev, "error removing mtd\n");
-
-		iounmap(flash->base_addr);
-		kfree(flash);
 	}
 
-	irq = platform_get_irq(pdev, 0);
-	free_irq(irq, dev);
-
-	clk_disable(dev->clk);
-	clk_put(dev->clk);
-	iounmap(dev->io_base);
-	kfree(dev);
-
-	smi_base = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(smi_base->start, resource_size(smi_base));
-	platform_set_drvdata(pdev, NULL);
+	clk_disable_unprepare(dev->clk);
 
 	return 0;
 }
 
-int spear_smi_suspend(struct platform_device *pdev, pm_message_t state)
+#ifdef CONFIG_PM_SLEEP
+static int spear_smi_suspend(struct device *dev)
 {
-	struct spear_smi *dev = platform_get_drvdata(pdev);
+	struct spear_smi *sdev = dev_get_drvdata(dev);
 
-	if (dev && dev->clk)
-		clk_disable(dev->clk);
+	if (sdev && sdev->clk)
+		clk_disable_unprepare(sdev->clk);
 
 	return 0;
 }
 
-int spear_smi_resume(struct platform_device *pdev)
+static int spear_smi_resume(struct device *dev)
 {
-	struct spear_smi *dev = platform_get_drvdata(pdev);
+	struct spear_smi *sdev = dev_get_drvdata(dev);
 	int ret = -EPERM;
 
-	if (dev && dev->clk)
-		ret = clk_enable(dev->clk);
+	if (sdev && sdev->clk)
+		ret = clk_prepare_enable(sdev->clk);
 
 	if (!ret)
-		spear_smi_hw_init(dev);
+		spear_smi_hw_init(sdev);
 	return ret;
 }
+#endif
+
+static SIMPLE_DEV_PM_OPS(spear_smi_pm_ops, spear_smi_suspend, spear_smi_resume);
 
 #ifdef CONFIG_OF
 static const struct of_device_id spear_smi_id_table[] = {
@@ -1121,27 +1116,14 @@ static struct platform_driver spear_smi_driver = {
 	.driver = {
 		.name = "smi",
 		.bus = &platform_bus_type,
-		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(spear_smi_id_table),
+		.pm = &spear_smi_pm_ops,
 	},
 	.probe = spear_smi_probe,
-	.remove = __devexit_p(spear_smi_remove),
-	.suspend = spear_smi_suspend,
-	.resume = spear_smi_resume,
+	.remove = spear_smi_remove,
 };
-
-static int spear_smi_init(void)
-{
-	return platform_driver_register(&spear_smi_driver);
-}
-module_init(spear_smi_init);
-
-static void spear_smi_exit(void)
-{
-	platform_driver_unregister(&spear_smi_driver);
-}
-module_exit(spear_smi_exit);
+module_platform_driver(spear_smi_driver);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Ashish Priyadarshi, Shiraz Hashim <shiraz.hashim@st.com>");
+MODULE_AUTHOR("Ashish Priyadarshi, Shiraz Hashim <shiraz.linux.kernel@gmail.com>");
 MODULE_DESCRIPTION("MTD SMI driver for serial nor flash chips");

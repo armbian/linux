@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/kthread.h>
 #include <linux/hrtimer.h>
@@ -5,7 +6,7 @@
 #include <linux/debugfs.h>
 #include <linux/export.h>
 #include <linux/spinlock.h>
-
+#include <asm/debug.h>
 
 static int ss_get(void *data, u64 *val)
 {
@@ -115,8 +116,6 @@ static int multi_get(void *data, u64 *val)
 
 DEFINE_SIMPLE_ATTRIBUTE(fops_multi, multi_get, NULL, "%llu\n");
 
-
-extern struct dentry *mips_debugfs_dir;
 static int __init spinlock_test(void)
 {
 	struct dentry *d;

@@ -8,15 +8,15 @@ comment "OMAP Core Type"
 config ARCH_OMAP730
 	depends on ARCH_OMAP1
 	bool "OMAP730 Based System"
+	select ARCH_OMAP_OTG
 	select CPU_ARM926T
 	select OMAP_MPU_TIMER
-	select ARCH_OMAP_OTG
 
 config ARCH_OMAP850
 	depends on ARCH_OMAP1
 	bool "OMAP850 Based System"
-	select CPU_ARM926T
 	select ARCH_OMAP_OTG
+	select CPU_ARM926T
 
 config ARCH_OMAP15XX
 	depends on ARCH_OMAP1
@@ -28,8 +28,34 @@ config ARCH_OMAP15XX
 config ARCH_OMAP16XX
 	depends on ARCH_OMAP1
 	bool "OMAP16xx Based System"
-	select CPU_ARM926T
 	select ARCH_OMAP_OTG
+	select CPU_ARM926T
+
+config OMAP_MUX
+	bool "OMAP multiplexing support"
+	depends on ARCH_OMAP
+	default y
+	help
+	  Pin multiplexing support for OMAP boards. If your bootloader
+	  sets the multiplexing correctly, say N. Otherwise, or if unsure,
+	  say Y.
+
+config OMAP_MUX_DEBUG
+	bool "Multiplexing debug output"
+	depends on OMAP_MUX
+	help
+	  Makes the multiplexing functions print out a lot of debug info.
+	  This is useful if you want to find out the correct values of the
+	  multiplexing registers.
+
+config OMAP_MUX_WARNINGS
+	bool "Warn about pins the bootloader didn't set up"
+	depends on OMAP_MUX
+	default y
+	help
+	  Choose Y here to warn whenever driver initialization logic needs
+	  to change the pin multiplexing setup.	 When there are no warnings
+	  printed, it's safe to deselect OMAP_MUX for your product.
 
 comment "OMAP Board Type"
 	depends on ARCH_OMAP1
@@ -54,12 +80,6 @@ config MACH_OMAP_H3
     	help
 	  TI OMAP 1710 H3 board support. Say Y here if you have such
 	  a board.
-
-config MACH_OMAP_HTCWIZARD
-	bool "HTC Wizard"
-	depends on ARCH_OMAP850
-	help
-	  HTC Wizard smartphone support (AKA QTEK 9100, ...)
 
 config MACH_HERALD
 	bool "HTC Herald"
@@ -96,13 +116,6 @@ config MACH_OMAP_FSAMPLE
 	  Support for TI OMAP 850 F-Sample board. Say Y here if you have such
 	  a board.
 
-config MACH_VOICEBLUE
-	bool "Voiceblue"
-	depends on ARCH_OMAP1 && ARCH_OMAP15XX
-	help
-	  Support for Voiceblue GSM/VoIP gateway. Say Y here if you have
-	  such a board.
-
 config MACH_OMAP_PALMTE
 	bool "Palm Tungsten E"
 	depends on ARCH_OMAP1 && ARCH_OMAP15XX
@@ -133,6 +146,7 @@ config MACH_OMAP_PALMTT
 config MACH_SX1
 	bool "Siemens SX1"
 	depends on ARCH_OMAP1 && ARCH_OMAP15XX
+	select I2C
 	help
 	  Support for the Siemens SX1 phone. To boot the kernel,
 	  you'll need a SX1 compatible bootloader; check out

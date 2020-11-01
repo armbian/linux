@@ -92,19 +92,6 @@ static inline void release_thread(struct task_struct *dead_task)
 {
 }
 
-/* Prepare to copy thread state - unlazy all lazy status */
-#define prepare_to_copy(tsk)	do { } while (0)
-
-extern int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
-
-#define copy_segments(tsk, mm)		do { } while (0)
-#define release_segments(mm)		do { } while (0)
-
-/*
- * saved PC of a blocked thread.
- */
-#define thread_saved_pc(tsk) (task_pt_regs(tsk)->pc)
-
 /*
  * saved kernel SP and DP of a blocked thread.
  */

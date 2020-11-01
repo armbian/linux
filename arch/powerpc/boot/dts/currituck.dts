@@ -103,6 +103,11 @@
 				interrupts = <34 2>;
 			};
 
+			FPGA0: fpga@50000000 {
+				compatible = "ibm,currituck-fpga";
+				reg = <0x50000000 0x4>;
+			};
+
 			IIC0: i2c@00000000 {
 				compatible = "ibm,iic-currituck", "ibm,iic";
 				reg = <0x0 0x00000014>;
@@ -111,7 +116,7 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
                                 rtc@68 {
-                                        compatible = "stm,m41t80", "m41st85";
+                                        compatible = "st,m41t80", "m41st85";
                                         reg = <0x68>;
                                 };
 			};

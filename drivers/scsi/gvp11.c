@@ -171,31 +171,14 @@ static void dma_stop(struct Scsi_Host *instance, struct scsi_cmnd *SCpnt,
 	}
 }
 
-static int gvp11_bus_reset(struct scsi_cmnd *cmd)
-{
-	struct Scsi_Host *instance = cmd->device->host;
-
-	/* FIXME perform bus-specific reset */
-
-	/* FIXME 2: shouldn't we no-op this function (return
-	   FAILED), and fall back to host reset function,
-	   wd33c93_host_reset ? */
-
-	spin_lock_irq(instance->host_lock);
-	wd33c93_host_reset(cmd);
-	spin_unlock_irq(instance->host_lock);
-
-	return SUCCESS;
-}
-
 static struct scsi_host_template gvp11_scsi_template = {
 	.module			= THIS_MODULE,
 	.name			= "GVP Series II SCSI",
-	.proc_info		= wd33c93_proc_info,
+	.show_info		= wd33c93_show_info,
+	.write_info		= wd33c93_write_info,
 	.proc_name		= "GVP11",
 	.queuecommand		= wd33c93_queuecommand,
 	.eh_abort_handler	= wd33c93_abort,
-	.eh_bus_reset_handler	= gvp11_bus_reset,
 	.eh_host_reset_handler	= wd33c93_host_reset,
 	.can_queue		= CAN_QUEUE,
 	.this_id		= 7,
@@ -204,7 +187,7 @@ static struct scsi_host_template gvp11_scsi_template = {
 	.use_clustering		= DISABLE_CLUSTERING
 };
 
-static int __devinit check_wd33c93(struct gvp11_scsiregs *regs)
+static int check_wd33c93(struct gvp11_scsiregs *regs)
 {
 #ifdef CHECK_WD33C93
 	volatile unsigned char *sasr_3393, *scmd_3393;
@@ -284,8 +267,7 @@ static int __devinit check_wd33c93(struct gvp11_scsiregs *regs)
 	return 0;
 }
 
-static int __devinit gvp11_probe(struct zorro_dev *z,
-				 const struct zorro_device_id *ent)
+static int gvp11_probe(struct zorro_dev *z, const struct zorro_device_id *ent)
 {
 	struct Scsi_Host *instance;
 	unsigned long address;
@@ -310,7 +292,7 @@ static int __devinit gvp11_probe(struct zorro_dev *z,
 	if (!request_mem_region(address, 256, "wd33c93"))
 		return -EBUSY;
 
-	regs = (struct gvp11_scsiregs *)(ZTWO_VADDR(address));
+	regs = ZTWO_VADDR(address);
 
 	error = check_wd33c93(regs);
 	if (error)
@@ -380,7 +362,7 @@ fail_check_or_alloc:
 	return error;
 }
 
-static void __devexit gvp11_remove(struct zorro_dev *z)
+static void gvp11_remove(struct zorro_dev *z)
 {
 	struct Scsi_Host *instance = zorro_get_drvdata(z);
 	struct gvp11_hostdata *hdata = shost_priv(instance);
@@ -398,7 +380,7 @@ static void __devexit gvp11_remove(struct zorro_dev *z)
 	 * SERIES I though).
 	 */
 
-static struct zorro_device_id gvp11_zorro_tbl[] __devinitdata = {
+static struct zorro_device_id gvp11_zorro_tbl[] = {
 	{ ZORRO_PROD_GVP_COMBO_030_R3_SCSI,	~0x00ffffff },
 	{ ZORRO_PROD_GVP_SERIES_II,		~0x00ffffff },
 	{ ZORRO_PROD_GVP_GFORCE_030_SCSI,	~0x01ffffff },
@@ -414,7 +396,7 @@ static struct zorro_driver gvp11_driver = {
 	.name		= "gvp11",
 	.id_table	= gvp11_zorro_tbl,
 	.probe		= gvp11_probe,
-	.remove		= __devexit_p(gvp11_remove),
+	.remove		= gvp11_remove,
 };
 
 static int __init gvp11_init(void)

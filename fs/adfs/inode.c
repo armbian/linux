@@ -45,6 +45,14 @@ static int adfs_readpage(struct file *file, struct page *page)
 	return block_read_full_page(page, adfs_get_block);
 }
 
+static void adfs_write_failed(struct address_space *mapping, loff_t to)
+{
+	struct inode *inode = mapping->host;
+
+	if (to > inode->i_size)
+		truncate_pagecache(inode, inode->i_size);
+}
+
 static int adfs_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned flags,
 			struct page **pagep, void **fsdata)
@@ -55,11 +63,8 @@ static int adfs_write_begin(struct file *file, struct address_space *mapping,
 	ret = cont_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
 				adfs_get_block,
 				&ADFS_I(mapping->host)->mmu_private);
-	if (unlikely(ret)) {
-		loff_t isize = mapping->host->i_size;
-		if (pos + len > isize)
-			vmtruncate(mapping->host, isize);
-	}
+	if (unlikely(ret))
+		adfs_write_failed(mapping, pos + len);
 
 	return ret;
 }
@@ -194,7 +199,7 @@ adfs_adfs2unix_time(struct timespec *tv, struct inode *inode)
 	return;
 
  cur_time:
-	*tv = CURRENT_TIME;
+	*tv = current_time(inode);
 	return;
 
  too_early:
@@ -293,19 +298,19 @@ out:
 int
 adfs_notify_change(struct dentry *dentry, struct iattr *attr)
 {
-	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	struct super_block *sb = inode->i_sb;
 	unsigned int ia_valid = attr->ia_valid;
 	int error;
 	
-	error = inode_change_ok(inode, attr);
+	error = setattr_prepare(dentry, attr);
 
 	/*
 	 * we can't change the UID or GID of any file -
 	 * we have a global UID/GID in the superblock
 	 */
-	if ((ia_valid & ATTR_UID && attr->ia_uid != ADFS_SB(sb)->s_uid) ||
-	    (ia_valid & ATTR_GID && attr->ia_gid != ADFS_SB(sb)->s_gid))
+	if ((ia_valid & ATTR_UID && !uid_eq(attr->ia_uid, ADFS_SB(sb)->s_uid)) ||
+	    (ia_valid & ATTR_GID && !gid_eq(attr->ia_gid, ADFS_SB(sb)->s_gid)))
 		error = -EPERM;
 
 	if (error)

@@ -32,7 +32,6 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/input.h>
 #include <linux/serio.h>
 
@@ -214,7 +213,7 @@ static int spaceorb_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static struct serio_device_id spaceorb_serio_ids[] = {
+static const struct serio_device_id spaceorb_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_SPACEORB,
@@ -237,19 +236,4 @@ static struct serio_driver spaceorb_drv = {
 	.disconnect	= spaceorb_disconnect,
 };
 
-/*
- * The functions for inserting/removing us as a module.
- */
-
-static int __init spaceorb_init(void)
-{
-	return serio_register_driver(&spaceorb_drv);
-}
-
-static void __exit spaceorb_exit(void)
-{
-	serio_unregister_driver(&spaceorb_drv);
-}
-
-module_init(spaceorb_init);
-module_exit(spaceorb_exit);
+module_serio_driver(spaceorb_drv);

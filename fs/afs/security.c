@@ -114,7 +114,7 @@ void afs_clear_permits(struct afs_vnode *vnode)
 
 	mutex_lock(&vnode->permits_lock);
 	permits = vnode->permits;
-	rcu_assign_pointer(vnode->permits, NULL);
+	RCU_INIT_POINTER(vnode->permits, NULL);
 	mutex_unlock(&vnode->permits_lock);
 
 	if (permits)
@@ -323,34 +323,34 @@ int afs_permission(struct inode *inode, int mask)
 	       mask, access, S_ISDIR(inode->i_mode) ? "dir" : "file");
 
 	if (S_ISDIR(inode->i_mode)) {
-		if (mask & MAY_EXEC) {
+		if (mask & (MAY_EXEC | MAY_READ | MAY_CHDIR)) {
 			if (!(access & AFS_ACE_LOOKUP))
 				goto permission_denied;
-		} else if (mask & MAY_READ) {
-			if (!(access & AFS_ACE_READ))
-				goto permission_denied;
-		} else if (mask & MAY_WRITE) {
+		}
+		if (mask & MAY_WRITE) {
 			if (!(access & (AFS_ACE_DELETE | /* rmdir, unlink, rename from */
-					AFS_ACE_INSERT | /* create, mkdir, symlink, rename to */
-					AFS_ACE_WRITE))) /* chmod */
+					AFS_ACE_INSERT))) /* create, mkdir, symlink, rename to */
 				goto permission_denied;
-		} else {
-			BUG();
 		}
 	} else {
 		if (!(access & AFS_ACE_LOOKUP))
 			goto permission_denied;
+		if ((mask & MAY_EXEC) && !(inode->i_mode & S_IXUSR))
+			goto permission_denied;
 		if (mask & (MAY_EXEC | MAY_READ)) {
 			if (!(access & AFS_ACE_READ))
 				goto permission_denied;
+			if (!(inode->i_mode & S_IRUSR))
+				goto permission_denied;
 		} else if (mask & MAY_WRITE) {
 			if (!(access & AFS_ACE_WRITE))
+				goto permission_denied;
+			if (!(inode->i_mode & S_IWUSR))
 				goto permission_denied;
 		}
 	}
 
 	key_put(key);
-	ret = generic_permission(inode, mask);
 	_leave(" = %d", ret);
 	return ret;
 

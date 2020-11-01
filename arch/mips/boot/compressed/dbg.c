@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * MIPS-specific debug support for pre-boot environment
  *
@@ -6,7 +7,6 @@
  * need to implement your own putc().
  */
 #include <linux/compiler.h>
-#include <linux/init.h>
 #include <linux/types.h>
 
 void __weak putc(char c)

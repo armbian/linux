@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/m32r/kernel/traps.c
  *
@@ -14,11 +15,15 @@
 #include <linux/kallsyms.h>
 #include <linux/stddef.h>
 #include <linux/ptrace.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task_stack.h>
 #include <linux/mm.h>
+#include <linux/cpu.h>
+
 #include <asm/page.h>
 #include <asm/processor.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <linux/atomic.h>
 
@@ -110,6 +115,14 @@ static void set_eit_vector_entries(void)
 	_flush_cache_copyback_all();
 }
 
+void abort(void)
+{
+	BUG();
+
+	/* if that doesn't kill us, halt */
+	panic("Oops failed to kill thread");
+}
+
 void __init trap_init(void)
 {
 	set_eit_vector_entries();
@@ -132,10 +145,8 @@ static void show_trace(struct task_struct *task, unsigned long *stack)
 	printk("Call Trace: ");
 	while (!kstack_end(stack)) {
 		addr = *stack++;
-		if (__kernel_text_address(addr)) {
-			printk("[<%08lx>] ", addr);
-			print_symbol("%s\n", addr);
-		}
+		if (__kernel_text_address(addr))
+			printk("[<%08lx>] %pSR\n", addr, (void *)addr);
 	}
 	printk("\n");
 }
@@ -168,15 +179,6 @@ void show_stack(struct task_struct *task, unsigned long *sp)
 	printk("\n");
 	show_trace(task, sp);
 }
-
-void dump_stack(void)
-{
-	unsigned long stack;
-
-	show_trace(current, &stack);
-}
-
-EXPORT_SYMBOL(dump_stack);
 
 static void show_registers(struct pt_regs *regs)
 {

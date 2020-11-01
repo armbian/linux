@@ -25,11 +25,11 @@
 
 #include <linux/module.h>
 
-#include "drmP.h"
-#include "savage_drm.h"
+#include <drm/drmP.h>
+#include <drm/savage_drm.h>
 #include "savage_drv.h"
 
-#include "drm_pciids.h"
+#include <drm/drm_pciids.h>
 
 static struct pci_device_id pciidlist[] = {
 	savage_PCI_IDS
@@ -40,21 +40,21 @@ static const struct file_operations savage_driver_fops = {
 	.open = drm_open,
 	.release = drm_release,
 	.unlocked_ioctl = drm_ioctl,
-	.mmap = drm_mmap,
+	.mmap = drm_legacy_mmap,
 	.poll = drm_poll,
-	.fasync = drm_fasync,
+	.compat_ioctl = drm_compat_ioctl,
 	.llseek = noop_llseek,
 };
 
 static struct drm_driver driver = {
 	.driver_features =
-	    DRIVER_USE_AGP | DRIVER_USE_MTRR | DRIVER_HAVE_DMA | DRIVER_PCI_DMA,
+	    DRIVER_USE_AGP | DRIVER_HAVE_DMA | DRIVER_PCI_DMA | DRIVER_LEGACY,
 	.dev_priv_size = sizeof(drm_savage_buf_priv_t),
 	.load = savage_driver_load,
 	.firstopen = savage_driver_firstopen,
+	.preclose = savage_reclaim_buffers,
 	.lastclose = savage_driver_lastclose,
 	.unload = savage_driver_unload,
-	.reclaim_buffers = savage_reclaim_buffers,
 	.ioctls = savage_ioctls,
 	.dma_ioctl = savage_bci_buffers,
 	.fops = &savage_driver_fops,
@@ -74,12 +74,12 @@ static struct pci_driver savage_pci_driver = {
 static int __init savage_init(void)
 {
 	driver.num_ioctls = savage_max_ioctl;
-	return drm_pci_init(&driver, &savage_pci_driver);
+	return drm_legacy_pci_init(&driver, &savage_pci_driver);
 }
 
 static void __exit savage_exit(void)
 {
-	drm_pci_exit(&driver, &savage_pci_driver);
+	drm_legacy_pci_exit(&driver, &savage_pci_driver);
 }
 
 module_init(savage_init);

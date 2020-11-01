@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * SMP Support
  *
@@ -55,7 +56,7 @@ extern struct smp_boot_data {
 	int cpu_phys_id[NR_CPUS];
 } smp_boot_data __initdata;
 
-extern char no_int_routing __devinitdata;
+extern char no_int_routing;
 
 extern cpumask_t cpu_core_map[NR_CPUS];
 DECLARE_PER_CPU_SHARED_ALIGNED(cpumask_t, cpu_sibling_map);

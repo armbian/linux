@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/pcmcia/sa1100_assabet.c
  *
@@ -29,13 +30,6 @@ static int assabet_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 	skt->stat[SOC_STAT_RDY].name = "CF RDY";
 
 	return 0;
-}
-
-static void
-assabet_pcmcia_socket_state(struct soc_pcmcia_socket *skt, struct pcmcia_state *state)
-{
-	state->vs_3v  = 1; /* Can only apply 3.3V on Assabet. */
-	state->vs_Xv  = 0;
 }
 
 static int
@@ -90,12 +84,12 @@ static void assabet_pcmcia_socket_suspend(struct soc_pcmcia_socket *skt)
 static struct pcmcia_low_level assabet_pcmcia_ops = { 
 	.owner			= THIS_MODULE,
 	.hw_init		= assabet_pcmcia_hw_init,
-	.socket_state		= assabet_pcmcia_socket_state,
+	.socket_state		= soc_common_cf_socket_state,
 	.configure_socket	= assabet_pcmcia_configure_socket,
 	.socket_suspend		= assabet_pcmcia_socket_suspend,
 };
 
-int __devinit pcmcia_assabet_init(struct device *dev)
+int pcmcia_assabet_init(struct device *dev)
 {
 	int ret = -ENODEV;
 

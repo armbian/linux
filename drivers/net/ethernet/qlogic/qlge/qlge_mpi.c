@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "qlge.h"
 
 int ql_unpause_mpi_risc(struct ql_adapter *qdev)
@@ -1274,7 +1275,7 @@ void ql_mpi_reset_work(struct work_struct *work)
 		return;
 	}
 
-	if (!ql_core_dump(qdev, qdev->mpi_coredump)) {
+	if (qdev->mpi_coredump && !ql_core_dump(qdev, qdev->mpi_coredump)) {
 		netif_err(qdev, drv, qdev->ndev, "Core is dumped!\n");
 		qdev->core_is_dumped = 1;
 		queue_delayed_work(qdev->workqueue,

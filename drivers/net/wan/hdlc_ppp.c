@@ -228,15 +228,15 @@ static void ppp_tx_cp(struct net_device *dev, u16 pid, u8 code,
 	}
 	skb_reserve(skb, sizeof(struct hdlc_header));
 
-	cp = (struct cp_header *)skb_put(skb, sizeof(struct cp_header));
+	cp = skb_put(skb, sizeof(struct cp_header));
 	cp->code = code;
 	cp->id = id;
 	cp->len = htons(sizeof(struct cp_header) + magic_len + len);
 
 	if (magic_len)
-		memcpy(skb_put(skb, magic_len), &magic, magic_len);
+		skb_put_data(skb, &magic, magic_len);
 	if (len)
-		memcpy(skb_put(skb, len), data, len);
+		skb_put_data(skb, data, len);
 
 #if DEBUG_CP
 	BUG_ON(code >= CP_CODES);
@@ -448,7 +448,7 @@ static int ppp_rx(struct sk_buff *skb)
 	/* Check HDLC header */
 	if (skb->len < sizeof(struct hdlc_header))
 		goto rx_error;
-	cp = (struct cp_header*)skb_pull(skb, sizeof(struct hdlc_header));
+	cp = skb_pull(skb, sizeof(struct hdlc_header));
 	if (hdr->address != HDLC_ADDR_ALLSTATIONS ||
 	    hdr->control != HDLC_CTRL_UI)
 		goto rx_error;
@@ -574,7 +574,10 @@ static void ppp_timer(unsigned long arg)
 			ppp_cp_event(proto->dev, proto->pid, TO_GOOD, 0, 0,
 				     0, NULL);
 			proto->restart_counter--;
-		} else
+		} else if (netif_carrier_ok(proto->dev))
+			ppp_cp_event(proto->dev, proto->pid, TO_GOOD, 0, 0,
+				     0, NULL);
+		else
 			ppp_cp_event(proto->dev, proto->pid, TO_BAD, 0, 0,
 				     0, NULL);
 		break;
@@ -687,6 +690,7 @@ static int ppp_ioctl(struct net_device *dev, struct ifreq *ifr)
 		dev->hard_header_len = sizeof(struct hdlc_header);
 		dev->header_ops = &ppp_header_ops;
 		dev->type = ARPHRD_PPP;
+		call_netdevice_notifiers(NETDEV_POST_TYPE_CHANGE, dev);
 		netif_dormant_on(dev);
 		return 0;
 	}

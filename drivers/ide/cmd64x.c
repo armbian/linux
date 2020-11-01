@@ -65,6 +65,9 @@ static void cmd64x_program_timings(ide_drive_t *drive, u8 mode)
 	struct ide_timing t;
 	u8 arttim = 0;
 
+	if (drive->dn >= ARRAY_SIZE(drwtim_regs))
+		return;
+
 	ide_timing_compute(drive, mode, &t, T, 0);
 
 	/*
@@ -327,7 +330,7 @@ static const struct ide_dma_ops cmd646_rev1_dma_ops = {
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 
-static const struct ide_port_info cmd64x_chipsets[] __devinitdata = {
+static const struct ide_port_info cmd64x_chipsets[] = {
 	{	/* 0: CMD643 */
 		.name		= DRV_NAME,
 		.init_chipset	= init_chipset_cmd64x,
@@ -373,7 +376,7 @@ static const struct ide_port_info cmd64x_chipsets[] __devinitdata = {
 	}
 };
 
-static int __devinit cmd64x_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int cmd64x_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct ide_port_info d;
 	u8 idx = id->driver_data;

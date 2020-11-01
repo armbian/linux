@@ -55,16 +55,16 @@ module_param_array(id, charp, NULL, 0444);
 MODULE_PARM_DESC(id, "ID string for " CRD_NAME " soundcard.");
 module_param_array(enable, bool, NULL, 0444);
 MODULE_PARM_DESC(enable, "Enable " CRD_NAME " soundcard.");
-module_param_array(port, long, NULL, 0444);
+module_param_hw_array(port, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(port, "Port # for " CRD_NAME " driver.");
-module_param_array(irq, int, NULL, 0444);
+module_param_hw_array(irq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(irq, "IRQ # for " CRD_NAME " driver.");
-module_param_array(dma1, int, NULL, 0444);
+module_param_hw_array(dma1, int, dma, NULL, 0444);
 MODULE_PARM_DESC(dma1, "DMA1 # for " CRD_NAME " driver.");
 module_param_array(thinkpad, bool, NULL, 0444);
 MODULE_PARM_DESC(thinkpad, "Enable only for the onboard CS4248 of IBM Thinkpad 360/750/755 series.");
 
-static int __devinit snd_ad1848_match(struct device *dev, unsigned int n)
+static int snd_ad1848_match(struct device *dev, unsigned int n)
 {
 	if (!enable[n])
 		return 0;
@@ -84,14 +84,13 @@ static int __devinit snd_ad1848_match(struct device *dev, unsigned int n)
 	return 1;
 }
 
-static int __devinit snd_ad1848_probe(struct device *dev, unsigned int n)
+static int snd_ad1848_probe(struct device *dev, unsigned int n)
 {
 	struct snd_card *card;
 	struct snd_wss *chip;
-	struct snd_pcm *pcm;
 	int error;
 
-	error = snd_card_create(index[n], id[n], THIS_MODULE, 0, &card);
+	error = snd_card_new(dev, index[n], id[n], THIS_MODULE, 0, &card);
 	if (error < 0)
 		return error;
 
@@ -103,7 +102,7 @@ static int __devinit snd_ad1848_probe(struct device *dev, unsigned int n)
 
 	card->private_data = chip;
 
-	error = snd_wss_pcm(chip, 0, &pcm);
+	error = snd_wss_pcm(chip, 0);
 	if (error < 0)
 		goto out;
 
@@ -111,15 +110,17 @@ static int __devinit snd_ad1848_probe(struct device *dev, unsigned int n)
 	if (error < 0)
 		goto out;
 
-	strcpy(card->driver, "AD1848");
-	strcpy(card->shortname, pcm->name);
+	strlcpy(card->driver, "AD1848", sizeof(card->driver));
+	strlcpy(card->shortname, chip->pcm->name, sizeof(card->shortname));
 
-	sprintf(card->longname, "%s at 0x%lx, irq %d, dma %d",
-		pcm->name, chip->port, irq[n], dma1[n]);
-	if (thinkpad[n])
-		strcat(card->longname, " [Thinkpad]");
-
-	snd_card_set_dev(card, dev);
+	if (!thinkpad[n])
+		snprintf(card->longname, sizeof(card->longname),
+			 "%s at 0x%lx, irq %d, dma %d",
+			 chip->pcm->name, chip->port, irq[n], dma1[n]);
+	else
+		snprintf(card->longname, sizeof(card->longname),
+			 "%s at 0x%lx, irq %d, dma %d [Thinkpad]",
+			 chip->pcm->name, chip->port, irq[n], dma1[n]);
 
 	error = snd_card_register(card);
 	if (error < 0)
@@ -132,10 +133,9 @@ out:	snd_card_free(card);
 	return error;
 }
 
-static int __devexit snd_ad1848_remove(struct device *dev, unsigned int n)
+static int snd_ad1848_remove(struct device *dev, unsigned int n)
 {
 	snd_card_free(dev_get_drvdata(dev));
-	dev_set_drvdata(dev, NULL);
 	return 0;
 }
 
@@ -164,7 +164,7 @@ static int snd_ad1848_resume(struct device *dev, unsigned int n)
 static struct isa_driver snd_ad1848_driver = {
 	.match		= snd_ad1848_match,
 	.probe		= snd_ad1848_probe,
-	.remove		= __devexit_p(snd_ad1848_remove),
+	.remove		= snd_ad1848_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_ad1848_suspend,
 	.resume		= snd_ad1848_resume,
@@ -174,15 +174,4 @@ static struct isa_driver snd_ad1848_driver = {
 	}
 };
 
-static int __init alsa_card_ad1848_init(void)
-{
-	return isa_register_driver(&snd_ad1848_driver, SNDRV_CARDS);
-}
-
-static void __exit alsa_card_ad1848_exit(void)
-{
-	isa_unregister_driver(&snd_ad1848_driver);
-}
-
-module_init(alsa_card_ad1848_init);
-module_exit(alsa_card_ad1848_exit);
+module_isa_driver(snd_ad1848_driver, SNDRV_CARDS);

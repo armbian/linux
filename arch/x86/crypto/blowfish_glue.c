@@ -223,9 +223,6 @@ static unsigned int __cbc_decrypt(struct blkcipher_desc *desc,
 			src -= 1;
 			dst -= 1;
 		} while (nbytes >= bsize * 4);
-
-		if (nbytes < bsize)
-			goto done;
 	}
 
 	/* Handle leftovers */
@@ -274,8 +271,7 @@ static void ctr_crypt_final(struct bf_ctx *ctx, struct blkcipher_walk *walk)
 	unsigned int nbytes = walk->nbytes;
 
 	blowfish_enc_blk(ctx, keystream, ctrblk);
-	crypto_xor(keystream, src, nbytes);
-	memcpy(dst, keystream, nbytes);
+	crypto_xor_cpy(dst, keystream, src, nbytes);
 
 	crypto_inc(ctrblk, BF_BLOCK_SIZE);
 }
@@ -367,7 +363,6 @@ static struct crypto_alg bf_algs[4] = { {
 	.cra_ctxsize		= sizeof(struct bf_ctx),
 	.cra_alignmask		= 0,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(bf_algs[0].cra_list),
 	.cra_u = {
 		.cipher = {
 			.cia_min_keysize	= BF_MIN_KEY_SIZE,
@@ -387,7 +382,6 @@ static struct crypto_alg bf_algs[4] = { {
 	.cra_alignmask		= 0,
 	.cra_type		= &crypto_blkcipher_type,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(bf_algs[1].cra_list),
 	.cra_u = {
 		.blkcipher = {
 			.min_keysize	= BF_MIN_KEY_SIZE,
@@ -407,7 +401,6 @@ static struct crypto_alg bf_algs[4] = { {
 	.cra_alignmask		= 0,
 	.cra_type		= &crypto_blkcipher_type,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(bf_algs[2].cra_list),
 	.cra_u = {
 		.blkcipher = {
 			.min_keysize	= BF_MIN_KEY_SIZE,
@@ -428,7 +421,6 @@ static struct crypto_alg bf_algs[4] = { {
 	.cra_alignmask		= 0,
 	.cra_type		= &crypto_blkcipher_type,
 	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(bf_algs[3].cra_list),
 	.cra_u = {
 		.blkcipher = {
 			.min_keysize	= BF_MIN_KEY_SIZE,
@@ -485,5 +477,5 @@ module_exit(fini);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Blowfish Cipher Algorithm, asm optimized");
-MODULE_ALIAS("blowfish");
-MODULE_ALIAS("blowfish-asm");
+MODULE_ALIAS_CRYPTO("blowfish");
+MODULE_ALIAS_CRYPTO("blowfish-asm");

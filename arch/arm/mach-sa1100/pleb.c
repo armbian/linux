@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/arm/mach-sa1100/pleb.c
  */
@@ -6,10 +7,12 @@
 #include <linux/kernel.h>
 #include <linux/tty.h>
 #include <linux/ioport.h>
+#include <linux/platform_data/sa11x0-serial.h>
 #include <linux/platform_device.h>
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <linux/mtd/partitions.h>
+#include <linux/smc91x.h>
 
 #include <mach/hardware.h>
 #include <asm/setup.h>
@@ -18,7 +21,6 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/flash.h>
-#include <asm/mach/serial_sa1100.h>
 #include <mach/irqs.h>
 
 #include "generic.h"
@@ -43,12 +45,18 @@ static struct resource smc91x_resources[] = {
 #endif
 };
 
+static struct smc91x_platdata smc91x_platdata = {
+	.flags = SMC91X_USE_16BIT | SMC91X_USE_8BIT | SMC91X_NOWAIT,
+};
 
 static struct platform_device smc91x_device = {
 	.name		= "smc91x",
 	.id		= 0,
 	.num_resources	= ARRAY_SIZE(smc91x_resources),
 	.resource	= smc91x_resources,
+	.dev = {
+		.platform_data  = &smc91x_platdata,
+	},
 };
 
 static struct platform_device *devices[] __initdata = {
@@ -133,7 +141,8 @@ MACHINE_START(PLEB, "PLEB")
 	.map_io		= pleb_map_io,
 	.nr_irqs	= SA1100_NR_IRQS,
 	.init_irq	= sa1100_init_irq,
-	.timer		= &sa1100_timer,
+	.init_time	= sa1100_timer_init,
 	.init_machine   = pleb_init,
+	.init_late	= sa11x0_init_late,
 	.restart	= sa11x0_restart,
 MACHINE_END

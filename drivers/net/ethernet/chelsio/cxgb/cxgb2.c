@@ -11,8 +11,7 @@
  * published by the Free Software Foundation.                                *
  *                                                                           *
  * You should have received a copy of the GNU General Public License along   *
- * with this program; if not, write to the Free Software Foundation, Inc.,   *
- * 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.                 *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.            *
  *                                                                           *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED    *
  * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF      *
@@ -38,7 +37,6 @@
 
 #include "common.h"
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -46,7 +44,7 @@
 #include <linux/mii.h>
 #include <linux/sockios.h>
 #include <linux/dma-mapping.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "cpl5_cmd.h"
 #include "regs.h"
@@ -131,7 +129,7 @@ static void t1_set_rxmode(struct net_device *dev)
 static void link_report(struct port_info *p)
 {
 	if (!netif_carrier_ok(p->dev))
-		printk(KERN_INFO "%s: link down\n", p->dev->name);
+		netdev_info(p->dev, "link down\n");
 	else {
 		const char *s = "10Mbps";
 
@@ -141,9 +139,9 @@ static void link_report(struct port_info *p)
 			case SPEED_100:   s = "100Mbps"; break;
 		}
 
-		printk(KERN_INFO "%s: link up, %s, %s-duplex\n",
-		       p->dev->name, s,
-		       p->link_config.duplex == DUPLEX_FULL ? "full" : "half");
+		netdev_info(p->dev, "link up, %s, %s-duplex\n",
+			    s, p->link_config.duplex == DUPLEX_FULL
+			    ? "full" : "half");
 	}
 }
 
@@ -283,7 +281,7 @@ static int cxgb_close(struct net_device *dev)
 	if (adapter->params.stats_update_period &&
 	    !(adapter->open_device_map & PORT_MASK)) {
 		/* Stop statistics accumulation. */
-		smp_mb__after_clear_bit();
+		smp_mb__after_atomic();
 		spin_lock(&adapter->work_lock);   /* sync with update task */
 		spin_unlock(&adapter->work_lock);
 		cancel_mac_stats_update(adapter);
@@ -298,7 +296,7 @@ static struct net_device_stats *t1_get_stats(struct net_device *dev)
 {
 	struct adapter *adapter = dev->ml_priv;
 	struct port_info *p = &adapter->port[dev->if_port];
-	struct net_device_stats *ns = &p->netstats;
+	struct net_device_stats *ns = &dev->stats;
 	const struct cmac_statistics *pstats;
 
 	/* Do a full update of the MAC stats */
@@ -356,7 +354,7 @@ static void set_msglevel(struct net_device *dev, u32 val)
 	adapter->msg_enable = val;
 }
 
-static char stats_strings[][ETH_GSTRING_LEN] = {
+static const char stats_strings[][ETH_GSTRING_LEN] = {
 	"TxOctetsOK",
 	"TxOctetsBad",
 	"TxUnicastFramesOK",
@@ -570,28 +568,33 @@ static void get_regs(struct net_device *dev, struct ethtool_regs *regs,
 	reg_block_dump(ap, buf, A_MC5_CONFIG, A_MC5_MASK_WRITE_CMD);
 }
 
-static int get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int get_link_ksettings(struct net_device *dev,
+			      struct ethtool_link_ksettings *cmd)
 {
 	struct adapter *adapter = dev->ml_priv;
 	struct port_info *p = &adapter->port[dev->if_port];
+	u32 supported, advertising;
 
-	cmd->supported = p->link_config.supported;
-	cmd->advertising = p->link_config.advertising;
+	supported = p->link_config.supported;
+	advertising = p->link_config.advertising;
 
 	if (netif_carrier_ok(dev)) {
-		ethtool_cmd_speed_set(cmd, p->link_config.speed);
-		cmd->duplex = p->link_config.duplex;
+		cmd->base.speed = p->link_config.speed;
+		cmd->base.duplex = p->link_config.duplex;
 	} else {
-		ethtool_cmd_speed_set(cmd, -1);
-		cmd->duplex = -1;
+		cmd->base.speed = SPEED_UNKNOWN;
+		cmd->base.duplex = DUPLEX_UNKNOWN;
 	}
 
-	cmd->port = (cmd->supported & SUPPORTED_TP) ? PORT_TP : PORT_FIBRE;
-	cmd->phy_address = p->phy->mdio.prtad;
-	cmd->transceiver = XCVR_EXTERNAL;
-	cmd->autoneg = p->link_config.autoneg;
-	cmd->maxtxpkt = 0;
-	cmd->maxrxpkt = 0;
+	cmd->base.port = (supported & SUPPORTED_TP) ? PORT_TP : PORT_FIBRE;
+	cmd->base.phy_address = p->phy->mdio.prtad;
+	cmd->base.autoneg = p->link_config.autoneg;
+
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
+						supported);
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
+						advertising);
+
 	return 0;
 }
 
@@ -630,36 +633,41 @@ static int speed_duplex_to_caps(int speed, int duplex)
 		      ADVERTISED_1000baseT_Half | ADVERTISED_1000baseT_Full | \
 		      ADVERTISED_10000baseT_Full)
 
-static int set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int set_link_ksettings(struct net_device *dev,
+			      const struct ethtool_link_ksettings *cmd)
 {
 	struct adapter *adapter = dev->ml_priv;
 	struct port_info *p = &adapter->port[dev->if_port];
 	struct link_config *lc = &p->link_config;
+	u32 advertising;
+
+	ethtool_convert_link_mode_to_legacy_u32(&advertising,
+						cmd->link_modes.advertising);
 
 	if (!(lc->supported & SUPPORTED_Autoneg))
 		return -EOPNOTSUPP;             /* can't change speed/duplex */
 
-	if (cmd->autoneg == AUTONEG_DISABLE) {
-		u32 speed = ethtool_cmd_speed(cmd);
-		int cap = speed_duplex_to_caps(speed, cmd->duplex);
+	if (cmd->base.autoneg == AUTONEG_DISABLE) {
+		u32 speed = cmd->base.speed;
+		int cap = speed_duplex_to_caps(speed, cmd->base.duplex);
 
 		if (!(lc->supported & cap) || (speed == SPEED_1000))
 			return -EINVAL;
 		lc->requested_speed = speed;
-		lc->requested_duplex = cmd->duplex;
+		lc->requested_duplex = cmd->base.duplex;
 		lc->advertising = 0;
 	} else {
-		cmd->advertising &= ADVERTISED_MASK;
-		if (cmd->advertising & (cmd->advertising - 1))
-			cmd->advertising = lc->supported;
-		cmd->advertising &= lc->supported;
-		if (!cmd->advertising)
+		advertising &= ADVERTISED_MASK;
+		if (advertising & (advertising - 1))
+			advertising = lc->supported;
+		advertising &= lc->supported;
+		if (!advertising)
 			return -EINVAL;
 		lc->requested_speed = SPEED_INVALID;
 		lc->requested_duplex = DUPLEX_INVALID;
-		lc->advertising = cmd->advertising | ADVERTISED_Autoneg;
+		lc->advertising = advertising | ADVERTISED_Autoneg;
 	}
-	lc->autoneg = cmd->autoneg;
+	lc->autoneg = cmd->base.autoneg;
 	if (netif_running(dev))
 		t1_link_start(p->phy, p->mac, lc);
 	return 0;
@@ -790,8 +798,6 @@ static int get_eeprom(struct net_device *dev, struct ethtool_eeprom *e,
 }
 
 static const struct ethtool_ops t1_ethtool_ops = {
-	.get_settings      = get_settings,
-	.set_settings      = set_settings,
 	.get_drvinfo       = get_drvinfo,
 	.get_msglevel      = get_msglevel,
 	.set_msglevel      = set_msglevel,
@@ -809,6 +815,8 @@ static const struct ethtool_ops t1_ethtool_ops = {
 	.get_ethtool_stats = get_stats,
 	.get_regs_len      = get_regs_len,
 	.get_regs          = get_regs,
+	.get_link_ksettings = get_link_ksettings,
+	.set_link_ksettings = set_link_ksettings,
 };
 
 static int t1_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
@@ -827,8 +835,6 @@ static int t1_change_mtu(struct net_device *dev, int new_mtu)
 
 	if (!mac->ops->set_mtu)
 		return -EOPNOTSUPP;
-	if (new_mtu < 68)
-		return -EINVAL;
 	if ((ret = mac->ops->set_mtu(mac, new_mtu)))
 		return ret;
 	dev->mtu = new_mtu;
@@ -856,10 +862,10 @@ static netdev_features_t t1_fix_features(struct net_device *dev,
 	 * Since there is no support for separate rx/tx vlan accel
 	 * enable/disable make sure tx flag is always in same state as rx.
 	 */
-	if (features & NETIF_F_HW_VLAN_RX)
-		features |= NETIF_F_HW_VLAN_TX;
+	if (features & NETIF_F_HW_VLAN_CTAG_RX)
+		features |= NETIF_F_HW_VLAN_CTAG_TX;
 	else
-		features &= ~NETIF_F_HW_VLAN_TX;
+		features &= ~NETIF_F_HW_VLAN_CTAG_TX;
 
 	return features;
 }
@@ -869,7 +875,7 @@ static int t1_set_features(struct net_device *dev, netdev_features_t features)
 	netdev_features_t changed = dev->features ^ features;
 	struct adapter *adapter = dev->ml_priv;
 
-	if (changed & NETIF_F_HW_VLAN_RX)
+	if (changed & NETIF_F_HW_VLAN_CTAG_RX)
 		t1_vlan_mode(adapter, features);
 
 	return 0;
@@ -974,22 +980,15 @@ static const struct net_device_ops cxgb_netdev_ops = {
 #endif
 };
 
-static int __devinit init_one(struct pci_dev *pdev,
-			      const struct pci_device_id *ent)
+static int init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
-	static int version_printed;
-
 	int i, err, pci_using_dac = 0;
 	unsigned long mmio_start, mmio_len;
 	const struct board_info *bi;
 	struct adapter *adapter = NULL;
 	struct port_info *pi;
 
-	if (!version_printed) {
-		printk(KERN_INFO "%s - version %s\n", DRV_DESCRIPTION,
-		       DRV_VERSION);
-		++version_printed;
-	}
+	pr_info_once("%s - version %s\n", DRV_DESCRIPTION, DRV_VERSION);
 
 	err = pci_enable_device(pdev);
 	if (err)
@@ -1092,8 +1091,9 @@ static int __devinit init_one(struct pci_dev *pdev,
 			netdev->features |= NETIF_F_HIGHDMA;
 		if (vlan_tso_capable(adapter)) {
 			netdev->features |=
-				NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
-			netdev->hw_features |= NETIF_F_HW_VLAN_RX;
+				NETIF_F_HW_VLAN_CTAG_TX |
+				NETIF_F_HW_VLAN_CTAG_RX;
+			netdev->hw_features |= NETIF_F_HW_VLAN_CTAG_RX;
 
 			/* T204: disable TSO */
 			if (!(is_T2(adapter)) || bi->port_number != 4) {
@@ -1108,7 +1108,23 @@ static int __devinit init_one(struct pci_dev *pdev,
 
 		netif_napi_add(netdev, &adapter->napi, t1_poll, 64);
 
-		SET_ETHTOOL_OPS(netdev, &t1_ethtool_ops);
+		netdev->ethtool_ops = &t1_ethtool_ops;
+
+		switch (bi->board) {
+		case CHBT_BOARD_CHT110:
+		case CHBT_BOARD_N110:
+		case CHBT_BOARD_N210:
+		case CHBT_BOARD_CHT210:
+			netdev->max_mtu = PM3393_MAX_FRAME_SIZE -
+					  (ETH_HLEN + ETH_FCS_LEN);
+			break;
+		case CHBT_BOARD_CHN204:
+			netdev->max_mtu = VSC7326_MAX_MTU;
+			break;
+		default:
+			netdev->max_mtu = ETH_DATA_LEN;
+			break;
+		}
 	}
 
 	if (t1_init_sw_modules(adapter, bi) < 0) {
@@ -1125,8 +1141,8 @@ static int __devinit init_one(struct pci_dev *pdev,
 	for (i = 0; i < bi->port_number; ++i) {
 		err = register_netdev(adapter->port[i].dev);
 		if (err)
-			pr_warning("%s: cannot register net device %s, skipping\n",
-				   pci_name(pdev), adapter->port[i].dev->name);
+			pr_warn("%s: cannot register net device %s, skipping\n",
+				pci_name(pdev), adapter->port[i].dev->name);
 		else {
 			/*
 			 * Change the name we use for messages to the name of
@@ -1144,10 +1160,10 @@ static int __devinit init_one(struct pci_dev *pdev,
 		goto out_release_adapter_res;
 	}
 
-	printk(KERN_INFO "%s: %s (rev %d), %s %dMHz/%d-bit\n", adapter->name,
-	       bi->desc, adapter->params.chip_revision,
-	       adapter->params.pci.is_pcix ? "PCIX" : "PCI",
-	       adapter->params.pci.speed, adapter->params.pci.width);
+	pr_info("%s: %s (rev %d), %s %dMHz/%d-bit\n",
+		adapter->name, bi->desc, adapter->params.chip_revision,
+		adapter->params.pci.is_pcix ? "PCIX" : "PCI",
+		adapter->params.pci.speed, adapter->params.pci.width);
 
 	/*
 	 * Set the T1B ASIC and memory clocks.
@@ -1174,7 +1190,6 @@ out_free_dev:
 	pci_release_regions(pdev);
 out_disable_pdev:
 	pci_disable_device(pdev);
-	pci_set_drvdata(pdev, NULL);
 	return err;
 }
 
@@ -1332,7 +1347,7 @@ static inline void t1_sw_reset(struct pci_dev *pdev)
 	pci_write_config_dword(pdev, A_PCICFG_PM_CSR, 0);
 }
 
-static void __devexit remove_one(struct pci_dev *pdev)
+static void remove_one(struct pci_dev *pdev)
 {
 	struct net_device *dev = pci_get_drvdata(pdev);
 	struct adapter *adapter = dev->ml_priv;
@@ -1353,26 +1368,14 @@ static void __devexit remove_one(struct pci_dev *pdev)
 
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
-	pci_set_drvdata(pdev, NULL);
 	t1_sw_reset(pdev);
 }
 
-static struct pci_driver driver = {
+static struct pci_driver cxgb_pci_driver = {
 	.name     = DRV_NAME,
 	.id_table = t1_pci_tbl,
 	.probe    = init_one,
-	.remove   = __devexit_p(remove_one),
+	.remove   = remove_one,
 };
 
-static int __init t1_init_module(void)
-{
-	return pci_register_driver(&driver);
-}
-
-static void __exit t1_cleanup_module(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(t1_init_module);
-module_exit(t1_cleanup_module);
+module_pci_driver(cxgb_pci_driver);

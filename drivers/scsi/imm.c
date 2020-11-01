@@ -43,6 +43,7 @@ typedef struct {
 	unsigned dp:1;		/* Data phase present           */
 	unsigned rd:1;		/* Read data in data phase      */
 	unsigned wanted:1;	/* Parport sharing busy flag    */
+	unsigned int dev_no;	/* Device number		*/
 	wait_queue_head_t *waiting;
 	struct Scsi_Host *host;
 	struct list_head list;
@@ -76,9 +77,10 @@ static void imm_wakeup(void *ref)
 
 	spin_lock_irqsave(&arbitration_lock, flags);
 	if (dev->wanted) {
-		parport_claim(dev->dev);
-		got_it(dev);
-		dev->wanted = 0;
+		if (parport_claim(dev->dev) == 0) {
+			got_it(dev);
+			dev->wanted = 0;
+		}
 	}
 	spin_unlock_irqrestore(&arbitration_lock, flags);
 }
@@ -121,45 +123,26 @@ static inline void imm_pb_release(imm_struct *dev)
  * testing...
  * Also gives a method to use a script to obtain optimum timings (TODO)
  */
-static inline int imm_proc_write(imm_struct *dev, char *buffer, int length)
+static int imm_write_info(struct Scsi_Host *host, char *buffer, int length)
 {
-	unsigned long x;
+	imm_struct *dev = imm_dev(host);
 
 	if ((length > 5) && (strncmp(buffer, "mode=", 5) == 0)) {
-		x = simple_strtoul(buffer + 5, NULL, 0);
-		dev->mode = x;
+		dev->mode = simple_strtoul(buffer + 5, NULL, 0);
 		return length;
 	}
 	printk("imm /proc: invalid variable\n");
-	return (-EINVAL);
+	return -EINVAL;
 }
 
-static int imm_proc_info(struct Scsi_Host *host, char *buffer, char **start,
-			off_t offset, int length, int inout)
+static int imm_show_info(struct seq_file *m, struct Scsi_Host *host)
 {
 	imm_struct *dev = imm_dev(host);
-	int len = 0;
 
-	if (inout)
-		return imm_proc_write(dev, buffer, length);
-
-	len += sprintf(buffer + len, "Version : %s\n", IMM_VERSION);
-	len +=
-	    sprintf(buffer + len, "Parport : %s\n",
-		    dev->dev->port->name);
-	len +=
-	    sprintf(buffer + len, "Mode    : %s\n",
-		    IMM_MODE_STRING[dev->mode]);
-
-	/* Request for beyond end of buffer */
-	if (offset > len)
-		return 0;
-
-	*start = buffer + offset;
-	len -= offset;
-	if (len > length)
-		len = length;
-	return len;
+	seq_printf(m, "Version : %s\n", IMM_VERSION);
+	seq_printf(m, "Parport : %s\n", dev->dev->port->name);
+	seq_printf(m, "Mode    : %s\n", IMM_MODE_STRING[dev->mode]);
+	return 0;
 }
 
 #if IMM_DEBUG > 0
@@ -1118,16 +1101,15 @@ static int imm_adjust_queue(struct scsi_device *device)
 static struct scsi_host_template imm_template = {
 	.module			= THIS_MODULE,
 	.proc_name		= "imm",
-	.proc_info		= imm_proc_info,
+	.show_info		= imm_show_info,
+	.write_info		= imm_write_info,
 	.name			= "Iomega VPI2 (imm) interface",
 	.queuecommand		= imm_queuecommand,
 	.eh_abort_handler	= imm_abort,
-	.eh_bus_reset_handler	= imm_reset,
 	.eh_host_reset_handler	= imm_reset,
 	.bios_param		= imm_biosparam,
 	.this_id		= 7,
 	.sg_tablesize		= SG_ALL,
-	.cmd_per_lun		= 1,
 	.use_clustering		= ENABLE_CLUSTERING,
 	.can_queue		= 1,
 	.slave_alloc		= imm_adjust_queue,
@@ -1139,15 +1121,40 @@ static struct scsi_host_template imm_template = {
 
 static LIST_HEAD(imm_hosts);
 
+/*
+ * Finds the first available device number that can be alloted to the
+ * new imm device and returns the address of the previous node so that
+ * we can add to the tail and have a list in the ascending order.
+ */
+
+static inline imm_struct *find_parent(void)
+{
+	imm_struct *dev, *par = NULL;
+	unsigned int cnt = 0;
+
+	if (list_empty(&imm_hosts))
+		return NULL;
+
+	list_for_each_entry(dev, &imm_hosts, list) {
+		if (dev->dev_no != cnt)
+			return par;
+		cnt++;
+		par = dev;
+	}
+
+	return par;
+}
+
 static int __imm_attach(struct parport *pb)
 {
 	struct Scsi_Host *host;
-	imm_struct *dev;
+	imm_struct *dev, *temp;
 	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(waiting);
 	DEFINE_WAIT(wait);
 	int ports;
 	int modes, ppb;
 	int err = -ENOMEM;
+	struct pardev_cb imm_cb;
 
 	init_waitqueue_head(&waiting);
 
@@ -1160,9 +1167,15 @@ static int __imm_attach(struct parport *pb)
 	dev->mode = IMM_AUTODETECT;
 	INIT_LIST_HEAD(&dev->list);
 
-	dev->dev = parport_register_device(pb, "imm", NULL, imm_wakeup,
-						NULL, 0, dev);
+	temp = find_parent();
+	if (temp)
+		dev->dev_no = temp->dev_no + 1;
 
+	memset(&imm_cb, 0, sizeof(imm_cb));
+	imm_cb.private = dev;
+	imm_cb.wakeup = imm_wakeup;
+
+	dev->dev = parport_register_dev_model(pb, "imm", &imm_cb, dev->dev_no);
 	if (!dev->dev)
 		goto out;
 
@@ -1226,7 +1239,10 @@ static int __imm_attach(struct parport *pb)
 	host->unique_id = pb->number;
 	*(imm_struct **)&host->hostdata = dev;
 	dev->host = host;
-	list_add_tail(&dev->list, &imm_hosts);
+	if (!temp)
+		list_add_tail(&dev->list, &imm_hosts);
+	else
+		list_add_tail(&dev->list, &temp->list);
 	err = scsi_add_host(host, NULL);
 	if (err)
 		goto out2;
@@ -1264,9 +1280,10 @@ static void imm_detach(struct parport *pb)
 }
 
 static struct parport_driver imm_driver = {
-	.name	= "imm",
-	.attach	= imm_attach,
-	.detach	= imm_detach,
+	.name		= "imm",
+	.match_port	= imm_attach,
+	.detach		= imm_detach,
+	.devmodel	= true,
 };
 
 static int __init imm_driver_init(void)

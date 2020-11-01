@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/arm/mach-footbridge/personal.c
  *
@@ -18,7 +19,7 @@ MACHINE_START(PERSONAL_SERVER, "Compaq-PersonalServer")
 	.atag_offset	= 0x100,
 	.map_io		= footbridge_map_io,
 	.init_irq	= footbridge_init_irq,
-	.timer		= &footbridge_timer,
+	.init_time	= footbridge_timer_init,
 	.restart	= footbridge_restart,
 MACHINE_END
 

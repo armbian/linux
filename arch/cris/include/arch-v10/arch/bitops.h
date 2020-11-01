@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* asm/arch/bitops.h for Linux/CRISv10 */
 
 #ifndef _CRIS_ARCH_BITOPS_H
@@ -17,7 +18,7 @@ static inline unsigned long cris_swapnwbrlz(unsigned long w)
 	   in another register:
 	   !  __asm__ ("swapnwbr %2\n\tlz %2,%0"
 	   !	      : "=r,r" (res), "=r,X" (dummy) : "1,0" (w));
-	   confuses gcc (sched.c, gcc from cris-dist-1.14).  */
+	   confuses gcc (core.c, gcc from cris-dist-1.14).  */
 
 	unsigned long res;
 	__asm__ ("swapnwbr %0 \n\t"

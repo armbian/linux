@@ -270,7 +270,7 @@ read_fifo(struct IsdnCardState *cs, u_char fifo, int trans_max)
 
 		if ((count > fifo_size) || (count < 4)) {
 			if (cs->debug & L1_DEB_WARN)
-				debugl1(cs, "hfcsx_read_fifo %d paket inv. len %d ", fifo , count);
+				debugl1(cs, "hfcsx_read_fifo %d packet inv. len %d ", fifo , count);
 			while (count) {
 				count--; /* empty fifo */
 				Read_hfc(cs, HFCSX_FIF_DRD);
@@ -1159,7 +1159,8 @@ hfcsx_l2l1(struct PStack *st, int pr, void *arg)
 	case (PH_PULL | INDICATION):
 		spin_lock_irqsave(&bcs->cs->lock, flags);
 		if (bcs->tx_skb) {
-			printk(KERN_WARNING "hfc_l2l1: this shouldn't happen\n");
+			printk(KERN_WARNING "%s: this shouldn't happen\n",
+			       __func__);
 		} else {
 //				test_and_set_bit(BC_FLG_BUSY, &bcs->Flag);
 			bcs->tx_skb = skb;
@@ -1381,19 +1382,18 @@ hfcsx_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 }
 
 #ifdef __ISAPNP__
-static struct isapnp_device_id hfc_ids[] __devinitdata = {
+static struct isapnp_device_id hfc_ids[] = {
 	{ ISAPNP_VENDOR('T', 'A', 'G'), ISAPNP_FUNCTION(0x2620),
 	  ISAPNP_VENDOR('T', 'A', 'G'), ISAPNP_FUNCTION(0x2620),
 	  (unsigned long) "Teles 16.3c2" },
 	{ 0, }
 };
 
-static struct isapnp_device_id *ipid __devinitdata = &hfc_ids[0];
-static struct pnp_card *pnp_c __devinitdata = NULL;
+static struct isapnp_device_id *ipid = &hfc_ids[0];
+static struct pnp_card *pnp_c = NULL;
 #endif
 
-int __devinit
-setup_hfcsx(struct IsdnCard *card)
+int setup_hfcsx(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];
@@ -1480,7 +1480,7 @@ setup_hfcsx(struct IsdnCard *card)
 			release_region(cs->hw.hfcsx.base, 2);
 			return (0);
 		}
-		if (!(cs->hw.hfcsx.extra = (void *)
+		if (!(cs->hw.hfcsx.extra =
 		      kmalloc(sizeof(struct hfcsx_extra), GFP_ATOMIC))) {
 			release_region(cs->hw.hfcsx.base, 2);
 			printk(KERN_WARNING "HFC-SX: unable to allocate memory\n");
@@ -1495,9 +1495,7 @@ setup_hfcsx(struct IsdnCard *card)
 	} else
 		return (0);	/* no valid card type */
 
-	cs->dbusytimer.function = (void *) hfcsx_dbusy_timer;
-	cs->dbusytimer.data = (long) cs;
-	init_timer(&cs->dbusytimer);
+	setup_timer(&cs->dbusytimer, (void *)hfcsx_dbusy_timer, (long)cs);
 	INIT_WORK(&cs->tqueue, hfcsx_bh);
 	cs->readisac = NULL;
 	cs->writeisac = NULL;
@@ -1507,11 +1505,9 @@ setup_hfcsx(struct IsdnCard *card)
 	cs->BC_Write_Reg = NULL;
 	cs->irq_func = &hfcsx_interrupt;
 
-	cs->hw.hfcsx.timer.function = (void *) hfcsx_Timer;
-	cs->hw.hfcsx.timer.data = (long) cs;
 	cs->hw.hfcsx.b_fifo_size = 0; /* fifo size still unknown */
 	cs->hw.hfcsx.cirm = ccd_sp_irqtab[cs->irq & 0xF]; /* RAM not evaluated */
-	init_timer(&cs->hw.hfcsx.timer);
+	setup_timer(&cs->hw.hfcsx.timer, (void *)hfcsx_Timer, (long)cs);
 
 	reset_hfcsx(cs);
 	cs->cardmsg = &hfcsx_card_msg;

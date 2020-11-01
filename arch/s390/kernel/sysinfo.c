@@ -1,38 +1,86 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Copyright IBM Corp. 2001, 2009
  *  Author(s): Ulrich Weigand <Ulrich.Weigand@de.ibm.com>,
  *	       Martin Schwidefsky <schwidefsky@de.ibm.com>,
  */
 
+#include <linux/debugfs.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/slab.h>
 #include <asm/ebcdic.h>
+#include <asm/debug.h>
 #include <asm/sysinfo.h>
 #include <asm/cpcmd.h>
 #include <asm/topology.h>
+#include <asm/fpu/api.h>
 
-/* Sigh, math-emu. Don't ask. */
-#include <asm/sfp-util.h>
-#include <math-emu/soft-fp.h>
-#include <math-emu/single.h>
+int topology_max_mnest;
 
-static inline int stsi_0(void)
+static inline int __stsi(void *sysinfo, int fc, int sel1, int sel2, int *lvl)
 {
-	int rc = stsi(NULL, 0, 0, 0);
-	return rc == -ENOSYS ? rc : (((unsigned int) rc) >> 28);
+	register int r0 asm("0") = (fc << 28) | sel1;
+	register int r1 asm("1") = sel2;
+	int rc = 0;
+
+	asm volatile(
+		"	stsi	0(%3)\n"
+		"0:	jz	2f\n"
+		"1:	lhi	%1,%4\n"
+		"2:\n"
+		EX_TABLE(0b, 1b)
+		: "+d" (r0), "+d" (rc)
+		: "d" (r1), "a" (sysinfo), "K" (-EOPNOTSUPP)
+		: "cc", "memory");
+	*lvl = ((unsigned int) r0) >> 28;
+	return rc;
 }
 
-static int stsi_1_1_1(struct sysinfo_1_1_1 *info, char *page, int len)
+/*
+ * stsi - store system information
+ *
+ * Returns the current configuration level if function code 0 was specified.
+ * Otherwise returns 0 on success or a negative value on error.
+ */
+int stsi(void *sysinfo, int fc, int sel1, int sel2)
 {
-	if (stsi(info, 1, 1, 1) == -ENOSYS)
-		return len;
+	int lvl, rc;
 
+	rc = __stsi(sysinfo, fc, sel1, sel2, &lvl);
+	if (rc)
+		return rc;
+	return fc ? 0 : lvl;
+}
+EXPORT_SYMBOL(stsi);
+
+#ifdef CONFIG_PROC_FS
+
+static bool convert_ext_name(unsigned char encoding, char *name, size_t len)
+{
+	switch (encoding) {
+	case 1: /* EBCDIC */
+		EBCASC(name, len);
+		break;
+	case 2:	/* UTF-8 */
+		break;
+	default:
+		return false;
+	}
+	return true;
+}
+
+static void stsi_1_1_1(struct seq_file *m, struct sysinfo_1_1_1 *info)
+{
+	int i;
+
+	if (stsi(info, 1, 1, 1))
+		return;
 	EBCASC(info->manufacturer, sizeof(info->manufacturer));
 	EBCASC(info->type, sizeof(info->type));
 	EBCASC(info->model, sizeof(info->model));
@@ -41,242 +89,231 @@ static int stsi_1_1_1(struct sysinfo_1_1_1 *info, char *page, int len)
 	EBCASC(info->model_capacity, sizeof(info->model_capacity));
 	EBCASC(info->model_perm_cap, sizeof(info->model_perm_cap));
 	EBCASC(info->model_temp_cap, sizeof(info->model_temp_cap));
-	len += sprintf(page + len, "Manufacturer:         %-16.16s\n",
-		       info->manufacturer);
-	len += sprintf(page + len, "Type:                 %-4.4s\n",
-		       info->type);
+	seq_printf(m, "Manufacturer:         %-16.16s\n", info->manufacturer);
+	seq_printf(m, "Type:                 %-4.4s\n", info->type);
+	/*
+	 * Sigh: the model field has been renamed with System z9
+	 * to model_capacity and a new model field has been added
+	 * after the plant field. To avoid confusing older programs
+	 * the "Model:" prints "model_capacity model" or just
+	 * "model_capacity" if the model string is empty .
+	 */
+	seq_printf(m, "Model:                %-16.16s", info->model_capacity);
 	if (info->model[0] != '\0')
-		/*
-		 * Sigh: the model field has been renamed with System z9
-		 * to model_capacity and a new model field has been added
-		 * after the plant field. To avoid confusing older programs
-		 * the "Model:" prints "model_capacity model" or just
-		 * "model_capacity" if the model string is empty .
-		 */
-		len += sprintf(page + len,
-			       "Model:                %-16.16s %-16.16s\n",
-			       info->model_capacity, info->model);
-	else
-		len += sprintf(page + len, "Model:                %-16.16s\n",
-			       info->model_capacity);
-	len += sprintf(page + len, "Sequence Code:        %-16.16s\n",
-		       info->sequence);
-	len += sprintf(page + len, "Plant:                %-4.4s\n",
-		       info->plant);
-	len += sprintf(page + len, "Model Capacity:       %-16.16s %08u\n",
-		       info->model_capacity, *(u32 *) info->model_cap_rating);
-	if (info->model_perm_cap[0] != '\0')
-		len += sprintf(page + len,
-			       "Model Perm. Capacity: %-16.16s %08u\n",
-			       info->model_perm_cap,
-			       *(u32 *) info->model_perm_cap_rating);
-	if (info->model_temp_cap[0] != '\0')
-		len += sprintf(page + len,
-			       "Model Temp. Capacity: %-16.16s %08u\n",
-			       info->model_temp_cap,
-			       *(u32 *) info->model_temp_cap_rating);
+		seq_printf(m, " %-16.16s", info->model);
+	seq_putc(m, '\n');
+	seq_printf(m, "Sequence Code:        %-16.16s\n", info->sequence);
+	seq_printf(m, "Plant:                %-4.4s\n", info->plant);
+	seq_printf(m, "Model Capacity:       %-16.16s %08u\n",
+		   info->model_capacity, info->model_cap_rating);
+	if (info->model_perm_cap_rating)
+		seq_printf(m, "Model Perm. Capacity: %-16.16s %08u\n",
+			   info->model_perm_cap,
+			   info->model_perm_cap_rating);
+	if (info->model_temp_cap_rating)
+		seq_printf(m, "Model Temp. Capacity: %-16.16s %08u\n",
+			   info->model_temp_cap,
+			   info->model_temp_cap_rating);
+	if (info->ncr)
+		seq_printf(m, "Nominal Cap. Rating:  %08u\n", info->ncr);
+	if (info->npr)
+		seq_printf(m, "Nominal Perm. Rating: %08u\n", info->npr);
+	if (info->ntr)
+		seq_printf(m, "Nominal Temp. Rating: %08u\n", info->ntr);
 	if (info->cai) {
-		len += sprintf(page + len,
-			       "Capacity Adj. Ind.:   %d\n",
-			       info->cai);
-		len += sprintf(page + len, "Capacity Ch. Reason:  %d\n",
-			       info->ccr);
+		seq_printf(m, "Capacity Adj. Ind.:   %d\n", info->cai);
+		seq_printf(m, "Capacity Ch. Reason:  %d\n", info->ccr);
+		seq_printf(m, "Capacity Transient:   %d\n", info->t);
 	}
-	return len;
-}
-
-static int stsi_15_1_x(struct sysinfo_15_1_x *info, char *page, int len)
-{
-	static int max_mnest;
-	int i, rc;
-
-	len += sprintf(page + len, "\n");
-	if (!MACHINE_HAS_TOPOLOGY)
-		return len;
-	if (max_mnest) {
-		stsi(info, 15, 1, max_mnest);
-	} else {
-		for (max_mnest = 6; max_mnest > 1; max_mnest--) {
-			rc = stsi(info, 15, 1, max_mnest);
-			if (rc != -ENOSYS)
-				break;
+	if (info->p) {
+		for (i = 1; i <= ARRAY_SIZE(info->typepct); i++) {
+			seq_printf(m, "Type %d Percentage:    %d\n",
+				   i, info->typepct[i - 1]);
 		}
 	}
-	len += sprintf(page + len, "CPU Topology HW:     ");
-	for (i = 0; i < TOPOLOGY_NR_MAG; i++)
-		len += sprintf(page + len, " %d", info->mag[i]);
-	len += sprintf(page + len, "\n");
-#ifdef CONFIG_SCHED_MC
-	store_topology(info);
-	len += sprintf(page + len, "CPU Topology SW:     ");
-	for (i = 0; i < TOPOLOGY_NR_MAG; i++)
-		len += sprintf(page + len, " %d", info->mag[i]);
-	len += sprintf(page + len, "\n");
-#endif
-	return len;
 }
 
-static int stsi_1_2_2(struct sysinfo_1_2_2 *info, char *page, int len)
+static void stsi_15_1_x(struct seq_file *m, struct sysinfo_15_1_x *info)
+{
+	int i;
+
+	seq_putc(m, '\n');
+	if (!MACHINE_HAS_TOPOLOGY)
+		return;
+	if (stsi(info, 15, 1, topology_max_mnest))
+		return;
+	seq_printf(m, "CPU Topology HW:     ");
+	for (i = 0; i < TOPOLOGY_NR_MAG; i++)
+		seq_printf(m, " %d", info->mag[i]);
+	seq_putc(m, '\n');
+#ifdef CONFIG_SCHED_TOPOLOGY
+	store_topology(info);
+	seq_printf(m, "CPU Topology SW:     ");
+	for (i = 0; i < TOPOLOGY_NR_MAG; i++)
+		seq_printf(m, " %d", info->mag[i]);
+	seq_putc(m, '\n');
+#endif
+}
+
+static void stsi_1_2_2(struct seq_file *m, struct sysinfo_1_2_2 *info)
 {
 	struct sysinfo_1_2_2_extension *ext;
 	int i;
 
-	if (stsi(info, 1, 2, 2) == -ENOSYS)
-		return len;
+	if (stsi(info, 1, 2, 2))
+		return;
 	ext = (struct sysinfo_1_2_2_extension *)
 		((unsigned long) info + info->acc_offset);
-
-	len += sprintf(page + len, "CPUs Total:           %d\n",
-		       info->cpus_total);
-	len += sprintf(page + len, "CPUs Configured:      %d\n",
-		       info->cpus_configured);
-	len += sprintf(page + len, "CPUs Standby:         %d\n",
-		       info->cpus_standby);
-	len += sprintf(page + len, "CPUs Reserved:        %d\n",
-		       info->cpus_reserved);
-
-	if (info->format == 1) {
-		/*
-		 * Sigh 2. According to the specification the alternate
-		 * capability field is a 32 bit floating point number
-		 * if the higher order 8 bits are not zero. Printing
-		 * a floating point number in the kernel is a no-no,
-		 * always print the number as 32 bit unsigned integer.
-		 * The user-space needs to know about the strange
-		 * encoding of the alternate cpu capability.
-		 */
-		len += sprintf(page + len, "Capability:           %u %u\n",
-			       info->capability, ext->alt_capability);
-		for (i = 2; i <= info->cpus_total; i++)
-			len += sprintf(page + len,
-				       "Adjustment %02d-way:    %u %u\n",
-				       i, info->adjustment[i-2],
-				       ext->alt_adjustment[i-2]);
-
-	} else {
-		len += sprintf(page + len, "Capability:           %u\n",
-			       info->capability);
-		for (i = 2; i <= info->cpus_total; i++)
-			len += sprintf(page + len,
-				       "Adjustment %02d-way:    %u\n",
-				       i, info->adjustment[i-2]);
+	seq_printf(m, "CPUs Total:           %d\n", info->cpus_total);
+	seq_printf(m, "CPUs Configured:      %d\n", info->cpus_configured);
+	seq_printf(m, "CPUs Standby:         %d\n", info->cpus_standby);
+	seq_printf(m, "CPUs Reserved:        %d\n", info->cpus_reserved);
+	if (info->mt_installed) {
+		seq_printf(m, "CPUs G-MTID:          %d\n", info->mt_gtid);
+		seq_printf(m, "CPUs S-MTID:          %d\n", info->mt_stid);
 	}
-
-	if (info->secondary_capability != 0)
-		len += sprintf(page + len, "Secondary Capability: %d\n",
-			       info->secondary_capability);
-	return len;
+	/*
+	 * Sigh 2. According to the specification the alternate
+	 * capability field is a 32 bit floating point number
+	 * if the higher order 8 bits are not zero. Printing
+	 * a floating point number in the kernel is a no-no,
+	 * always print the number as 32 bit unsigned integer.
+	 * The user-space needs to know about the strange
+	 * encoding of the alternate cpu capability.
+	 */
+	seq_printf(m, "Capability:           %u", info->capability);
+	if (info->format == 1)
+		seq_printf(m, " %u", ext->alt_capability);
+	seq_putc(m, '\n');
+	if (info->nominal_cap)
+		seq_printf(m, "Nominal Capability:   %d\n", info->nominal_cap);
+	if (info->secondary_cap)
+		seq_printf(m, "Secondary Capability: %d\n", info->secondary_cap);
+	for (i = 2; i <= info->cpus_total; i++) {
+		seq_printf(m, "Adjustment %02d-way:    %u",
+			   i, info->adjustment[i-2]);
+		if (info->format == 1)
+			seq_printf(m, " %u", ext->alt_adjustment[i-2]);
+		seq_putc(m, '\n');
+	}
 }
 
-static int stsi_2_2_2(struct sysinfo_2_2_2 *info, char *page, int len)
+static void stsi_2_2_2(struct seq_file *m, struct sysinfo_2_2_2 *info)
 {
-	if (stsi(info, 2, 2, 2) == -ENOSYS)
-		return len;
-
+	if (stsi(info, 2, 2, 2))
+		return;
 	EBCASC(info->name, sizeof(info->name));
-
-	len += sprintf(page + len, "\n");
-	len += sprintf(page + len, "LPAR Number:          %d\n",
-		       info->lpar_number);
-
-	len += sprintf(page + len, "LPAR Characteristics: ");
+	seq_putc(m, '\n');
+	seq_printf(m, "LPAR Number:          %d\n", info->lpar_number);
+	seq_printf(m, "LPAR Characteristics: ");
 	if (info->characteristics & LPAR_CHAR_DEDICATED)
-		len += sprintf(page + len, "Dedicated ");
+		seq_printf(m, "Dedicated ");
 	if (info->characteristics & LPAR_CHAR_SHARED)
-		len += sprintf(page + len, "Shared ");
+		seq_printf(m, "Shared ");
 	if (info->characteristics & LPAR_CHAR_LIMITED)
-		len += sprintf(page + len, "Limited ");
-	len += sprintf(page + len, "\n");
-
-	len += sprintf(page + len, "LPAR Name:            %-8.8s\n",
-		       info->name);
-
-	len += sprintf(page + len, "LPAR Adjustment:      %d\n",
-		       info->caf);
-
-	len += sprintf(page + len, "LPAR CPUs Total:      %d\n",
-		       info->cpus_total);
-	len += sprintf(page + len, "LPAR CPUs Configured: %d\n",
-		       info->cpus_configured);
-	len += sprintf(page + len, "LPAR CPUs Standby:    %d\n",
-		       info->cpus_standby);
-	len += sprintf(page + len, "LPAR CPUs Reserved:   %d\n",
-		       info->cpus_reserved);
-	len += sprintf(page + len, "LPAR CPUs Dedicated:  %d\n",
-		       info->cpus_dedicated);
-	len += sprintf(page + len, "LPAR CPUs Shared:     %d\n",
-		       info->cpus_shared);
-	return len;
+		seq_printf(m, "Limited ");
+	seq_putc(m, '\n');
+	seq_printf(m, "LPAR Name:            %-8.8s\n", info->name);
+	seq_printf(m, "LPAR Adjustment:      %d\n", info->caf);
+	seq_printf(m, "LPAR CPUs Total:      %d\n", info->cpus_total);
+	seq_printf(m, "LPAR CPUs Configured: %d\n", info->cpus_configured);
+	seq_printf(m, "LPAR CPUs Standby:    %d\n", info->cpus_standby);
+	seq_printf(m, "LPAR CPUs Reserved:   %d\n", info->cpus_reserved);
+	seq_printf(m, "LPAR CPUs Dedicated:  %d\n", info->cpus_dedicated);
+	seq_printf(m, "LPAR CPUs Shared:     %d\n", info->cpus_shared);
+	if (info->mt_installed) {
+		seq_printf(m, "LPAR CPUs G-MTID:     %d\n", info->mt_gtid);
+		seq_printf(m, "LPAR CPUs S-MTID:     %d\n", info->mt_stid);
+		seq_printf(m, "LPAR CPUs PS-MTID:    %d\n", info->mt_psmtid);
+	}
+	if (convert_ext_name(info->vsne, info->ext_name, sizeof(info->ext_name))) {
+		seq_printf(m, "LPAR Extended Name:   %-.256s\n", info->ext_name);
+		seq_printf(m, "LPAR UUID:            %pUb\n", &info->uuid);
+	}
 }
 
-static int stsi_3_2_2(struct sysinfo_3_2_2 *info, char *page, int len)
+static void print_ext_name(struct seq_file *m, int lvl,
+			   struct sysinfo_3_2_2 *info)
+{
+	size_t len = sizeof(info->ext_names[lvl]);
+
+	if (!convert_ext_name(info->vm[lvl].evmne, info->ext_names[lvl], len))
+		return;
+	seq_printf(m, "VM%02d Extended Name:   %-.256s\n", lvl,
+		   info->ext_names[lvl]);
+}
+
+static void print_uuid(struct seq_file *m, int i, struct sysinfo_3_2_2 *info)
+{
+	if (uuid_is_null(&info->vm[i].uuid))
+		return;
+	seq_printf(m, "VM%02d UUID:            %pUb\n", i, &info->vm[i].uuid);
+}
+
+static void stsi_3_2_2(struct seq_file *m, struct sysinfo_3_2_2 *info)
 {
 	int i;
 
-	if (stsi(info, 3, 2, 2) == -ENOSYS)
-		return len;
+	if (stsi(info, 3, 2, 2))
+		return;
 	for (i = 0; i < info->count; i++) {
 		EBCASC(info->vm[i].name, sizeof(info->vm[i].name));
 		EBCASC(info->vm[i].cpi, sizeof(info->vm[i].cpi));
-		len += sprintf(page + len, "\n");
-		len += sprintf(page + len, "VM%02d Name:            %-8.8s\n",
-			       i, info->vm[i].name);
-		len += sprintf(page + len, "VM%02d Control Program: %-16.16s\n",
-			       i, info->vm[i].cpi);
-
-		len += sprintf(page + len, "VM%02d Adjustment:      %d\n",
-			       i, info->vm[i].caf);
-
-		len += sprintf(page + len, "VM%02d CPUs Total:      %d\n",
-			       i, info->vm[i].cpus_total);
-		len += sprintf(page + len, "VM%02d CPUs Configured: %d\n",
-			       i, info->vm[i].cpus_configured);
-		len += sprintf(page + len, "VM%02d CPUs Standby:    %d\n",
-			       i, info->vm[i].cpus_standby);
-		len += sprintf(page + len, "VM%02d CPUs Reserved:   %d\n",
-			       i, info->vm[i].cpus_reserved);
+		seq_putc(m, '\n');
+		seq_printf(m, "VM%02d Name:            %-8.8s\n", i, info->vm[i].name);
+		seq_printf(m, "VM%02d Control Program: %-16.16s\n", i, info->vm[i].cpi);
+		seq_printf(m, "VM%02d Adjustment:      %d\n", i, info->vm[i].caf);
+		seq_printf(m, "VM%02d CPUs Total:      %d\n", i, info->vm[i].cpus_total);
+		seq_printf(m, "VM%02d CPUs Configured: %d\n", i, info->vm[i].cpus_configured);
+		seq_printf(m, "VM%02d CPUs Standby:    %d\n", i, info->vm[i].cpus_standby);
+		seq_printf(m, "VM%02d CPUs Reserved:   %d\n", i, info->vm[i].cpus_reserved);
+		print_ext_name(m, i, info);
+		print_uuid(m, i, info);
 	}
-	return len;
 }
 
-static int proc_read_sysinfo(char *page, char **start,
-			     off_t off, int count,
-			     int *eof, void *data)
+static int sysinfo_show(struct seq_file *m, void *v)
 {
-	unsigned long info = get_zeroed_page(GFP_KERNEL);
-	int level, len;
+	void *info = (void *)get_zeroed_page(GFP_KERNEL);
+	int level;
 
 	if (!info)
 		return 0;
-
-	len = 0;
-	level = stsi_0();
+	level = stsi(NULL, 0, 0, 0);
 	if (level >= 1)
-		len = stsi_1_1_1((struct sysinfo_1_1_1 *) info, page, len);
-
+		stsi_1_1_1(m, info);
 	if (level >= 1)
-		len = stsi_15_1_x((struct sysinfo_15_1_x *) info, page, len);
-
+		stsi_15_1_x(m, info);
 	if (level >= 1)
-		len = stsi_1_2_2((struct sysinfo_1_2_2 *) info, page, len);
-
+		stsi_1_2_2(m, info);
 	if (level >= 2)
-		len = stsi_2_2_2((struct sysinfo_2_2_2 *) info, page, len);
-
+		stsi_2_2_2(m, info);
 	if (level >= 3)
-		len = stsi_3_2_2((struct sysinfo_3_2_2 *) info, page, len);
-
-	free_page(info);
-	return len;
-}
-
-static __init int create_proc_sysinfo(void)
-{
-	create_proc_read_entry("sysinfo", 0444, NULL,
-			       proc_read_sysinfo, NULL);
+		stsi_3_2_2(m, info);
+	free_page((unsigned long)info);
 	return 0;
 }
-device_initcall(create_proc_sysinfo);
+
+static int sysinfo_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, sysinfo_show, NULL);
+}
+
+static const struct file_operations sysinfo_fops = {
+	.open		= sysinfo_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int __init sysinfo_create_proc(void)
+{
+	proc_create("sysinfo", 0444, NULL, &sysinfo_fops);
+	return 0;
+}
+device_initcall(sysinfo_create_proc);
+
+#endif /* CONFIG_PROC_FS */
 
 /*
  * Service levels interface.
@@ -393,42 +430,19 @@ static __init int create_proc_service_level(void)
 subsys_initcall(create_proc_service_level);
 
 /*
- * Bogomips calculation based on cpu capability.
- */
-int get_cpu_capability(unsigned int *capability)
-{
-	struct sysinfo_1_2_2 *info;
-	int rc;
-
-	info = (void *) get_zeroed_page(GFP_KERNEL);
-	if (!info)
-		return -ENOMEM;
-	rc = stsi(info, 1, 2, 2);
-	if (rc == -ENOSYS)
-		goto out;
-	rc = 0;
-	*capability = info->capability;
-out:
-	free_page((unsigned long) info);
-	return rc;
-}
-
-/*
  * CPU capability might have changed. Therefore recalculate loops_per_jiffy.
  */
 void s390_adjust_jiffies(void)
 {
 	struct sysinfo_1_2_2 *info;
-	const unsigned int fmil = 0x4b189680;	/* 1e7 as 32-bit float. */
-	FP_DECL_S(SA); FP_DECL_S(SB); FP_DECL_S(SR);
-	FP_DECL_EX;
-	unsigned int capability;
+	unsigned long capability;
+	struct kernel_fpu fpu;
 
 	info = (void *) get_zeroed_page(GFP_KERNEL);
 	if (!info)
 		return;
 
-	if (stsi(info, 1, 2, 2) != -ENOSYS) {
+	if (stsi(info, 1, 2, 2) == 0) {
 		/*
 		 * Major sigh. The cpu capability encoding is "special".
 		 * If the first 9 bits of info->capability are 0 then it
@@ -438,15 +452,25 @@ void s390_adjust_jiffies(void)
 		 * higher cpu capacity. Bogomips are the other way round.
 		 * To get to a halfway suitable number we divide 1e7
 		 * by the cpu capability number. Yes, that means a floating
-		 * point division .. math-emu here we come :-)
+		 * point division ..
 		 */
-		FP_UNPACK_SP(SA, &fmil);
-		if ((info->capability >> 23) == 0)
-			FP_FROM_INT_S(SB, (long) info->capability, 64, long);
-		else
-			FP_UNPACK_SP(SB, &info->capability);
-		FP_DIV_S(SR, SA, SB);
-		FP_TO_INT_S(capability, SR, 32, 0);
+		kernel_fpu_begin(&fpu, KERNEL_FPR);
+		asm volatile(
+			"	sfpc	%3\n"
+			"	l	%0,%1\n"
+			"	tmlh	%0,0xff80\n"
+			"	jnz	0f\n"
+			"	cefbr	%%f2,%0\n"
+			"	j	1f\n"
+			"0:	le	%%f2,%1\n"
+			"1:	cefbr	%%f0,%2\n"
+			"	debr	%%f0,%%f2\n"
+			"	cgebr	%0,5,%%f0\n"
+			: "=&d" (capability)
+			: "Q" (info->capability), "d" (10000000), "d" (0)
+			: "cc"
+			);
+		kernel_fpu_end(&fpu, KERNEL_FPR);
 	} else
 		/*
 		 * Really old machine without stsi block for basic
@@ -460,7 +484,7 @@ void s390_adjust_jiffies(void)
 /*
  * calibrate the delay loop
  */
-void __cpuinit calibrate_delay(void)
+void calibrate_delay(void)
 {
 	s390_adjust_jiffies();
 	/* Print the good old Bogomips line .. */
@@ -468,3 +492,99 @@ void __cpuinit calibrate_delay(void)
 	       "%lu.%02lu BogoMIPS preset\n", loops_per_jiffy/(500000/HZ),
 	       (loops_per_jiffy/(5000/HZ)) % 100);
 }
+
+#ifdef CONFIG_DEBUG_FS
+
+#define STSI_FILE(fc, s1, s2)						       \
+static int stsi_open_##fc##_##s1##_##s2(struct inode *inode, struct file *file)\
+{									       \
+	file->private_data = (void *) get_zeroed_page(GFP_KERNEL);	       \
+	if (!file->private_data)					       \
+		return -ENOMEM;						       \
+	if (stsi(file->private_data, fc, s1, s2)) {			       \
+		free_page((unsigned long)file->private_data);		       \
+		file->private_data = NULL;				       \
+		return -EACCES;						       \
+	}								       \
+	return nonseekable_open(inode, file);				       \
+}									       \
+									       \
+static const struct file_operations stsi_##fc##_##s1##_##s2##_fs_ops = {       \
+	.open		= stsi_open_##fc##_##s1##_##s2,			       \
+	.release	= stsi_release,					       \
+	.read		= stsi_read,					       \
+	.llseek		= no_llseek,					       \
+};
+
+static int stsi_release(struct inode *inode, struct file *file)
+{
+	free_page((unsigned long)file->private_data);
+	return 0;
+}
+
+static ssize_t stsi_read(struct file *file, char __user *buf, size_t size, loff_t *ppos)
+{
+	return simple_read_from_buffer(buf, size, ppos, file->private_data, PAGE_SIZE);
+}
+
+STSI_FILE( 1, 1, 1);
+STSI_FILE( 1, 2, 1);
+STSI_FILE( 1, 2, 2);
+STSI_FILE( 2, 2, 1);
+STSI_FILE( 2, 2, 2);
+STSI_FILE( 3, 2, 2);
+STSI_FILE(15, 1, 2);
+STSI_FILE(15, 1, 3);
+STSI_FILE(15, 1, 4);
+STSI_FILE(15, 1, 5);
+STSI_FILE(15, 1, 6);
+
+struct stsi_file {
+	const struct file_operations *fops;
+	char *name;
+};
+
+static struct stsi_file stsi_file[] __initdata = {
+	{.fops = &stsi_1_1_1_fs_ops,  .name =  "1_1_1"},
+	{.fops = &stsi_1_2_1_fs_ops,  .name =  "1_2_1"},
+	{.fops = &stsi_1_2_2_fs_ops,  .name =  "1_2_2"},
+	{.fops = &stsi_2_2_1_fs_ops,  .name =  "2_2_1"},
+	{.fops = &stsi_2_2_2_fs_ops,  .name =  "2_2_2"},
+	{.fops = &stsi_3_2_2_fs_ops,  .name =  "3_2_2"},
+	{.fops = &stsi_15_1_2_fs_ops, .name = "15_1_2"},
+	{.fops = &stsi_15_1_3_fs_ops, .name = "15_1_3"},
+	{.fops = &stsi_15_1_4_fs_ops, .name = "15_1_4"},
+	{.fops = &stsi_15_1_5_fs_ops, .name = "15_1_5"},
+	{.fops = &stsi_15_1_6_fs_ops, .name = "15_1_6"},
+};
+
+static u8 stsi_0_0_0;
+
+static __init int stsi_init_debugfs(void)
+{
+	struct dentry *stsi_root;
+	struct stsi_file *sf;
+	int lvl, i;
+
+	stsi_root = debugfs_create_dir("stsi", arch_debugfs_dir);
+	if (IS_ERR_OR_NULL(stsi_root))
+		return 0;
+	lvl = stsi(NULL, 0, 0, 0);
+	if (lvl > 0)
+		stsi_0_0_0 = lvl;
+	debugfs_create_u8("0_0_0", 0400, stsi_root, &stsi_0_0_0);
+	for (i = 0; i < ARRAY_SIZE(stsi_file); i++) {
+		sf = &stsi_file[i];
+		debugfs_create_file(sf->name, 0400, stsi_root, NULL, sf->fops);
+	}
+	if (IS_ENABLED(CONFIG_SCHED_TOPOLOGY) && MACHINE_HAS_TOPOLOGY) {
+		char link_to[10];
+
+		sprintf(link_to, "15_1_%d", topology_mnest_limit());
+		debugfs_create_symlink("topology", stsi_root, link_to);
+	}
+	return 0;
+}
+device_initcall(stsi_init_debugfs);
+
+#endif /* CONFIG_DEBUG_FS */

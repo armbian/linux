@@ -35,8 +35,8 @@ static void __init tx4939_wdr_init(void)
 {
 	/* report watchdog reset status */
 	if (____raw_readq(&tx4939_ccfgptr->ccfg) & TX4939_CCFG_WDRST)
-		pr_warning("Watchdog reset detected at 0x%lx\n",
-			   read_c0_errorepc());
+		pr_warn("Watchdog reset detected at 0x%lx\n",
+			read_c0_errorepc());
 	/* clear WatchDogReset (W1C) */
 	tx4939_ccfg_set(TX4939_CCFG_WDRST);
 	/* do reset on watchdog */
@@ -221,8 +221,8 @@ void __init tx4939_setup(void)
 		(txx9_master_clock + 500000) / 1000000,
 		(txx9_gbus_clock + 500000) / 1000000,
 		(__u32)____raw_readq(&tx4939_ccfgptr->crir),
-		(unsigned long long)____raw_readq(&tx4939_ccfgptr->ccfg),
-		(unsigned long long)____raw_readq(&tx4939_ccfgptr->pcfg));
+		____raw_readq(&tx4939_ccfgptr->ccfg),
+		____raw_readq(&tx4939_ccfgptr->pcfg));
 
 	pr_info("%s DDRC -- EN:%08x", txx9_pcode_str,
 		(__u32)____raw_readq(&tx4939_ddrcptr->winen));
@@ -230,7 +230,7 @@ void __init tx4939_setup(void)
 		__u64 win = ____raw_readq(&tx4939_ddrcptr->win[i]);
 		if (!((__u32)____raw_readq(&tx4939_ddrcptr->winen) & (1 << i)))
 			continue;	/* disabled */
-		printk(KERN_CONT " #%d:%016llx", i, (unsigned long long)win);
+		pr_cont(" #%d:%016llx", i, win);
 		tx4939_sdram_resource[i].name = "DDR SDRAM";
 		tx4939_sdram_resource[i].start =
 			(unsigned long)(win >> 48) << 20;
@@ -240,7 +240,7 @@ void __init tx4939_setup(void)
 		tx4939_sdram_resource[i].flags = IORESOURCE_MEM;
 		request_resource(&iomem_resource, &tx4939_sdram_resource[i]);
 	}
-	printk(KERN_CONT "\n");
+	pr_cont("\n");
 
 	/* SRAM */
 	if (____raw_readq(&tx4939_sramcptr->cr) & 1) {
@@ -301,7 +301,7 @@ void __init tx4939_sio_init(unsigned int sclk, unsigned int cts_mask)
 	unsigned int ch_mask = 0;
 	__u64 pcfg = __raw_readq(&tx4939_ccfgptr->pcfg);
 
-	cts_mask |= ~1;	/* only SIO0 have RTS/CTS */
+	cts_mask |= ~1; /* only SIO0 have RTS/CTS */
 	if ((pcfg & TX4939_PCFG_SIO2MODE_MASK) != TX4939_PCFG_SIO2MODE_SIO0)
 		cts_mask |= 1 << 0; /* disable SIO0 RTS/CTS by PCFG setting */
 	if ((pcfg & TX4939_PCFG_SIO2MODE_MASK) != TX4939_PCFG_SIO2MODE_SIO2)
@@ -317,21 +317,23 @@ void __init tx4939_sio_init(unsigned int sclk, unsigned int cts_mask)
 	}
 }
 
-#if defined(CONFIG_TC35815) || defined(CONFIG_TC35815_MODULE)
+#if IS_ENABLED(CONFIG_TC35815)
 static u32 tx4939_get_eth_speed(struct net_device *dev)
 {
-	struct ethtool_cmd cmd;
-	if (__ethtool_get_settings(dev, &cmd))
+	struct ethtool_link_ksettings cmd;
+
+	if (__ethtool_get_link_ksettings(dev, &cmd))
 		return 100;	/* default 100Mbps */
 
-	return ethtool_cmd_speed(&cmd);
+	return cmd.base.speed;
 }
 
 static int tx4939_netdev_event(struct notifier_block *this,
 			       unsigned long event,
 			       void *ptr)
 {
-	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+
 	if (event == NETDEV_CHANGE && netif_carrier_ok(dev)) {
 		__u64 bit = 0;
 		if (dev->irq == TXX9_IRQ_BASE + TX4939_IR_ETH(0))
@@ -378,7 +380,7 @@ void __init tx4939_mtd_init(int ch)
 	unsigned long size = txx9_ce_res[ch].end - start + 1;
 
 	if (!(TX4939_EBUSC_CR(ch) & 0x8))
-		return;	/* disabled */
+		return; /* disabled */
 	txx9_physmap_flash_init(ch, start, size, &pdata);
 }
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_MOBILE_LCDC_H__
 #define __ASM_SH_MOBILE_LCDC_H__
 
@@ -163,7 +164,12 @@ struct sh_mobile_lcdc_bl_info {
 	const char *name;
 	int max_brightness;
 	int (*set_brightness)(int brightness);
-	int (*get_brightness)(void);
+};
+
+struct sh_mobile_lcdc_overlay_cfg {
+	int fourcc;
+	unsigned int max_xres;
+	unsigned int max_yres;
 };
 
 struct sh_mobile_lcdc_chan_cfg {
@@ -186,6 +192,7 @@ struct sh_mobile_lcdc_chan_cfg {
 struct sh_mobile_lcdc_info {
 	int clock_source;
 	struct sh_mobile_lcdc_chan_cfg ch[2];
+	struct sh_mobile_lcdc_overlay_cfg overlays[4];
 	struct sh_mobile_meram_info *meram_dev;
 };
 

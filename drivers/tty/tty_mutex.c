@@ -1,32 +1,60 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/tty.h>
 #include <linux/module.h>
 #include <linux/kallsyms.h>
 #include <linux/semaphore.h>
 #include <linux/sched.h>
 
-/*
- * The 'big tty mutex'
- *
- * This mutex is taken and released by tty_lock() and tty_unlock(),
- * replacing the older big kernel lock.
- * It can no longer be taken recursively, and does not get
- * released implicitly while sleeping.
- *
- * Don't use in new code.
- */
-static DEFINE_MUTEX(big_tty_mutex);
+/* Legacy tty mutex glue */
 
 /*
  * Getting the big tty mutex.
  */
-void __lockfunc tty_lock(void)
+
+void tty_lock(struct tty_struct *tty)
 {
-	mutex_lock(&big_tty_mutex);
+	if (WARN(tty->magic != TTY_MAGIC, "L Bad %p\n", tty))
+		return;
+	tty_kref_get(tty);
+	mutex_lock(&tty->legacy_mutex);
 }
 EXPORT_SYMBOL(tty_lock);
 
-void __lockfunc tty_unlock(void)
+int tty_lock_interruptible(struct tty_struct *tty)
 {
-	mutex_unlock(&big_tty_mutex);
+	int ret;
+
+	if (WARN(tty->magic != TTY_MAGIC, "L Bad %p\n", tty))
+		return -EIO;
+	tty_kref_get(tty);
+	ret = mutex_lock_interruptible(&tty->legacy_mutex);
+	if (ret)
+		tty_kref_put(tty);
+	return ret;
+}
+
+void tty_unlock(struct tty_struct *tty)
+{
+	if (WARN(tty->magic != TTY_MAGIC, "U Bad %p\n", tty))
+		return;
+	mutex_unlock(&tty->legacy_mutex);
+	tty_kref_put(tty);
 }
 EXPORT_SYMBOL(tty_unlock);
+
+void tty_lock_slave(struct tty_struct *tty)
+{
+	if (tty && tty != tty->link)
+		tty_lock(tty);
+}
+
+void tty_unlock_slave(struct tty_struct *tty)
+{
+	if (tty && tty != tty->link)
+		tty_unlock(tty);
+}
+
+void tty_set_lock_subclass(struct tty_struct *tty)
+{
+	lockdep_set_subclass(&tty->legacy_mutex, TTY_LOCK_SLAVE);
+}

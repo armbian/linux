@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SYSV_H
 #define _SYSV_H
 
@@ -58,6 +59,7 @@ struct sysv_sb_info {
 	u32            s_nzones;	/* same as s_sbd->s_fsize */
 	u16	       s_namelen;       /* max length of dir entry */
 	int	       s_forced_ro;
+	struct mutex s_lock;
 };
 
 /*
@@ -72,7 +74,7 @@ struct sysv_inode_info {
 
 static inline struct sysv_inode_info *SYSV_I(struct inode *inode)
 {
-	return list_entry(inode, struct sysv_inode_info, vfs_inode);
+	return container_of(inode, struct sysv_inode_info, vfs_inode);
 }
 
 static inline struct sysv_sb_info *SYSV_SB(struct super_block *sb)
@@ -117,7 +119,6 @@ static inline void dirty_sb(struct super_block *sb)
 	mark_buffer_dirty(sbi->s_bh1);
 	if (sbi->s_bh1 != sbi->s_bh2)
 		mark_buffer_dirty(sbi->s_bh2);
-	sb->s_dirt = 1;
 }
 
 
@@ -142,7 +143,7 @@ extern struct inode *sysv_iget(struct super_block *, unsigned int);
 extern int sysv_write_inode(struct inode *, struct writeback_control *wbc);
 extern int sysv_sync_inode(struct inode *);
 extern void sysv_set_inode(struct inode *, dev_t);
-extern int sysv_getattr(struct vfsmount *, struct dentry *, struct kstat *);
+extern int sysv_getattr(const struct path *, struct kstat *, u32, unsigned int);
 extern int sysv_init_icache(void);
 extern void sysv_destroy_icache(void);
 
@@ -161,7 +162,6 @@ extern ino_t sysv_inode_by_name(struct dentry *);
 
 extern const struct inode_operations sysv_file_inode_operations;
 extern const struct inode_operations sysv_dir_inode_operations;
-extern const struct inode_operations sysv_fast_symlink_inode_operations;
 extern const struct file_operations sysv_file_operations;
 extern const struct file_operations sysv_dir_operations;
 extern const struct address_space_operations sysv_aops;

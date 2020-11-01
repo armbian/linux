@@ -6,15 +6,15 @@
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  */
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 #include <linux/miscdevice.h>
 #include <linux/delay.h>
-#include <asm/uaccess.h>
-#include "irq_kern.h"
-#include "os.h"
+#include <linux/uaccess.h>
+#include <irq_kern.h>
+#include <os.h>
 
 /*
  * core module and version information
@@ -76,10 +76,9 @@ static ssize_t rng_dev_read (struct file *filp, char __user *buf, size_t size,
 			add_sigio_fd(random_fd);
 
 			add_wait_queue(&host_read_wait, &wait);
-			set_task_state(current, TASK_INTERRUPTIBLE);
+			set_current_state(TASK_INTERRUPTIBLE);
 
 			schedule();
-			set_task_state(current, TASK_RUNNING);
 			remove_wait_queue(&host_read_wait, &wait);
 
 			if (atomic_dec_and_test(&host_sleep_count)) {
@@ -131,8 +130,7 @@ static int __init rng_init (void)
 	random_fd = err;
 
 	err = um_request_irq(RANDOM_IRQ, random_fd, IRQ_READ, random_interrupt,
-			     IRQF_SAMPLE_RANDOM, "random",
-			     NULL);
+			     0, "random", NULL);
 	if (err)
 		goto err_out_cleanup_hw;
 

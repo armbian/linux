@@ -18,6 +18,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
+#include <linux/io.h>
 
 #include <mach/hardware.h>
 #include <mach/jornada720.h>
@@ -32,7 +33,7 @@ static unsigned long jornada_ssp_flags;
  * we need to reverse all data we receive from the mcu due to its physical location
  * returns : 01110111 -> 11101110
  */
-u8 inline jornada_ssp_reverse(u8 byte)
+inline u8 jornada_ssp_reverse(u8 byte)
 {
 	return
 		((0x80 & byte) >> 7) |
@@ -129,7 +130,7 @@ void jornada_ssp_end(void)
 };
 EXPORT_SYMBOL(jornada_ssp_end);
 
-static int __devinit jornada_ssp_probe(struct platform_device *dev)
+static int jornada_ssp_probe(struct platform_device *dev)
 {
 	int ret;
 

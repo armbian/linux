@@ -73,7 +73,6 @@ earlier 3Com products.
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/timer.h>
@@ -93,7 +92,7 @@ earlier 3Com products.
 #include <pcmcia/ciscode.h>
 #include <pcmcia/ds.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 /*====================================================================*/
@@ -255,7 +254,6 @@ static const struct net_device_ops el3_netdev_ops = {
 	.ndo_get_stats		= el3_get_stats,
 	.ndo_do_ioctl		= el3_ioctl,
 	.ndo_set_rx_mode	= set_multicast_list,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -432,7 +430,7 @@ static int tc574_config(struct pcmcia_device *link)
 	netdev_info(dev, "%s at io %#3lx, irq %d, hw_addr %pM\n",
 		    cardname, dev->base_addr, dev->irq, dev->dev_addr);
 	netdev_info(dev, " %dK FIFO split %s Rx:Tx, %sMII interface.\n",
-		    8 << config & Ram_size,
+		    8 << (config & Ram_size),
 		    ram_split[(config & Ram_split) >> Ram_split_shift],
 		    config & Autoselect ? "autoselect " : "");
 
@@ -701,7 +699,7 @@ static void el3_tx_timeout(struct net_device *dev)
 	netdev_notice(dev, "Transmit timed out!\n");
 	dump_status(dev);
 	dev->stats.tx_errors++;
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	/* Issue TX_RESET and TX_START commands. */
 	tc574_wait_for_completion(dev, TxReset);
 	outw(TxEnable, ioaddr + EL3_CMD);
@@ -1165,16 +1163,4 @@ static struct pcmcia_driver tc574_driver = {
 	.suspend	= tc574_suspend,
 	.resume		= tc574_resume,
 };
-
-static int __init init_tc574(void)
-{
-	return pcmcia_register_driver(&tc574_driver);
-}
-
-static void __exit exit_tc574(void)
-{
-	pcmcia_unregister_driver(&tc574_driver);
-}
-
-module_init(init_tc574);
-module_exit(exit_tc574);
+module_pcmcia_driver(tc574_driver);

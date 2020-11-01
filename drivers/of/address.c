@@ -1,15 +1,21 @@
 
+#define pr_fmt(fmt)	"OF: " fmt
+
+#include <linux/device.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
+#include <linux/pci.h>
 #include <linux/pci_regs.h>
+#include <linux/sizes.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 
 /* Max address size we deal with */
 #define OF_MAX_ADDR_CELLS	4
-#define OF_CHECK_COUNTS(na, ns)	((na) > 0 && (na) <= OF_MAX_ADDR_CELLS && \
-			(ns) > 0)
+#define OF_CHECK_ADDR_COUNT(na)	((na) > 0 && (na) <= OF_MAX_ADDR_CELLS)
+#define OF_CHECK_COUNTS(na, ns)	(OF_CHECK_ADDR_COUNT(na) && (ns) > 0)
 
 static struct of_bus *of_match_bus(struct device_node *np);
 static int __of_address_to_resource(struct device_node *dev,
@@ -20,10 +26,10 @@ static int __of_address_to_resource(struct device_node *dev,
 #ifdef DEBUG
 static void of_dump_addr(const char *s, const __be32 *addr, int na)
 {
-	printk(KERN_DEBUG "%s", s);
+	pr_debug("%s", s);
 	while (na--)
-		printk(" %08x", be32_to_cpu(*(addr++)));
-	printk("\n");
+		pr_cont(" %08x", be32_to_cpu(*(addr++)));
+	pr_cont("\n");
 }
 #else
 static void of_dump_addr(const char *s, const __be32 *addr, int na) { }
@@ -36,9 +42,9 @@ struct of_bus {
 	int		(*match)(struct device_node *parent);
 	void		(*count_cells)(struct device_node *child,
 				       int *addrc, int *sizec);
-	u64		(*map)(u32 *addr, const __be32 *range,
+	u64		(*map)(__be32 *addr, const __be32 *range,
 				int na, int ns, int pna);
-	int		(*translate)(u32 *addr, u64 offset, int na);
+	int		(*translate)(__be32 *addr, u64 offset, int na);
 	unsigned int	(*get_flags)(const __be32 *addr);
 };
 
@@ -55,7 +61,7 @@ static void of_bus_default_count_cells(struct device_node *dev,
 		*sizec = of_n_size_cells(dev);
 }
 
-static u64 of_bus_default_map(u32 *addr, const __be32 *range,
+static u64 of_bus_default_map(__be32 *addr, const __be32 *range,
 		int na, int ns, int pna)
 {
 	u64 cp, s, da;
@@ -64,7 +70,7 @@ static u64 of_bus_default_map(u32 *addr, const __be32 *range,
 	s  = of_read_number(range + na + pna, ns);
 	da = of_read_number(addr, na);
 
-	pr_debug("OF: default map, cp=%llx, s=%llx, da=%llx\n",
+	pr_debug("default map, cp=%llx, s=%llx, da=%llx\n",
 		 (unsigned long long)cp, (unsigned long long)s,
 		 (unsigned long long)da);
 
@@ -73,7 +79,7 @@ static u64 of_bus_default_map(u32 *addr, const __be32 *range,
 	return da - cp;
 }
 
-static int of_bus_default_translate(u32 *addr, u64 offset, int na)
+static int of_bus_default_translate(__be32 *addr, u64 offset, int na)
 {
 	u64 a = of_read_number(addr, na);
 	memset(addr, 0, na * 4);
@@ -90,15 +96,20 @@ static unsigned int of_bus_default_get_flags(const __be32 *addr)
 	return IORESOURCE_MEM;
 }
 
-#ifdef CONFIG_PCI
+#ifdef CONFIG_OF_ADDRESS_PCI
 /*
  * PCI bus specific translator
  */
 
 static int of_bus_pci_match(struct device_node *np)
 {
-	/* "vci" is for the /chaos bridge on 1st-gen PCI powermacs */
-	return !strcmp(np->type, "pci") || !strcmp(np->type, "vci");
+	/*
+ 	 * "pciex" is PCI Express
+	 * "vci" is for the /chaos bridge on 1st-gen PCI powermacs
+	 * "ht" is hypertransport
+	 */
+	return !strcmp(np->type, "pci") || !strcmp(np->type, "pciex") ||
+		!strcmp(np->type, "vci") || !strcmp(np->type, "ht");
 }
 
 static void of_bus_pci_count_cells(struct device_node *np,
@@ -129,7 +140,7 @@ static unsigned int of_bus_pci_get_flags(const __be32 *addr)
 	return flags;
 }
 
-static u64 of_bus_pci_map(u32 *addr, const __be32 *range, int na, int ns,
+static u64 of_bus_pci_map(__be32 *addr, const __be32 *range, int na, int ns,
 		int pna)
 {
 	u64 cp, s, da;
@@ -147,7 +158,7 @@ static u64 of_bus_pci_map(u32 *addr, const __be32 *range, int na, int ns,
 	s  = of_read_number(range + na + pna, ns);
 	da = of_read_number(addr + 1, na - 1);
 
-	pr_debug("OF: PCI map, cp=%llx, s=%llx, da=%llx\n",
+	pr_debug("PCI map, cp=%llx, s=%llx, da=%llx\n",
 		 (unsigned long long)cp, (unsigned long long)s,
 		 (unsigned long long)da);
 
@@ -156,11 +167,13 @@ static u64 of_bus_pci_map(u32 *addr, const __be32 *range, int na, int ns,
 	return da - cp;
 }
 
-static int of_bus_pci_translate(u32 *addr, u64 offset, int na)
+static int of_bus_pci_translate(__be32 *addr, u64 offset, int na)
 {
 	return of_bus_default_translate(addr + 1, offset, na - 1);
 }
+#endif /* CONFIG_OF_ADDRESS_PCI */
 
+#ifdef CONFIG_PCI
 const __be32 *of_get_pci_address(struct device_node *dev, int bar_no, u64 *size,
 			unsigned int *flags)
 {
@@ -181,7 +194,7 @@ const __be32 *of_get_pci_address(struct device_node *dev, int bar_no, u64 *size,
 	}
 	bus->count_cells(dev, &na, &ns);
 	of_node_put(parent);
-	if (!OF_CHECK_COUNTS(na, ns))
+	if (!OF_CHECK_ADDR_COUNT(na))
 		return NULL;
 
 	/* Get "reg" or "assigned-addresses" property */
@@ -218,6 +231,123 @@ int of_pci_address_to_resource(struct device_node *dev, int bar,
 	return __of_address_to_resource(dev, addrp, size, flags, NULL, r);
 }
 EXPORT_SYMBOL_GPL(of_pci_address_to_resource);
+
+int of_pci_range_parser_init(struct of_pci_range_parser *parser,
+				struct device_node *node)
+{
+	const int na = 3, ns = 2;
+	int rlen;
+
+	parser->node = node;
+	parser->pna = of_n_addr_cells(node);
+	parser->np = parser->pna + na + ns;
+
+	parser->range = of_get_property(node, "ranges", &rlen);
+	if (parser->range == NULL)
+		return -ENOENT;
+
+	parser->end = parser->range + rlen / sizeof(__be32);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(of_pci_range_parser_init);
+
+struct of_pci_range *of_pci_range_parser_one(struct of_pci_range_parser *parser,
+						struct of_pci_range *range)
+{
+	const int na = 3, ns = 2;
+
+	if (!range)
+		return NULL;
+
+	if (!parser->range || parser->range + parser->np > parser->end)
+		return NULL;
+
+	range->pci_space = be32_to_cpup(parser->range);
+	range->flags = of_bus_pci_get_flags(parser->range);
+	range->pci_addr = of_read_number(parser->range + 1, ns);
+	range->cpu_addr = of_translate_address(parser->node,
+				parser->range + na);
+	range->size = of_read_number(parser->range + parser->pna + na, ns);
+
+	parser->range += parser->np;
+
+	/* Now consume following elements while they are contiguous */
+	while (parser->range + parser->np <= parser->end) {
+		u32 flags;
+		u64 pci_addr, cpu_addr, size;
+
+		flags = of_bus_pci_get_flags(parser->range);
+		pci_addr = of_read_number(parser->range + 1, ns);
+		cpu_addr = of_translate_address(parser->node,
+				parser->range + na);
+		size = of_read_number(parser->range + parser->pna + na, ns);
+
+		if (flags != range->flags)
+			break;
+		if (pci_addr != range->pci_addr + range->size ||
+		    cpu_addr != range->cpu_addr + range->size)
+			break;
+
+		range->size += size;
+		parser->range += parser->np;
+	}
+
+	return range;
+}
+EXPORT_SYMBOL_GPL(of_pci_range_parser_one);
+
+/*
+ * of_pci_range_to_resource - Create a resource from an of_pci_range
+ * @range:	the PCI range that describes the resource
+ * @np:		device node where the range belongs to
+ * @res:	pointer to a valid resource that will be updated to
+ *              reflect the values contained in the range.
+ *
+ * Returns EINVAL if the range cannot be converted to resource.
+ *
+ * Note that if the range is an IO range, the resource will be converted
+ * using pci_address_to_pio() which can fail if it is called too early or
+ * if the range cannot be matched to any host bridge IO space (our case here).
+ * To guard against that we try to register the IO range first.
+ * If that fails we know that pci_address_to_pio() will do too.
+ */
+int of_pci_range_to_resource(struct of_pci_range *range,
+			     struct device_node *np, struct resource *res)
+{
+	int err;
+	res->flags = range->flags;
+	res->parent = res->child = res->sibling = NULL;
+	res->name = np->full_name;
+
+	if (res->flags & IORESOURCE_IO) {
+		unsigned long port;
+		err = pci_register_io_range(range->cpu_addr, range->size);
+		if (err)
+			goto invalid_range;
+		port = pci_address_to_pio(range->cpu_addr);
+		if (port == (unsigned long)-1) {
+			err = -EINVAL;
+			goto invalid_range;
+		}
+		res->start = port;
+	} else {
+		if ((sizeof(resource_size_t) < 8) &&
+		    upper_32_bits(range->cpu_addr)) {
+			err = -EINVAL;
+			goto invalid_range;
+		}
+
+		res->start = range->cpu_addr;
+	}
+	res->end = res->start + range->size - 1;
+	return 0;
+
+invalid_range:
+	res->start = (resource_size_t)OF_BAD_ADDR;
+	res->end = (resource_size_t)OF_BAD_ADDR;
+	return err;
+}
 #endif /* CONFIG_PCI */
 
 /*
@@ -238,7 +368,7 @@ static void of_bus_isa_count_cells(struct device_node *child,
 		*sizec = 1;
 }
 
-static u64 of_bus_isa_map(u32 *addr, const __be32 *range, int na, int ns,
+static u64 of_bus_isa_map(__be32 *addr, const __be32 *range, int na, int ns,
 		int pna)
 {
 	u64 cp, s, da;
@@ -252,7 +382,7 @@ static u64 of_bus_isa_map(u32 *addr, const __be32 *range, int na, int ns,
 	s  = of_read_number(range + na + pna, ns);
 	da = of_read_number(addr + 1, na - 1);
 
-	pr_debug("OF: ISA map, cp=%llx, s=%llx, da=%llx\n",
+	pr_debug("ISA map, cp=%llx, s=%llx, da=%llx\n",
 		 (unsigned long long)cp, (unsigned long long)s,
 		 (unsigned long long)da);
 
@@ -261,7 +391,7 @@ static u64 of_bus_isa_map(u32 *addr, const __be32 *range, int na, int ns,
 	return da - cp;
 }
 
-static int of_bus_isa_translate(u32 *addr, u64 offset, int na)
+static int of_bus_isa_translate(__be32 *addr, u64 offset, int na)
 {
 	return of_bus_default_translate(addr + 1, offset, na - 1);
 }
@@ -283,7 +413,7 @@ static unsigned int of_bus_isa_get_flags(const __be32 *addr)
  */
 
 static struct of_bus of_busses[] = {
-#ifdef CONFIG_PCI
+#ifdef CONFIG_OF_ADDRESS_PCI
 	/* PCI */
 	{
 		.name = "pci",
@@ -294,7 +424,7 @@ static struct of_bus of_busses[] = {
 		.translate = of_bus_pci_translate,
 		.get_flags = of_bus_pci_get_flags,
 	},
-#endif /* CONFIG_PCI */
+#endif /* CONFIG_OF_ADDRESS_PCI */
 	/* ISA */
 	{
 		.name = "isa",
@@ -328,12 +458,17 @@ static struct of_bus *of_match_bus(struct device_node *np)
 	return NULL;
 }
 
-static int of_empty_ranges_quirk(void)
+static int of_empty_ranges_quirk(struct device_node *np)
 {
 	if (IS_ENABLED(CONFIG_PPC)) {
-		/* To save cycles, we cache the result */
+		/* To save cycles, we cache the result for global "Mac" setting */
 		static int quirk_state = -1;
 
+		/* PA-SEMI sdc DT bug */
+		if (of_device_is_compatible(np, "1682m-sdc"))
+			return true;
+
+		/* Make quirk cached */
 		if (quirk_state < 0)
 			quirk_state =
 				of_machine_is_compatible("Power Macintosh") ||
@@ -344,7 +479,7 @@ static int of_empty_ranges_quirk(void)
 }
 
 static int of_translate_one(struct device_node *parent, struct of_bus *bus,
-			    struct of_bus *pbus, u32 *addr,
+			    struct of_bus *pbus, __be32 *addr,
 			    int na, int ns, int pna, const char *rprop)
 {
 	const __be32 *ranges;
@@ -352,9 +487,10 @@ static int of_translate_one(struct device_node *parent, struct of_bus *bus,
 	int rone;
 	u64 offset = OF_BAD_ADDR;
 
-	/* Normally, an absence of a "ranges" property means we are
+	/*
+	 * Normally, an absence of a "ranges" property means we are
 	 * crossing a non-translatable boundary, and thus the addresses
-	 * below the current not cannot be converted to CPU physical ones.
+	 * below the current cannot be converted to CPU physical ones.
 	 * Unfortunately, while this is very clear in the spec, it's not
 	 * what Apple understood, and they do have things like /uni-n or
 	 * /ht nodes with no "ranges" property and a lot of perfectly
@@ -368,18 +504,18 @@ static int of_translate_one(struct device_node *parent, struct of_bus *bus,
 	 * This code is only enabled on powerpc. --gcl
 	 */
 	ranges = of_get_property(parent, rprop, &rlen);
-	if (ranges == NULL && !of_empty_ranges_quirk()) {
-		pr_err("OF: no ranges; cannot translate\n");
+	if (ranges == NULL && !of_empty_ranges_quirk(parent)) {
+		pr_debug("no ranges; cannot translate\n");
 		return 1;
 	}
 	if (ranges == NULL || rlen == 0) {
 		offset = of_read_number(addr, na);
 		memset(addr, 0, pna * 4);
-		pr_debug("OF: empty ranges; 1:1 translation\n");
+		pr_debug("empty ranges; 1:1 translation\n");
 		goto finish;
 	}
 
-	pr_debug("OF: walking ranges...\n");
+	pr_debug("walking ranges...\n");
 
 	/* Now walk through the ranges */
 	rlen /= 4;
@@ -390,14 +526,14 @@ static int of_translate_one(struct device_node *parent, struct of_bus *bus,
 			break;
 	}
 	if (offset == OF_BAD_ADDR) {
-		pr_debug("OF: not found !\n");
+		pr_debug("not found !\n");
 		return 1;
 	}
 	memcpy(addr, ranges + na, 4 * pna);
 
  finish:
-	of_dump_addr("OF: parent translation for:", addr, pna);
-	pr_debug("OF: with offset: %llx\n", (unsigned long long)offset);
+	of_dump_addr("parent translation for:", addr, pna);
+	pr_debug("with offset: %llx\n", (unsigned long long)offset);
 
 	/* Translate it into parent bus space */
 	return pbus->translate(addr, offset, pna);
@@ -413,16 +549,16 @@ static int of_translate_one(struct device_node *parent, struct of_bus *bus,
  * that can be mapped to a cpu physical address). This is not really specified
  * that way, but this is traditionally the way IBM at least do things
  */
-u64 __of_translate_address(struct device_node *dev, const __be32 *in_addr,
-			   const char *rprop)
+static u64 __of_translate_address(struct device_node *dev,
+				  const __be32 *in_addr, const char *rprop)
 {
 	struct device_node *parent = NULL;
 	struct of_bus *bus, *pbus;
-	u32 addr[OF_MAX_ADDR_CELLS];
+	__be32 addr[OF_MAX_ADDR_CELLS];
 	int na, ns, pna, pns;
 	u64 result = OF_BAD_ADDR;
 
-	pr_debug("OF: ** translation for device %s **\n", dev->full_name);
+	pr_debug("** translation for device %pOF **\n", dev);
 
 	/* Increase refcount at current level */
 	of_node_get(dev);
@@ -433,18 +569,17 @@ u64 __of_translate_address(struct device_node *dev, const __be32 *in_addr,
 		goto bail;
 	bus = of_match_bus(parent);
 
-	/* Cound address cells & copy address locally */
+	/* Count address cells & copy address locally */
 	bus->count_cells(dev, &na, &ns);
 	if (!OF_CHECK_COUNTS(na, ns)) {
-		printk(KERN_ERR "prom_parse: Bad cell count for %s\n",
-		       dev->full_name);
+		pr_debug("Bad cell count for %pOF\n", dev);
 		goto bail;
 	}
 	memcpy(addr, in_addr, na * 4);
 
-	pr_debug("OF: bus is %s (na=%d, ns=%d) on %s\n",
-	    bus->name, na, ns, parent->full_name);
-	of_dump_addr("OF: translating address:", addr, na);
+	pr_debug("bus is %s (na=%d, ns=%d) on %pOF\n",
+	    bus->name, na, ns, parent);
+	of_dump_addr("translating address:", addr, na);
 
 	/* Translate */
 	for (;;) {
@@ -455,7 +590,7 @@ u64 __of_translate_address(struct device_node *dev, const __be32 *in_addr,
 
 		/* If root, we have finished */
 		if (parent == NULL) {
-			pr_debug("OF: reached root node\n");
+			pr_debug("reached root node\n");
 			result = of_read_number(addr, na);
 			break;
 		}
@@ -464,13 +599,12 @@ u64 __of_translate_address(struct device_node *dev, const __be32 *in_addr,
 		pbus = of_match_bus(parent);
 		pbus->count_cells(dev, &pna, &pns);
 		if (!OF_CHECK_COUNTS(pna, pns)) {
-			printk(KERN_ERR "prom_parse: Bad cell count for %s\n",
-			       dev->full_name);
+			pr_err("Bad cell count for %pOF\n", dev);
 			break;
 		}
 
-		pr_debug("OF: parent bus is %s (na=%d, ns=%d) on %s\n",
-		    pbus->name, pna, pns, parent->full_name);
+		pr_debug("parent bus is %s (na=%d, ns=%d) on %pOF\n",
+		    pbus->name, pna, pns, parent);
 
 		/* Apply bus translation */
 		if (of_translate_one(dev, bus, pbus, addr, na, ns, pna, rprop))
@@ -481,7 +615,7 @@ u64 __of_translate_address(struct device_node *dev, const __be32 *in_addr,
 		ns = pns;
 		bus = pbus;
 
-		of_dump_addr("OF: one level translation:", addr, na);
+		of_dump_addr("one level translation:", addr, na);
 	}
  bail:
 	of_node_put(parent);
@@ -518,7 +652,7 @@ const __be32 *of_get_address(struct device_node *dev, int index, u64 *size,
 	bus = of_match_bus(parent);
 	bus->count_cells(dev, &na, &ns);
 	of_node_put(parent);
-	if (!OF_CHECK_COUNTS(na, ns))
+	if (!OF_CHECK_ADDR_COUNT(na))
 		return NULL;
 
 	/* Get "reg" or "assigned-addresses" property */
@@ -574,7 +708,7 @@ static int __of_address_to_resource(struct device_node *dev,
  *
  * Note that if your address is a PIO address, the conversion will fail if
  * the physical address can't be internally converted to an IO token with
- * pci_address_to_pio(), that is because it's either called to early or it
+ * pci_address_to_pio(), that is because it's either called too early or it
  * can't be matched to any host bridge IO space
  */
 int of_address_to_resource(struct device_node *dev, int index,
@@ -632,3 +766,152 @@ void __iomem *of_iomap(struct device_node *np, int index)
 	return ioremap(res.start, resource_size(&res));
 }
 EXPORT_SYMBOL(of_iomap);
+
+/*
+ * of_io_request_and_map - Requests a resource and maps the memory mapped IO
+ *			   for a given device_node
+ * @device:	the device whose io range will be mapped
+ * @index:	index of the io range
+ * @name:	name of the resource
+ *
+ * Returns a pointer to the requested and mapped memory or an ERR_PTR() encoded
+ * error code on failure. Usage example:
+ *
+ *	base = of_io_request_and_map(node, 0, "foo");
+ *	if (IS_ERR(base))
+ *		return PTR_ERR(base);
+ */
+void __iomem *of_io_request_and_map(struct device_node *np, int index,
+					const char *name)
+{
+	struct resource res;
+	void __iomem *mem;
+
+	if (of_address_to_resource(np, index, &res))
+		return IOMEM_ERR_PTR(-EINVAL);
+
+	if (!request_mem_region(res.start, resource_size(&res), name))
+		return IOMEM_ERR_PTR(-EBUSY);
+
+	mem = ioremap(res.start, resource_size(&res));
+	if (!mem) {
+		release_mem_region(res.start, resource_size(&res));
+		return IOMEM_ERR_PTR(-ENOMEM);
+	}
+
+	return mem;
+}
+EXPORT_SYMBOL(of_io_request_and_map);
+
+/**
+ * of_dma_get_range - Get DMA range info
+ * @np:		device node to get DMA range info
+ * @dma_addr:	pointer to store initial DMA address of DMA range
+ * @paddr:	pointer to store initial CPU address of DMA range
+ * @size:	pointer to store size of DMA range
+ *
+ * Look in bottom up direction for the first "dma-ranges" property
+ * and parse it.
+ *  dma-ranges format:
+ *	DMA addr (dma_addr)	: naddr cells
+ *	CPU addr (phys_addr_t)	: pna cells
+ *	size			: nsize cells
+ *
+ * It returns -ENODEV if "dma-ranges" property was not found
+ * for this device in DT.
+ */
+int of_dma_get_range(struct device_node *np, u64 *dma_addr, u64 *paddr, u64 *size)
+{
+	struct device_node *node = of_node_get(np);
+	const __be32 *ranges = NULL;
+	int len, naddr, nsize, pna;
+	int ret = 0;
+	u64 dmaaddr;
+
+	if (!node)
+		return -EINVAL;
+
+	while (1) {
+		naddr = of_n_addr_cells(node);
+		nsize = of_n_size_cells(node);
+		node = of_get_next_parent(node);
+		if (!node)
+			break;
+
+		ranges = of_get_property(node, "dma-ranges", &len);
+
+		/* Ignore empty ranges, they imply no translation required */
+		if (ranges && len > 0)
+			break;
+
+		/*
+		 * At least empty ranges has to be defined for parent node if
+		 * DMA is supported
+		 */
+		if (!ranges)
+			break;
+	}
+
+	if (!ranges) {
+		pr_debug("no dma-ranges found for node(%pOF)\n", np);
+		ret = -ENODEV;
+		goto out;
+	}
+
+	len /= sizeof(u32);
+
+	pna = of_n_addr_cells(node);
+
+	/* dma-ranges format:
+	 * DMA addr	: naddr cells
+	 * CPU addr	: pna cells
+	 * size		: nsize cells
+	 */
+	dmaaddr = of_read_number(ranges, naddr);
+	*paddr = of_translate_dma_address(np, ranges);
+	if (*paddr == OF_BAD_ADDR) {
+		pr_err("translation of DMA address(%pad) to CPU address failed node(%pOF)\n",
+		       dma_addr, np);
+		ret = -EINVAL;
+		goto out;
+	}
+	*dma_addr = dmaaddr;
+
+	*size = of_read_number(ranges + naddr + pna, nsize);
+
+	pr_debug("dma_addr(%llx) cpu_addr(%llx) size(%llx)\n",
+		 *dma_addr, *paddr, *size);
+
+out:
+	of_node_put(node);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(of_dma_get_range);
+
+/**
+ * of_dma_is_coherent - Check if device is coherent
+ * @np:	device node
+ *
+ * It returns true if "dma-coherent" property was found
+ * for this device in the DT, or if DMA is coherent by
+ * default for OF devices on the current platform.
+ */
+bool of_dma_is_coherent(struct device_node *np)
+{
+	struct device_node *node = of_node_get(np);
+
+	if (IS_ENABLED(CONFIG_OF_DMA_DEFAULT_COHERENT))
+		return true;
+
+	while (node) {
+		if (of_property_read_bool(node, "dma-coherent")) {
+			of_node_put(node);
+			return true;
+		}
+		node = of_get_next_parent(node);
+	}
+	of_node_put(node);
+	return false;
+}
+EXPORT_SYMBOL_GPL(of_dma_is_coherent);

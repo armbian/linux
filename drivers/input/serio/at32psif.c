@@ -159,13 +159,12 @@ static int psif_open(struct serio *io)
 
 	retval = clk_enable(psif->pclk);
 	if (retval)
-		goto out;
+		return retval;
 
 	psif_writel(psif, CR, PSIF_BIT(CR_TXEN) | PSIF_BIT(CR_RXEN));
 	psif_writel(psif, IER, PSIF_BIT(RXRDY));
 
 	psif->open = true;
-out:
 	return retval;
 }
 
@@ -210,16 +209,12 @@ static int __init psif_probe(struct platform_device *pdev)
 	int ret;
 
 	psif = kzalloc(sizeof(struct psif), GFP_KERNEL);
-	if (!psif) {
-		dev_dbg(&pdev->dev, "out of memory\n");
-		ret = -ENOMEM;
-		goto out;
-	}
+	if (!psif)
+		return -ENOMEM;
 	psif->pdev = pdev;
 
 	io = kzalloc(sizeof(struct serio), GFP_KERNEL);
 	if (!io) {
-		dev_dbg(&pdev->dev, "out of memory\n");
 		ret = -ENOMEM;
 		goto out_free_psif;
 	}
@@ -297,7 +292,6 @@ out_free_io:
 	kfree(io);
 out_free_psif:
 	kfree(psif);
-out:
 	return ret;
 }
 
@@ -313,8 +307,6 @@ static int __exit psif_remove(struct platform_device *pdev)
 	free_irq(psif->irq, psif);
 	clk_put(psif->pclk);
 	kfree(psif);
-
-	platform_set_drvdata(pdev, NULL);
 
 	return 0;
 }
@@ -354,23 +346,11 @@ static struct platform_driver psif_driver = {
 	.remove		= __exit_p(psif_remove),
 	.driver		= {
 		.name	= "atmel_psif",
-		.owner	= THIS_MODULE,
 		.pm	= &psif_pm_ops,
 	},
 };
 
-static int __init psif_init(void)
-{
-	return platform_driver_probe(&psif_driver, psif_probe);
-}
-
-static void __exit psif_exit(void)
-{
-	platform_driver_unregister(&psif_driver);
-}
-
-module_init(psif_init);
-module_exit(psif_exit);
+module_platform_driver_probe(psif_driver, psif_probe);
 
 MODULE_AUTHOR("Hans-Christian Egtvedt <egtvedt@samfundet.no>");
 MODULE_DESCRIPTION("Atmel AVR32 PSIF PS/2 driver");

@@ -38,28 +38,21 @@
 #define elf_addr_t	Elf32_Addr
 
 /*
+ * Some data types as stored in coredump.
+ */
+#define user_long_t		compat_long_t
+#define user_siginfo_t		compat_siginfo_t
+#define copy_siginfo_to_user	copy_siginfo_to_user32
+
+/*
  * The machine-dependent core note format types are defined in elfcore-compat.h,
  * which requires asm/elf.h to define compat_elf_gregset_t et al.
  */
 #define elf_prstatus	compat_elf_prstatus
 #define elf_prpsinfo	compat_elf_prpsinfo
 
-/*
- * Compat version of cputime_to_compat_timeval, perhaps this
- * should be an inline in <linux/compat.h>.
- */
-static void cputime_to_compat_timeval(const cputime_t cputime,
-				      struct compat_timeval *value)
-{
-	struct timeval tv;
-	cputime_to_timeval(cputime, &tv);
-	value->tv_sec = tv.tv_sec;
-	value->tv_usec = tv.tv_usec;
-}
-
-#undef cputime_to_timeval
-#define cputime_to_timeval cputime_to_compat_timeval
-
+#undef ns_to_timeval
+#define ns_to_timeval ns_to_compat_timeval
 
 /*
  * To use this file, asm/elf.h must define compat_elf_check_arch.
@@ -79,6 +72,11 @@ static void cputime_to_compat_timeval(const cputime_t cputime,
 #ifdef	COMPAT_ELF_HWCAP
 #undef	ELF_HWCAP
 #define	ELF_HWCAP		COMPAT_ELF_HWCAP
+#endif
+
+#ifdef	COMPAT_ELF_HWCAP2
+#undef	ELF_HWCAP2
+#define	ELF_HWCAP2		COMPAT_ELF_HWCAP2
 #endif
 
 #ifdef	COMPAT_ARCH_DLINFO

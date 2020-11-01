@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ip22-nvram.c: NVRAM and serial EEPROM handling.
  *
  * Copyright (C) 2003 Ladislav Michl (ladis@linux-mips.org)
  */
-#include <linux/module.h>
+#include <linux/export.h>
 
 #include <asm/sgi/hpc3.h>
 #include <asm/sgi/ip22.h>
@@ -14,11 +15,11 @@
 #define EEPROM_WRITE	0xa000	/* serial memory write */
 #define EEPROM_WRALL	0x8800	/* write all registers */
 #define EEPROM_WDS	0x8000	/* disable all programming */
-#define	EEPROM_PRREAD	0xc000	/* read protect register */
-#define	EEPROM_PREN	0x9800	/* enable protect register mode */
-#define	EEPROM_PRCLEAR	0xffff	/* clear protect register */
-#define	EEPROM_PRWRITE	0xa000	/* write protect register */
-#define	EEPROM_PRDS	0x8000	/* disable protect register, forever */
+#define EEPROM_PRREAD	0xc000	/* read protect register */
+#define EEPROM_PREN	0x9800	/* enable protect register mode */
+#define EEPROM_PRCLEAR	0xffff	/* clear protect register */
+#define EEPROM_PRWRITE	0xa000	/* write protect register */
+#define EEPROM_PRDS	0x8000	/* disable protect register, forever */
 
 #define EEPROM_EPROT	0x01	/* Protect register enable */
 #define EEPROM_CSEL	0x02	/* Chip select */
@@ -27,7 +28,7 @@
 #define EEPROM_DATI	0x10	/* Data in */
 
 /* We need to use these functions early... */
-#define delay()	({						\
+#define delay() ({						\
 	int x;							\
 	for (x=0; x<100000; x++) __asm__ __volatile__(""); })
 
@@ -35,7 +36,7 @@
 	__raw_writel(__raw_readl(ptr) & ~EEPROM_DATO, ptr);	\
 	__raw_writel(__raw_readl(ptr) & ~EEPROM_ECLK, ptr);	\
 	__raw_writel(__raw_readl(ptr) & ~EEPROM_EPROT, ptr);	\
-	delay();		                                \
+	delay();						\
 	__raw_writel(__raw_readl(ptr) | EEPROM_CSEL, ptr);	\
 	__raw_writel(__raw_readl(ptr) | EEPROM_ECLK, ptr); })
 
@@ -46,7 +47,7 @@
 	__raw_writel(__raw_readl(ptr) | EEPROM_EPROT, ptr);	\
 	__raw_writel(__raw_readl(ptr) | EEPROM_ECLK, ptr); })
 
-#define	BITS_IN_COMMAND	11
+#define BITS_IN_COMMAND 11
 /*
  * clock in the nvram command and the register number. For the
  * national semiconductor nv ram chip the op code is 3 bits and

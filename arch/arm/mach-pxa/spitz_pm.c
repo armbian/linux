@@ -25,8 +25,8 @@
 #include <mach/hardware.h>
 
 #include <mach/spitz.h>
-#include <mach/pxa27x.h>
-#include <mach/sharpsl_pm.h>
+#include "pxa27x.h"
+#include "sharpsl_pm.h"
 
 #include "generic.h"
 
@@ -86,10 +86,7 @@ static void spitz_discharge1(int on)
 	gpio_set_value(SPITZ_GPIO_LED_GREEN, on);
 }
 
-static unsigned long gpio18_config[] = {
-	GPIO18_RDY,
-	GPIO18_GPIO,
-};
+static unsigned long gpio18_config = GPIO18_GPIO;
 
 static void spitz_presuspend(void)
 {
@@ -112,7 +109,7 @@ static void spitz_presuspend(void)
 	PGSR3 &= ~SPITZ_GPIO_G3_STROBE_BIT;
 	PGSR2 |= GPIO_bit(SPITZ_GPIO_KEY_STROBE0);
 
-	pxa2xx_mfp_config(&gpio18_config[0], 1);
+	pxa2xx_mfp_config(&gpio18_config, 1);
 	gpio_request_one(18, GPIOF_OUT_INIT_HIGH, "Unknown");
 	gpio_free(18);
 
@@ -131,7 +128,6 @@ static void spitz_presuspend(void)
 
 static void spitz_postsuspend(void)
 {
-	pxa2xx_mfp_config(&gpio18_config[1], 1);
 }
 
 static int spitz_should_wakeup(unsigned int resume_on_alarm)
@@ -169,13 +165,10 @@ static int spitz_should_wakeup(unsigned int resume_on_alarm)
 	return is_resume;
 }
 
-static unsigned long spitz_charger_wakeup(void)
+static bool spitz_charger_wakeup(void)
 {
-	unsigned long ret;
-	ret = ((!gpio_get_value(SPITZ_GPIO_KEY_INT)
-		<< GPIO_bit(SPITZ_GPIO_KEY_INT))
-		| gpio_get_value(SPITZ_GPIO_SYNC));
-	return ret;
+	return !gpio_get_value(SPITZ_GPIO_KEY_INT) ||
+		gpio_get_value(SPITZ_GPIO_SYNC);
 }
 
 unsigned long spitzpm_read_devdata(int type)
@@ -236,7 +229,7 @@ struct sharpsl_charger_machinfo spitz_pm_machinfo = {
 
 static struct platform_device *spitzpm_device;
 
-static int __devinit spitzpm_init(void)
+static int spitzpm_init(void)
 {
 	int ret;
 

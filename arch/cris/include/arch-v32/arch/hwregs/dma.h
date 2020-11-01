@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * DMA C definitions and help macros
  *
@@ -7,7 +8,7 @@
 #define dma_h
 
 /* registers */ /* Really needed, since both are listed in sw.list? */
-#include "dma_defs.h"
+#include <arch/hwregs/dma_defs.h>
 
 
 /* descriptors */

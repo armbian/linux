@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 
 config SOC_TMS320C6455
 	bool "TMS320C6455"
@@ -13,4 +14,8 @@ config SOC_TMS320C6472
 
 config SOC_TMS320C6474
 	bool "TMS320C6474"
+	default n
+
+config SOC_TMS320C6678
+	bool "TMS320C6678"
 	default n

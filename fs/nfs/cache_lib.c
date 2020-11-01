@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/fs/nfs/cache_lib.c
  *
@@ -76,7 +77,7 @@ static void nfs_dns_cache_revisit(struct cache_deferred_req *d, int toomany)
 
 	dreq = container_of(d, struct nfs_cache_defer_req, deferred_req);
 
-	complete_all(&dreq->completion);
+	complete(&dreq->completion);
 	nfs_cache_defer_req_put(dreq);
 }
 
@@ -118,7 +119,6 @@ int nfs_cache_register_sb(struct super_block *sb, struct cache_detail *cd)
 	struct dentry *dir;
 
 	dir = rpc_d_lookup_sb(sb, "cache");
-	BUG_ON(dir == NULL);
 	ret = sunrpc_cache_register_pipefs(dir, cd->name, 0600, cd);
 	dput(dir);
 	return ret;
@@ -129,18 +129,20 @@ int nfs_cache_register_net(struct net *net, struct cache_detail *cd)
 	struct super_block *pipefs_sb;
 	int ret = 0;
 
+	sunrpc_init_cache_detail(cd);
 	pipefs_sb = rpc_get_sb_net(net);
 	if (pipefs_sb) {
 		ret = nfs_cache_register_sb(pipefs_sb, cd);
 		rpc_put_sb_net(net);
+		if (ret)
+			sunrpc_destroy_cache_detail(cd);
 	}
 	return ret;
 }
 
 void nfs_cache_unregister_sb(struct super_block *sb, struct cache_detail *cd)
 {
-	if (cd->u.pipefs.dir)
-		sunrpc_cache_unregister_pipefs(cd);
+	sunrpc_cache_unregister_pipefs(cd);
 }
 
 void nfs_cache_unregister_net(struct net *net, struct cache_detail *cd)
@@ -152,14 +154,5 @@ void nfs_cache_unregister_net(struct net *net, struct cache_detail *cd)
 		nfs_cache_unregister_sb(pipefs_sb, cd);
 		rpc_put_sb_net(net);
 	}
-}
-
-void nfs_cache_init(struct cache_detail *cd)
-{
-	sunrpc_init_cache_detail(cd);
-}
-
-void nfs_cache_destroy(struct cache_detail *cd)
-{
 	sunrpc_destroy_cache_detail(cd);
 }

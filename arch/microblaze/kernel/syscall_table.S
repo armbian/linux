@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 ENTRY(sys_call_table)
 	.long sys_restart_syscall	/* 0 - old "setup()" system call,
 					 * used for restarting */
 	.long sys_exit
-#ifdef CONFIG_MMU
-	.long sys_fork_wrapper
-#else
-	.long sys_ni_syscall
-#endif
+	.long sys_fork
 	.long sys_read
 	.long sys_write
 	.long sys_open			/* 5 */
@@ -196,7 +193,7 @@ ENTRY(sys_call_table)
 	.long sys_ni_syscall		/* reserved for streams2 */
 	.long sys_vfork		/* 190 */
 	.long sys_getrlimit
-	.long sys_mmap_pgoff		/* mmap2 */
+	.long sys_mmap2
 	.long sys_truncate64
 	.long sys_ftruncate64
 	.long sys_stat64		/* 195 */
@@ -312,7 +309,7 @@ ENTRY(sys_call_table)
 	.long sys_readlinkat		/* 305 */
 	.long sys_fchmodat
 	.long sys_faccessat
-	.long sys_ni_syscall /* pselect6 */
+	.long sys_pselect6
 	.long sys_ppoll
 	.long sys_unshare		/* 310 */
 	.long sys_set_robust_list
@@ -367,8 +364,8 @@ ENTRY(sys_call_table)
 	.long sys_sendmsg		/* 360 */
 	.long sys_recvmsg
 	.long sys_accept4
-	.long sys_ni_syscall
-	.long sys_ni_syscall
+	.long sys_preadv
+	.long sys_pwritev
 	.long sys_rt_tgsigqueueinfo	/* 365 */
 	.long sys_perf_event_open
 	.long sys_recvmmsg
@@ -383,3 +380,23 @@ ENTRY(sys_call_table)
 	.long sys_sendmmsg
 	.long sys_process_vm_readv
 	.long sys_process_vm_writev
+	.long sys_kcmp
+	.long sys_finit_module		/* 380 */
+	.long sys_sched_setattr
+	.long sys_sched_getattr
+	.long sys_renameat2
+	.long sys_seccomp
+	.long sys_getrandom		/* 385 */
+	.long sys_memfd_create
+	.long sys_bpf
+	.long sys_execveat
+	.long sys_userfaultfd
+	.long sys_membarrier		/* 390 */
+	.long sys_mlock2
+	.long sys_copy_file_range
+	.long sys_preadv2
+	.long sys_pwritev2
+	.long sys_pkey_mprotect		/* 395 */
+	.long sys_pkey_alloc
+	.long sys_pkey_free
+	.long sys_statx

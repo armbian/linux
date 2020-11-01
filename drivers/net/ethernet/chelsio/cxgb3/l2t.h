@@ -75,8 +75,8 @@ struct l2t_data {
 	struct l2t_entry *rover;	/* starting point for next allocation */
 	atomic_t nfree;		/* number of free entries */
 	rwlock_t lock;
-	struct l2t_entry l2tab[0];
 	struct rcu_head rcu_head;	/* to handle rcu cleanup */
+	struct l2t_entry l2tab[];
 };
 
 typedef void (*arp_failure_handler_func)(struct t3cdev * dev,
@@ -110,12 +110,11 @@ static inline void set_arp_failure_handler(struct sk_buff *skb,
 void t3_l2e_free(struct l2t_data *d, struct l2t_entry *e);
 void t3_l2t_update(struct t3cdev *dev, struct neighbour *neigh);
 struct l2t_entry *t3_l2t_get(struct t3cdev *cdev, struct dst_entry *dst,
-			     struct net_device *dev);
+			     struct net_device *dev, const void *daddr);
 int t3_l2t_send_slow(struct t3cdev *dev, struct sk_buff *skb,
 		     struct l2t_entry *e);
 void t3_l2t_send_event(struct t3cdev *dev, struct l2t_entry *e);
 struct l2t_data *t3_init_l2t(unsigned int l2t_capacity);
-void t3_free_l2t(struct l2t_data *d);
 
 int cxgb3_ofld_send(struct t3cdev *dev, struct sk_buff *skb);
 

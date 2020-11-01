@@ -10,7 +10,7 @@
 // Copyright: (C) 2010-2012 Gilles Muller, INRIA/LiP6.  GPLv2.
 // URL: http://coccinelle.lip6.fr/
 // Comments:
-// Options: -no_includes -include_headers
+// Options: --no-includes --include-headers
 
 virtual org
 virtual report
@@ -20,7 +20,11 @@ expression E;
 position p1;
 @@
 
-kfree@p1(E)
+(
+* kfree@p1(E)
+|
+* kzfree@p1(E)
+)
 
 @print expression@
 constant char [] c;
@@ -60,7 +64,11 @@ position ok;
 @@
 
 while (1) { ...
-  kfree@ok(E)
+(
+* kfree@ok(E)
+|
+* kzfree@ok(E)
+)
   ... when != break;
       when != goto l;
       when forall
@@ -74,7 +82,11 @@ statement S;
 position free.p1!=loop.ok,p2!={print.p,sz.p};
 @@
 
-kfree@p1(E,...)
+(
+* kfree@p1(E,...)
+|
+* kzfree@p1(E,...)
+)
 ...
 (
  iter(...,subE,...) S // no use

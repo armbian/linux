@@ -540,8 +540,6 @@ int sata_pmp_attach(struct ata_device *dev)
 	ata_for_each_link(tlink, ap, EDGE)
 		sata_link_init_spd(tlink);
 
-	ata_acpi_associate_sata_port(ap);
-
 	return 0;
 
  fail:
@@ -581,8 +579,6 @@ static void sata_pmp_detach(struct ata_device *dev)
 	ap->nr_pmp_links = 0;
 	link->pmp = 0;
 	spin_unlock_irqrestore(ap->lock, flags);
-
-	ata_acpi_associate_sata_port(ap);
 }
 
 /**
@@ -768,6 +764,7 @@ static int sata_pmp_eh_recover_pmp(struct ata_port *ap,
 
 	if (dev->flags & ATA_DFLAG_DETACH) {
 		detach = 1;
+		rc = -ENODEV;
 		goto fail;
 	}
 

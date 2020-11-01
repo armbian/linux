@@ -57,7 +57,6 @@
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/init.h>
 #include <linux/crc32.h>
 #include <linux/usb.h>
 #include <linux/firmware.h>
@@ -174,10 +173,10 @@ struct uea_softc {
 	const struct firmware *dsp_firm;
 	struct urb *urb_int;
 
-	void (*dispatch_cmv) (struct uea_softc *, struct intr_pkt *);
-	void (*schedule_load_page) (struct uea_softc *, struct intr_pkt *);
-	int (*stat) (struct uea_softc *);
-	int (*send_cmvs) (struct uea_softc *);
+	void (*dispatch_cmv)(struct uea_softc *, struct intr_pkt *);
+	void (*schedule_load_page)(struct uea_softc *, struct intr_pkt *);
+	int (*stat)(struct uea_softc *);
+	int (*send_cmvs)(struct uea_softc *);
 
 	/* keep in sync with eaglectl */
 	struct uea_stats {
@@ -307,6 +306,34 @@ enum {
 #define FW_GET_BYTE(p) (*((__u8 *) (p)))
 
 #define FW_DIR "ueagle-atm/"
+#define EAGLE_FIRMWARE FW_DIR "eagle.fw"
+#define ADI930_FIRMWARE FW_DIR "adi930.fw"
+#define EAGLE_I_FIRMWARE FW_DIR "eagleI.fw"
+#define EAGLE_II_FIRMWARE FW_DIR "eagleII.fw"
+#define EAGLE_III_FIRMWARE FW_DIR "eagleIII.fw"
+#define EAGLE_IV_FIRMWARE FW_DIR "eagleIV.fw"
+
+#define DSP4I_FIRMWARE FW_DIR "DSP4i.bin"
+#define DSP4P_FIRMWARE FW_DIR "DSP4p.bin"
+#define DSP9I_FIRMWARE FW_DIR "DSP9i.bin"
+#define DSP9P_FIRMWARE FW_DIR "DSP9p.bin"
+#define DSPEI_FIRMWARE FW_DIR "DSPei.bin"
+#define DSPEP_FIRMWARE FW_DIR "DSPep.bin"
+#define FPGA930_FIRMWARE FW_DIR "930-fpga.bin"
+
+#define CMV4P_FIRMWARE FW_DIR "CMV4p.bin"
+#define CMV4PV2_FIRMWARE FW_DIR "CMV4p.bin.v2"
+#define CMV4I_FIRMWARE FW_DIR "CMV4i.bin"
+#define CMV4IV2_FIRMWARE FW_DIR "CMV4i.bin.v2"
+#define CMV9P_FIRMWARE FW_DIR "CMV9p.bin"
+#define CMV9PV2_FIRMWARE FW_DIR "CMV9p.bin.v2"
+#define CMV9I_FIRMWARE FW_DIR "CMV9i.bin"
+#define CMV9IV2_FIRMWARE FW_DIR "CMV9i.bin.v2"
+#define CMVEP_FIRMWARE FW_DIR "CMVep.bin"
+#define CMVEPV2_FIRMWARE FW_DIR "CMVep.bin.v2"
+#define CMVEI_FIRMWARE FW_DIR "CMVei.bin"
+#define CMVEIV2_FIRMWARE FW_DIR "CMVei.bin.v2"
+
 #define UEA_FW_NAME_MAX 30
 #define NB_MODEM 4
 
@@ -694,26 +721,26 @@ err:
 static int uea_load_firmware(struct usb_device *usb, unsigned int ver)
 {
 	int ret;
-	char *fw_name = FW_DIR "eagle.fw";
+	char *fw_name = EAGLE_FIRMWARE;
 
 	uea_enters(usb);
 	uea_info(usb, "pre-firmware device, uploading firmware\n");
 
 	switch (ver) {
 	case ADI930:
-		fw_name = FW_DIR "adi930.fw";
+		fw_name = ADI930_FIRMWARE;
 		break;
 	case EAGLE_I:
-		fw_name = FW_DIR "eagleI.fw";
+		fw_name = EAGLE_I_FIRMWARE;
 		break;
 	case EAGLE_II:
-		fw_name = FW_DIR "eagleII.fw";
+		fw_name = EAGLE_II_FIRMWARE;
 		break;
 	case EAGLE_III:
-		fw_name = FW_DIR "eagleIII.fw";
+		fw_name = EAGLE_III_FIRMWARE;
 		break;
 	case EAGLE_IV:
-		fw_name = FW_DIR "eagleIV.fw";
+		fw_name = EAGLE_IV_FIRMWARE;
 		break;
 	}
 
@@ -869,19 +896,19 @@ static int request_dsp(struct uea_softc *sc)
 
 	if (UEA_CHIP_VERSION(sc) == EAGLE_IV) {
 		if (IS_ISDN(sc))
-			dsp_name = FW_DIR "DSP4i.bin";
+			dsp_name = DSP4I_FIRMWARE;
 		else
-			dsp_name = FW_DIR "DSP4p.bin";
+			dsp_name = DSP4P_FIRMWARE;
 	} else if (UEA_CHIP_VERSION(sc) == ADI930) {
 		if (IS_ISDN(sc))
-			dsp_name = FW_DIR "DSP9i.bin";
+			dsp_name = DSP9I_FIRMWARE;
 		else
-			dsp_name = FW_DIR "DSP9p.bin";
+			dsp_name = DSP9P_FIRMWARE;
 	} else {
 		if (IS_ISDN(sc))
-			dsp_name = FW_DIR "DSPei.bin";
+			dsp_name = DSPEI_FIRMWARE;
 		else
-			dsp_name = FW_DIR "DSPep.bin";
+			dsp_name = DSPEP_FIRMWARE;
 	}
 
 	ret = request_firmware(&sc->dsp_firm, dsp_name, &sc->usb_dev->dev);
@@ -925,7 +952,7 @@ static void uea_load_page_e1(struct work_struct *work)
 	int i;
 
 	/* reload firmware when reboot start and it's loaded already */
-	if (ovl == 0 && pageno == 0 && sc->dsp_firm) {
+	if (ovl == 0 && pageno == 0) {
 		release_firmware(sc->dsp_firm);
 		sc->dsp_firm = NULL;
 	}
@@ -1047,7 +1074,7 @@ static void uea_load_page_e4(struct work_struct *work)
 	uea_dbg(INS_TO_USBDEV(sc), "sending DSP page %u\n", pageno);
 
 	/* reload firmware when reboot start and it's loaded already */
-	if (pageno == 0 && sc->dsp_firm) {
+	if (pageno == 0) {
 		release_firmware(sc->dsp_firm);
 		sc->dsp_firm = NULL;
 	}
@@ -1357,10 +1384,8 @@ static int uea_stat_e1(struct uea_softc *sc)
 		/* release the dsp firmware as it is not needed until
 		 * the next failure
 		 */
-		if (sc->dsp_firm) {
-			release_firmware(sc->dsp_firm);
-			sc->dsp_firm = NULL;
-		}
+		release_firmware(sc->dsp_firm);
+		sc->dsp_firm = NULL;
 	}
 
 	/* always update it as atm layer could not be init when we switch to
@@ -1496,10 +1521,8 @@ static int uea_stat_e4(struct uea_softc *sc)
 		/* release the dsp firmware as it is not needed until
 		 * the next failure
 		 */
-		if (sc->dsp_firm) {
-			release_firmware(sc->dsp_firm);
-			sc->dsp_firm = NULL;
-		}
+		release_firmware(sc->dsp_firm);
+		sc->dsp_firm = NULL;
 	}
 
 	/* always update it as atm layer could not be init when we switch to
@@ -1576,7 +1599,7 @@ static void cmvs_file_name(struct uea_softc *sc, char *const cmv_name, int ver)
 	char file_arr[] = "CMVxy.bin";
 	char *file;
 
-	kparam_block_sysfs_write(cmv_file);
+	kernel_param_lock(THIS_MODULE);
 	/* set proper name corresponding modem version and line type */
 	if (cmv_file[sc->modem_index] == NULL) {
 		if (UEA_CHIP_VERSION(sc) == ADI930)
@@ -1595,7 +1618,7 @@ static void cmvs_file_name(struct uea_softc *sc, char *const cmv_name, int ver)
 	strlcat(cmv_name, file, UEA_FW_NAME_MAX);
 	if (ver == 2)
 		strlcat(cmv_name, ".v2", UEA_FW_NAME_MAX);
-	kparam_unblock_sysfs_write(cmv_file);
+	kernel_param_unlock(THIS_MODULE);
 }
 
 static int request_cmvs_old(struct uea_softc *sc,
@@ -1929,7 +1952,7 @@ static int load_XILINX_firmware(struct uea_softc *sc)
 	int ret, size, u, ln;
 	const u8 *pfw;
 	u8 value;
-	char *fw_name = FW_DIR "930-fpga.bin";
+	char *fw_name = FPGA930_FIRMWARE;
 
 	uea_enters(INS_TO_USBDEV(sc));
 
@@ -2144,10 +2167,11 @@ resubmit:
 /*
  * Start the modem : init the data and start kernel thread
  */
-static int uea_boot(struct uea_softc *sc)
+static int uea_boot(struct uea_softc *sc, struct usb_interface *intf)
 {
-	int ret, size;
 	struct intr_pkt *intr;
+	int ret = -ENOMEM;
+	int size;
 
 	uea_enters(INS_TO_USBDEV(sc));
 
@@ -2172,29 +2196,28 @@ static int uea_boot(struct uea_softc *sc)
 	if (UEA_CHIP_VERSION(sc) == ADI930)
 		load_XILINX_firmware(sc);
 
-	intr = kmalloc(size, GFP_KERNEL);
-	if (!intr) {
-		uea_err(INS_TO_USBDEV(sc),
-		       "cannot allocate interrupt package\n");
+	if (intf->cur_altsetting->desc.bNumEndpoints < 1) {
+		ret = -ENODEV;
 		goto err0;
 	}
 
+	intr = kmalloc(size, GFP_KERNEL);
+	if (!intr)
+		goto err0;
+
 	sc->urb_int = usb_alloc_urb(0, GFP_KERNEL);
-	if (!sc->urb_int) {
-		uea_err(INS_TO_USBDEV(sc), "cannot allocate interrupt URB\n");
+	if (!sc->urb_int)
 		goto err1;
-	}
 
 	usb_fill_int_urb(sc->urb_int, sc->usb_dev,
 			 usb_rcvintpipe(sc->usb_dev, UEA_INTR_PIPE),
 			 intr, size, uea_intr, sc,
-			 sc->usb_dev->actconfig->interface[0]->altsetting[0].
-			 endpoint[0].desc.bInterval);
+			 intf->cur_altsetting->endpoint[0].desc.bInterval);
 
 	ret = usb_submit_urb(sc->urb_int, GFP_KERNEL);
 	if (ret < 0) {
 		uea_err(INS_TO_USBDEV(sc),
-		       "urb submition failed with error %d\n", ret);
+		       "urb submission failed with error %d\n", ret);
 		goto err1;
 	}
 
@@ -2204,6 +2227,7 @@ static int uea_boot(struct uea_softc *sc)
 	sc->kthread = kthread_create(uea_kthread, sc, "ueagle-atm");
 	if (IS_ERR(sc->kthread)) {
 		uea_err(INS_TO_USBDEV(sc), "failed to create thread\n");
+		ret = PTR_ERR(sc->kthread);
 		goto err2;
 	}
 
@@ -2218,7 +2242,7 @@ err1:
 	kfree(intr);
 err0:
 	uea_leaves(INS_TO_USBDEV(sc));
-	return -ENOMEM;
+	return ret;
 }
 
 /*
@@ -2238,10 +2262,9 @@ static void uea_stop(struct uea_softc *sc)
 	usb_free_urb(sc->urb_int);
 
 	/* flush the work item, when no one can schedule it */
-	flush_work_sync(&sc->task);
+	flush_work(&sc->task);
 
-	if (sc->dsp_firm)
-		release_firmware(sc->dsp_firm);
+	release_firmware(sc->dsp_firm);
 	uea_leaves(INS_TO_USBDEV(sc));
 }
 
@@ -2432,7 +2455,7 @@ UEA_ATTR(firmid, 0);
 
 /* Retrieve the device End System Identifier (MAC) */
 
-static int uea_getesi(struct uea_softc *sc, u_char * esi)
+static int uea_getesi(struct uea_softc *sc, u_char *esi)
 {
 	unsigned char mac_str[2 * ETH_ALEN + 1];
 	int i;
@@ -2505,7 +2528,7 @@ static struct attribute *attrs[] = {
 	&dev_attr_stat_firmid.attr,
 	NULL,
 };
-static struct attribute_group attr_grp = {
+static const struct attribute_group attr_grp = {
 	.attrs = attrs,
 };
 
@@ -2539,10 +2562,8 @@ static int uea_bind(struct usbatm_data *usbatm, struct usb_interface *intf,
 	}
 
 	sc = kzalloc(sizeof(struct uea_softc), GFP_KERNEL);
-	if (!sc) {
-		uea_err(usb, "uea_init: not enough memory !\n");
+	if (!sc)
 		return -ENOMEM;
-	}
 
 	sc->usb_dev = usb;
 	usbatm->driver_data = sc;
@@ -2582,7 +2603,7 @@ static int uea_bind(struct usbatm_data *usbatm, struct usb_interface *intf,
 	if (ret < 0)
 		goto error;
 
-	ret = uea_boot(sc);
+	ret = uea_boot(sc, intf);
 	if (ret < 0)
 		goto error_rm_grp;
 
@@ -2758,3 +2779,28 @@ module_usb_driver(uea_driver);
 MODULE_AUTHOR("Damien Bergamini/Matthieu Castet/Stanislaw W. Gruszka");
 MODULE_DESCRIPTION("ADI 930/Eagle USB ADSL Modem driver");
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_FIRMWARE(EAGLE_FIRMWARE);
+MODULE_FIRMWARE(ADI930_FIRMWARE);
+MODULE_FIRMWARE(EAGLE_I_FIRMWARE);
+MODULE_FIRMWARE(EAGLE_II_FIRMWARE);
+MODULE_FIRMWARE(EAGLE_III_FIRMWARE);
+MODULE_FIRMWARE(EAGLE_IV_FIRMWARE);
+MODULE_FIRMWARE(DSP4I_FIRMWARE);
+MODULE_FIRMWARE(DSP4P_FIRMWARE);
+MODULE_FIRMWARE(DSP9I_FIRMWARE);
+MODULE_FIRMWARE(DSP9P_FIRMWARE);
+MODULE_FIRMWARE(DSPEI_FIRMWARE);
+MODULE_FIRMWARE(DSPEP_FIRMWARE);
+MODULE_FIRMWARE(FPGA930_FIRMWARE);
+MODULE_FIRMWARE(CMV4P_FIRMWARE);
+MODULE_FIRMWARE(CMV4PV2_FIRMWARE);
+MODULE_FIRMWARE(CMV4I_FIRMWARE);
+MODULE_FIRMWARE(CMV4IV2_FIRMWARE);
+MODULE_FIRMWARE(CMV9P_FIRMWARE);
+MODULE_FIRMWARE(CMV9PV2_FIRMWARE);
+MODULE_FIRMWARE(CMV9I_FIRMWARE);
+MODULE_FIRMWARE(CMV9IV2_FIRMWARE);
+MODULE_FIRMWARE(CMVEP_FIRMWARE);
+MODULE_FIRMWARE(CMVEPV2_FIRMWARE);
+MODULE_FIRMWARE(CMVEI_FIRMWARE);
+MODULE_FIRMWARE(CMVEIV2_FIRMWARE);

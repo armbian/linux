@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * PWM LED driver data - see drivers/leds/leds-pwm.c
  */
@@ -7,7 +8,7 @@
 struct led_pwm {
 	const char	*name;
 	const char	*default_trigger;
-	unsigned	pwm_id;
+	unsigned	pwm_id __deprecated;
 	u8 		active_low;
 	unsigned 	max_brightness;
 	unsigned	pwm_period_ns;

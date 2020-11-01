@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Rescue code, made to reside at the beginning of the
  * flash-memory. when it starts, it checks a partition
@@ -280,9 +281,6 @@ wait_ser:
 #endif
 #ifdef CONFIG_ETRAX_PB_LEDS
 	move.b	$r2, [R_PORT_PB_DATA]
-#endif
-#ifdef CONFIG_ETRAX_90000000_LEDS
-	move.b	$r2, [0x90000000]
 #endif
 #endif
 

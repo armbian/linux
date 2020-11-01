@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2011 Nicira Networks.
+ * Copyright (c) 2007-2011 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -20,23 +20,17 @@
 #define VPORT_NETDEV_H 1
 
 #include <linux/netdevice.h>
+#include <linux/rcupdate.h>
 
 #include "vport.h"
 
 struct vport *ovs_netdev_get_vport(struct net_device *dev);
 
-struct netdev_vport {
-	struct net_device *dev;
-};
+struct vport *ovs_netdev_link(struct vport *vport, const char *name);
+void ovs_netdev_detach_dev(struct vport *);
 
-static inline struct netdev_vport *
-netdev_vport_priv(const struct vport *vport)
-{
-	return vport_priv(vport);
-}
+int __init ovs_netdev_init(void);
+void ovs_netdev_exit(void);
 
-const char *ovs_netdev_get_name(const struct vport *);
-const char *ovs_netdev_get_config(const struct vport *);
-int ovs_netdev_get_ifindex(const struct vport *);
-
+void ovs_netdev_tunnel_destroy(struct vport *vport);
 #endif /* vport_netdev.h */

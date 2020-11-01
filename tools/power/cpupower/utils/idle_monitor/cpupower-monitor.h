@@ -18,7 +18,7 @@
 #define CSTATE_NAME_LEN 5
 #define CSTATE_DESC_LEN 60
 
-int cpu_count;
+extern int cpu_count;
 
 /* Hard to define the right names ...: */
 enum power_range_e {
@@ -63,6 +63,23 @@ extern long long timespec_diff_us(struct timespec start, struct timespec end);
 	fprintf(stderr, gettext("Measure took %u seconds, but registers could "	\
 				"overflow at %u seconds, results "		\
 				"could be inaccurate\n"), mes, ov);		\
+}
+
+
+/* Taken over from x86info project sources  -> return 0 on success */
+#include <sched.h>
+#include <sys/types.h>
+#include <unistd.h>
+static inline int bind_cpu(int cpu)
+{
+	cpu_set_t set;
+
+	if (sched_getaffinity(getpid(), sizeof(set), &set) == 0) {
+		CPU_ZERO(&set);
+		CPU_SET(cpu, &set);
+		return sched_setaffinity(getpid(), sizeof(set), &set);
+	}
+	return 1;
 }
 
 #endif /* __CPUIDLE_INFO_HW__ */

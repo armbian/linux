@@ -12,9 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * File: card.h
  *
@@ -28,62 +25,33 @@
 
 #ifndef __CARD_H__
 #define __CARD_H__
-
-#include "ttype.h"
-
-/*---------------------  Export Definitions -------------------------*/
-
-/*---------------------  Export Classes  ----------------------------*/
+#include "device.h"
 
 /* init card type */
 
-typedef enum _CARD_PHY_TYPE {
-    PHY_TYPE_AUTO = 0,
-    PHY_TYPE_11B,
-    PHY_TYPE_11G,
-    PHY_TYPE_11A
-} CARD_PHY_TYPE, *PCARD_PHY_TYPE;
+#define CB_MAX_CHANNEL_24G	14
+#define CB_MAX_CHANNEL_5G	42 /* add channel9(5045MHz), 41==>42 */
+#define CB_MAX_CHANNEL		(CB_MAX_CHANNEL_24G + CB_MAX_CHANNEL_5G)
 
-typedef enum _CARD_OP_MODE {
-    OP_MODE_INFRASTRUCTURE = 0,
-    OP_MODE_ADHOC,
-    OP_MODE_AP,
-    OP_MODE_UNKNOWN
-} CARD_OP_MODE, *PCARD_OP_MODE;
+struct vnt_private;
 
-#define CB_MAX_CHANNEL_24G  14
-/* #define CB_MAX_CHANNEL_5G   24 */
-#define CB_MAX_CHANNEL_5G       42 /* add channel9(5045MHz), 41==>42 */
-#define CB_MAX_CHANNEL      (CB_MAX_CHANNEL_24G+CB_MAX_CHANNEL_5G)
-
-/*---------------------  Export Variables  --------------------------*/
-
-/*---------------------  Export Functions  --------------------------*/
-
-void CARDbSetMediaChannel(void *pDeviceHandler,
-			  unsigned int uConnectionChannel);
-void CARDvSetRSPINF(void *pDeviceHandler, BYTE byBBType);
-void vUpdateIFS(void *pDeviceHandler);
-void CARDvUpdateBasicTopRate(void *pDeviceHandler);
-void CARDbAddBasicRate(void *pDeviceHandler, WORD wRateIdx);
-BOOL CARDbIsOFDMinBasicRate(void *pDeviceHandler);
-void CARDvAdjustTSF(void *pDeviceHandler, BYTE byRxRate,
-		    QWORD qwBSSTimestamp, QWORD qwLocalTSF);
-BOOL CARDbGetCurrentTSF(void *pDeviceHandler, PQWORD pqwCurrTSF);
-BOOL CARDbClearCurrentTSF(void *pDeviceHandler);
-void CARDvSetFirstNextTBTT(void *pDeviceHandler, WORD wBeaconInterval);
-void CARDvUpdateNextTBTT(void *pDeviceHandler, QWORD qwTSF,
-			 WORD wBeaconInterval);
-QWORD CARDqGetNextTBTT(QWORD qwTSF, WORD wBeaconInterval);
-QWORD CARDqGetTSFOffset(BYTE byRxRate, QWORD qwTSF1, QWORD qwTSF2);
-BOOL CARDbRadioPowerOff(void *pDeviceHandler);
-BOOL CARDbRadioPowerOn(void *pDeviceHandler);
-BYTE CARDbyGetPktType(void *pDeviceHandler);
-void CARDvSetBSSMode(void *pDeviceHandler);
-
-BOOL CARDbChannelSwitch(void *pDeviceHandler,
-			BYTE byMode,
-			BYTE byNewChannel,
-			BYTE byCount);
+void vnt_set_channel(struct vnt_private *priv, u32 connection_channel);
+void vnt_set_rspinf(struct vnt_private *priv, u8 bb_type);
+void vnt_update_ifs(struct vnt_private *priv);
+void vnt_update_top_rates(struct vnt_private *priv);
+int vnt_ofdm_min_rate(struct vnt_private *priv);
+void vnt_adjust_tsf(struct vnt_private *priv, u8 rx_rate,
+		    u64 time_stamp, u64 local_tsf);
+bool vnt_get_current_tsf(struct vnt_private *priv, u64 *current_tsf);
+bool vnt_clear_current_tsf(struct vnt_private *priv);
+void vnt_reset_next_tbtt(struct vnt_private *priv, u16 beacon_interval);
+void vnt_update_next_tbtt(struct vnt_private *priv, u64 tsf,
+			  u16 beacon_interval);
+u64 vnt_get_next_tbtt(u64 tsf, u16 beacon_interval);
+u64 vnt_get_tsf_offset(u8 rx_rate, u64 tsf1, u64 tsf2);
+int vnt_radio_power_off(struct vnt_private *priv);
+int vnt_radio_power_on(struct vnt_private *priv);
+u8 vnt_get_pkt_type(struct vnt_private *priv);
+void vnt_set_bss_mode(struct vnt_private *priv);
 
 #endif /* __CARD_H__ */

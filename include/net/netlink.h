@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __NET_NETLINK_H
 #define __NET_NETLINK_H
 
 #include <linux/types.h>
 #include <linux/netlink.h>
 #include <linux/jiffies.h>
+#include <linux/in6.h>
 
 /* ========================================================================
  *         Netlink Messages and Attributes Interface (As Seen On TV)
@@ -97,24 +99,19 @@
  *   nla_put_u8(skb, type, value)	add u8 attribute to skb
  *   nla_put_u16(skb, type, value)	add u16 attribute to skb
  *   nla_put_u32(skb, type, value)	add u32 attribute to skb
- *   nla_put_u64(skb, type, value)	add u64 attribute to skb
+ *   nla_put_u64_64bit(skb, type,
+ *                     value, padattr)	add u64 attribute to skb
+ *   nla_put_s8(skb, type, value)	add s8 attribute to skb
+ *   nla_put_s16(skb, type, value)	add s16 attribute to skb
+ *   nla_put_s32(skb, type, value)	add s32 attribute to skb
+ *   nla_put_s64(skb, type, value,
+ *               padattr)		add s64 attribute to skb
  *   nla_put_string(skb, type, str)	add string attribute to skb
  *   nla_put_flag(skb, type)		add flag attribute to skb
- *   nla_put_msecs(skb, type, jiffies)	add msecs attribute to skb
- *
- * Exceptions Based Attribute Construction:
- *   NLA_PUT(skb, type, len, data)	add attribute to skb
- *   NLA_PUT_U8(skb, type, value)	add u8 attribute to skb
- *   NLA_PUT_U16(skb, type, value)	add u16 attribute to skb
- *   NLA_PUT_U32(skb, type, value)	add u32 attribute to skb
- *   NLA_PUT_U64(skb, type, value)	add u64 attribute to skb
- *   NLA_PUT_STRING(skb, type, str)	add string attribute to skb
- *   NLA_PUT_FLAG(skb, type)		add flag attribute to skb
- *   NLA_PUT_MSECS(skb, type, jiffies)	add msecs attribute to skb
- *
- *   The meaning of these functions is equal to their lower case
- *   variants but they jump to the label nla_put_failure in case
- *   of a failure.
+ *   nla_put_msecs(skb, type, jiffies,
+ *                 padattr)		add msecs attribute to skb
+ *   nla_put_in_addr(skb, type, addr)	add IPv4 address attribute to skb
+ *   nla_put_in6_addr(skb, type, addr)	add IPv6 address attribute to skb
  *
  * Nested Attributes Construction:
  *   nla_nest_start(skb, type)		start a nested attribute
@@ -135,6 +132,10 @@
  *   nla_get_u16(nla)			get payload for a u16 attribute
  *   nla_get_u32(nla)			get payload for a u32 attribute
  *   nla_get_u64(nla)			get payload for a u64 attribute
+ *   nla_get_s8(nla)			get payload for a s8 attribute
+ *   nla_get_s16(nla)			get payload for a s16 attribute
+ *   nla_get_s32(nla)			get payload for a s32 attribute
+ *   nla_get_s64(nla)			get payload for a s64 attribute
  *   nla_get_flag(nla)			return 1 if flag is true
  *   nla_get_msecs(nla)			get payload for a msecs attribute
  *
@@ -174,6 +175,11 @@ enum {
 	NLA_NESTED_COMPAT,
 	NLA_NUL_STRING,
 	NLA_BINARY,
+	NLA_S8,
+	NLA_S16,
+	NLA_S32,
+	NLA_S64,
+	NLA_BITFIELD32,
 	__NLA_TYPE_MAX,
 };
 
@@ -197,9 +203,12 @@ enum {
  *    NLA_NESTED_COMPAT    Minimum length of structure payload
  *    NLA_U8, NLA_U16,
  *    NLA_U32, NLA_U64,
+ *    NLA_S8, NLA_S16,
+ *    NLA_S32, NLA_S64,
  *    NLA_MSECS            Leaving the length field zero will verify the
  *                         given type fits, using it verifies minimum length
  *                         just like "All other"
+ *    NLA_BITFIELD32      A 32-bit bitmap/bitselector attribute
  *    All other            Minimum length of attribute payload
  *
  * Example:
@@ -207,62 +216,64 @@ enum {
  * 	[ATTR_FOO] = { .type = NLA_U16 },
  *	[ATTR_BAR] = { .type = NLA_STRING, .len = BARSIZ },
  *	[ATTR_BAZ] = { .len = sizeof(struct mystruct) },
+ *	[ATTR_GOO] = { .type = NLA_BITFIELD32, .validation_data = &myvalidflags },
  * };
  */
 struct nla_policy {
 	u16		type;
 	u16		len;
+	void            *validation_data;
 };
 
 /**
  * struct nl_info - netlink source information
  * @nlh: Netlink message header of original request
- * @pid: Netlink PID of requesting application
+ * @portid: Netlink PORTID of requesting application
  */
 struct nl_info {
 	struct nlmsghdr		*nlh;
 	struct net		*nl_net;
-	u32			pid;
+	u32			portid;
+	bool			skip_notify;
 };
 
-extern int		netlink_rcv_skb(struct sk_buff *skb,
-					int (*cb)(struct sk_buff *,
-						  struct nlmsghdr *));
-extern int		nlmsg_notify(struct sock *sk, struct sk_buff *skb,
-				     u32 pid, unsigned int group, int report,
-				     gfp_t flags);
+int netlink_rcv_skb(struct sk_buff *skb,
+		    int (*cb)(struct sk_buff *, struct nlmsghdr *,
+			      struct netlink_ext_ack *));
+int nlmsg_notify(struct sock *sk, struct sk_buff *skb, u32 portid,
+		 unsigned int group, int report, gfp_t flags);
 
-extern int		nla_validate(const struct nlattr *head,
-				     int len, int maxtype,
-				     const struct nla_policy *policy);
-extern int		nla_parse(struct nlattr **tb, int maxtype,
-				  const struct nlattr *head, int len,
-				  const struct nla_policy *policy);
-extern int		nla_policy_len(const struct nla_policy *, int);
-extern struct nlattr *	nla_find(const struct nlattr *head,
-				 int len, int attrtype);
-extern size_t		nla_strlcpy(char *dst, const struct nlattr *nla,
-				    size_t dstsize);
-extern int		nla_memcpy(void *dest, const struct nlattr *src, int count);
-extern int		nla_memcmp(const struct nlattr *nla, const void *data,
-				   size_t size);
-extern int		nla_strcmp(const struct nlattr *nla, const char *str);
-extern struct nlattr *	__nla_reserve(struct sk_buff *skb, int attrtype,
-				      int attrlen);
-extern void *		__nla_reserve_nohdr(struct sk_buff *skb, int attrlen);
-extern struct nlattr *	nla_reserve(struct sk_buff *skb, int attrtype,
-				    int attrlen);
-extern void *		nla_reserve_nohdr(struct sk_buff *skb, int attrlen);
-extern void		__nla_put(struct sk_buff *skb, int attrtype,
-				  int attrlen, const void *data);
-extern void		__nla_put_nohdr(struct sk_buff *skb, int attrlen,
-					const void *data);
-extern int		nla_put(struct sk_buff *skb, int attrtype,
-				int attrlen, const void *data);
-extern int		nla_put_nohdr(struct sk_buff *skb, int attrlen,
-				      const void *data);
-extern int		nla_append(struct sk_buff *skb, int attrlen,
-				   const void *data);
+int nla_validate(const struct nlattr *head, int len, int maxtype,
+		 const struct nla_policy *policy,
+		 struct netlink_ext_ack *extack);
+int nla_parse(struct nlattr **tb, int maxtype, const struct nlattr *head,
+	      int len, const struct nla_policy *policy,
+	      struct netlink_ext_ack *extack);
+int nla_policy_len(const struct nla_policy *, int);
+struct nlattr *nla_find(const struct nlattr *head, int len, int attrtype);
+size_t nla_strlcpy(char *dst, const struct nlattr *nla, size_t dstsize);
+char *nla_strdup(const struct nlattr *nla, gfp_t flags);
+int nla_memcpy(void *dest, const struct nlattr *src, int count);
+int nla_memcmp(const struct nlattr *nla, const void *data, size_t size);
+int nla_strcmp(const struct nlattr *nla, const char *str);
+struct nlattr *__nla_reserve(struct sk_buff *skb, int attrtype, int attrlen);
+struct nlattr *__nla_reserve_64bit(struct sk_buff *skb, int attrtype,
+				   int attrlen, int padattr);
+void *__nla_reserve_nohdr(struct sk_buff *skb, int attrlen);
+struct nlattr *nla_reserve(struct sk_buff *skb, int attrtype, int attrlen);
+struct nlattr *nla_reserve_64bit(struct sk_buff *skb, int attrtype,
+				 int attrlen, int padattr);
+void *nla_reserve_nohdr(struct sk_buff *skb, int attrlen);
+void __nla_put(struct sk_buff *skb, int attrtype, int attrlen,
+	       const void *data);
+void __nla_put_64bit(struct sk_buff *skb, int attrtype, int attrlen,
+		     const void *data, int padattr);
+void __nla_put_nohdr(struct sk_buff *skb, int attrlen, const void *data);
+int nla_put(struct sk_buff *skb, int attrtype, int attrlen, const void *data);
+int nla_put_64bit(struct sk_buff *skb, int attrtype, int attrlen,
+		  const void *data, int padattr);
+int nla_put_nohdr(struct sk_buff *skb, int attrlen, const void *data);
+int nla_append(struct sk_buff *skb, int attrlen, const void *data);
 
 /**************************************************************************
  * Netlink Messages
@@ -372,18 +383,20 @@ nlmsg_next(const struct nlmsghdr *nlh, int *remaining)
  * @tb: destination array with maxtype+1 elements
  * @maxtype: maximum attribute type to be expected
  * @policy: validation policy
+ * @extack: extended ACK report struct
  *
  * See nla_parse()
  */
 static inline int nlmsg_parse(const struct nlmsghdr *nlh, int hdrlen,
 			      struct nlattr *tb[], int maxtype,
-			      const struct nla_policy *policy)
+			      const struct nla_policy *policy,
+			      struct netlink_ext_ack *extack)
 {
 	if (nlh->nlmsg_len < nlmsg_msg_size(hdrlen))
 		return -EINVAL;
 
 	return nla_parse(tb, maxtype, nlmsg_attrdata(nlh, hdrlen),
-			 nlmsg_attrlen(nlh, hdrlen), policy);
+			 nlmsg_attrlen(nlh, hdrlen), policy, extack);
 }
 
 /**
@@ -407,16 +420,19 @@ static inline struct nlattr *nlmsg_find_attr(const struct nlmsghdr *nlh,
  * @hdrlen: length of familiy specific header
  * @maxtype: maximum attribute type to be expected
  * @policy: validation policy
+ * @extack: extended ACK report struct
  */
 static inline int nlmsg_validate(const struct nlmsghdr *nlh,
 				 int hdrlen, int maxtype,
-				 const struct nla_policy *policy)
+				 const struct nla_policy *policy,
+				 struct netlink_ext_ack *extack)
 {
 	if (nlh->nlmsg_len < nlmsg_msg_size(hdrlen))
 		return -EINVAL;
 
 	return nla_validate(nlmsg_attrdata(nlh, hdrlen),
-			    nlmsg_attrlen(nlh, hdrlen), maxtype, policy);
+			    nlmsg_attrlen(nlh, hdrlen), maxtype, policy,
+			    extack);
 }
 
 /**
@@ -444,7 +460,7 @@ static inline int nlmsg_report(const struct nlmsghdr *nlh)
 /**
  * nlmsg_put - Add a new netlink message to an skb
  * @skb: socket buffer to store message in
- * @pid: netlink process id
+ * @portid: netlink PORTID of requesting application
  * @seq: sequence number of message
  * @type: message type
  * @payload: length of message payload
@@ -453,13 +469,13 @@ static inline int nlmsg_report(const struct nlmsghdr *nlh)
  * Returns NULL if the tailroom of the skb is insufficient to store
  * the message header and payload.
  */
-static inline struct nlmsghdr *nlmsg_put(struct sk_buff *skb, u32 pid, u32 seq,
+static inline struct nlmsghdr *nlmsg_put(struct sk_buff *skb, u32 portid, u32 seq,
 					 int type, int payload, int flags)
 {
 	if (unlikely(skb_tailroom(skb) < nlmsg_total_size(payload)))
 		return NULL;
 
-	return __nlmsg_put(skb, pid, seq, type, payload, flags);
+	return __nlmsg_put(skb, portid, seq, type, payload, flags);
 }
 
 /**
@@ -478,7 +494,7 @@ static inline struct nlmsghdr *nlmsg_put_answer(struct sk_buff *skb,
 						int type, int payload,
 						int flags)
 {
-	return nlmsg_put(skb, NETLINK_CB(cb->skb).pid, cb->nlh->nlmsg_seq,
+	return nlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
 			 type, payload, flags);
 }
 
@@ -503,14 +519,10 @@ static inline struct sk_buff *nlmsg_new(size_t payload, gfp_t flags)
  * Corrects the netlink message header to include the appeneded
  * attributes. Only necessary if attributes have been added to
  * the message.
- *
- * Returns the total data length of the skb.
  */
-static inline int nlmsg_end(struct sk_buff *skb, struct nlmsghdr *nlh)
+static inline void nlmsg_end(struct sk_buff *skb, struct nlmsghdr *nlh)
 {
 	nlh->nlmsg_len = skb_tail_pointer(skb) - (unsigned char *)nlh;
-
-	return skb->len;
 }
 
 /**
@@ -533,8 +545,10 @@ static inline void *nlmsg_get_pos(struct sk_buff *skb)
  */
 static inline void nlmsg_trim(struct sk_buff *skb, const void *mark)
 {
-	if (mark)
+	if (mark) {
+		WARN_ON((unsigned char *) mark < skb->data);
 		skb_trim(skb, (unsigned char *) mark - skb->data);
+	}
 }
 
 /**
@@ -563,18 +577,18 @@ static inline void nlmsg_free(struct sk_buff *skb)
  * nlmsg_multicast - multicast a netlink message
  * @sk: netlink socket to spread messages to
  * @skb: netlink message as socket buffer
- * @pid: own netlink pid to avoid sending to yourself
+ * @portid: own netlink portid to avoid sending to yourself
  * @group: multicast group id
  * @flags: allocation flags
  */
 static inline int nlmsg_multicast(struct sock *sk, struct sk_buff *skb,
-				  u32 pid, unsigned int group, gfp_t flags)
+				  u32 portid, unsigned int group, gfp_t flags)
 {
 	int err;
 
 	NETLINK_CB(skb).dst_group = group;
 
-	err = netlink_broadcast(sk, skb, pid, group, flags);
+	err = netlink_broadcast(sk, skb, portid, group, flags);
 	if (err > 0)
 		err = 0;
 
@@ -585,13 +599,13 @@ static inline int nlmsg_multicast(struct sock *sk, struct sk_buff *skb,
  * nlmsg_unicast - unicast a netlink message
  * @sk: netlink socket to spread message to
  * @skb: netlink message as socket buffer
- * @pid: netlink pid of the destination socket
+ * @portid: netlink portid of the destination socket
  */
-static inline int nlmsg_unicast(struct sock *sk, struct sk_buff *skb, u32 pid)
+static inline int nlmsg_unicast(struct sock *sk, struct sk_buff *skb, u32 portid)
 {
 	int err;
 
-	err = netlink_unicast(sk, skb, pid, MSG_DONTWAIT);
+	err = netlink_unicast(sk, skb, portid, MSG_DONTWAIT);
 	if (err > 0)
 		err = 0;
 
@@ -714,7 +728,7 @@ static inline int nla_ok(const struct nlattr *nla, int remaining)
  */
 static inline struct nlattr *nla_next(const struct nlattr *nla, int *remaining)
 {
-	int totlen = NLA_ALIGN(nla->nla_len);
+	unsigned int totlen = NLA_ALIGN(nla->nla_len);
 
 	*remaining -= totlen;
 	return (struct nlattr *) ((char *) nla + totlen);
@@ -739,14 +753,17 @@ nla_find_nested(const struct nlattr *nla, int attrtype)
  * @maxtype: maximum attribute type to be expected
  * @nla: attribute containing the nested attributes
  * @policy: validation policy
+ * @extack: extended ACK report struct
  *
  * See nla_parse()
  */
 static inline int nla_parse_nested(struct nlattr *tb[], int maxtype,
 				   const struct nlattr *nla,
-				   const struct nla_policy *policy)
+				   const struct nla_policy *policy,
+				   struct netlink_ext_ack *extack)
 {
-	return nla_parse(tb, maxtype, nla_data(nla), nla_len(nla), policy);
+	return nla_parse(tb, maxtype, nla_data(nla), nla_len(nla), policy,
+			 extack);
 }
 
 /**
@@ -757,7 +774,10 @@ static inline int nla_parse_nested(struct nlattr *tb[], int maxtype,
  */
 static inline int nla_put_u8(struct sk_buff *skb, int attrtype, u8 value)
 {
-	return nla_put(skb, attrtype, sizeof(u8), &value);
+	/* temporary variables to work around GCC PR81715 with asan-stack=1 */
+	u8 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(u8), &tmp);
 }
 
 /**
@@ -768,7 +788,48 @@ static inline int nla_put_u8(struct sk_buff *skb, int attrtype, u8 value)
  */
 static inline int nla_put_u16(struct sk_buff *skb, int attrtype, u16 value)
 {
-	return nla_put(skb, attrtype, sizeof(u16), &value);
+	u16 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(u16), &tmp);
+}
+
+/**
+ * nla_put_be16 - Add a __be16 netlink attribute to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_be16(struct sk_buff *skb, int attrtype, __be16 value)
+{
+	__be16 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(__be16), &tmp);
+}
+
+/**
+ * nla_put_net16 - Add 16-bit network byte order netlink attribute to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_net16(struct sk_buff *skb, int attrtype, __be16 value)
+{
+	__be16 tmp = value;
+
+	return nla_put_be16(skb, attrtype | NLA_F_NET_BYTEORDER, tmp);
+}
+
+/**
+ * nla_put_le16 - Add a __le16 netlink attribute to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_le16(struct sk_buff *skb, int attrtype, __le16 value)
+{
+	__le16 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(__le16), &tmp);
 }
 
 /**
@@ -779,18 +840,163 @@ static inline int nla_put_u16(struct sk_buff *skb, int attrtype, u16 value)
  */
 static inline int nla_put_u32(struct sk_buff *skb, int attrtype, u32 value)
 {
-	return nla_put(skb, attrtype, sizeof(u32), &value);
+	u32 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(u32), &tmp);
 }
 
 /**
- * nla_put_64 - Add a u64 netlink attribute to a socket buffer
+ * nla_put_be32 - Add a __be32 netlink attribute to a socket buffer
  * @skb: socket buffer to add attribute to
  * @attrtype: attribute type
  * @value: numeric value
  */
-static inline int nla_put_u64(struct sk_buff *skb, int attrtype, u64 value)
+static inline int nla_put_be32(struct sk_buff *skb, int attrtype, __be32 value)
 {
-	return nla_put(skb, attrtype, sizeof(u64), &value);
+	__be32 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(__be32), &tmp);
+}
+
+/**
+ * nla_put_net32 - Add 32-bit network byte order netlink attribute to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_net32(struct sk_buff *skb, int attrtype, __be32 value)
+{
+	__be32 tmp = value;
+
+	return nla_put_be32(skb, attrtype | NLA_F_NET_BYTEORDER, tmp);
+}
+
+/**
+ * nla_put_le32 - Add a __le32 netlink attribute to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_le32(struct sk_buff *skb, int attrtype, __le32 value)
+{
+	__le32 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(__le32), &tmp);
+}
+
+/**
+ * nla_put_u64_64bit - Add a u64 netlink attribute to a skb and align it
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ * @padattr: attribute type for the padding
+ */
+static inline int nla_put_u64_64bit(struct sk_buff *skb, int attrtype,
+				    u64 value, int padattr)
+{
+	u64 tmp = value;
+
+	return nla_put_64bit(skb, attrtype, sizeof(u64), &tmp, padattr);
+}
+
+/**
+ * nla_put_be64 - Add a __be64 netlink attribute to a socket buffer and align it
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ * @padattr: attribute type for the padding
+ */
+static inline int nla_put_be64(struct sk_buff *skb, int attrtype, __be64 value,
+			       int padattr)
+{
+	__be64 tmp = value;
+
+	return nla_put_64bit(skb, attrtype, sizeof(__be64), &tmp, padattr);
+}
+
+/**
+ * nla_put_net64 - Add 64-bit network byte order nlattr to a skb and align it
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ * @padattr: attribute type for the padding
+ */
+static inline int nla_put_net64(struct sk_buff *skb, int attrtype, __be64 value,
+				int padattr)
+{
+	__be64 tmp = value;
+
+	return nla_put_be64(skb, attrtype | NLA_F_NET_BYTEORDER, tmp,
+			    padattr);
+}
+
+/**
+ * nla_put_le64 - Add a __le64 netlink attribute to a socket buffer and align it
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ * @padattr: attribute type for the padding
+ */
+static inline int nla_put_le64(struct sk_buff *skb, int attrtype, __le64 value,
+			       int padattr)
+{
+	__le64 tmp = value;
+
+	return nla_put_64bit(skb, attrtype, sizeof(__le64), &tmp, padattr);
+}
+
+/**
+ * nla_put_s8 - Add a s8 netlink attribute to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_s8(struct sk_buff *skb, int attrtype, s8 value)
+{
+	s8 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(s8), &tmp);
+}
+
+/**
+ * nla_put_s16 - Add a s16 netlink attribute to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_s16(struct sk_buff *skb, int attrtype, s16 value)
+{
+	s16 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(s16), &tmp);
+}
+
+/**
+ * nla_put_s32 - Add a s32 netlink attribute to a socket buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ */
+static inline int nla_put_s32(struct sk_buff *skb, int attrtype, s32 value)
+{
+	s32 tmp = value;
+
+	return nla_put(skb, attrtype, sizeof(s32), &tmp);
+}
+
+/**
+ * nla_put_s64 - Add a s64 netlink attribute to a socket buffer and align it
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @value: numeric value
+ * @padattr: attribute type for the padding
+ */
+static inline int nla_put_s64(struct sk_buff *skb, int attrtype, s64 value,
+			      int padattr)
+{
+	s64 tmp = value;
+
+	return nla_put_64bit(skb, attrtype, sizeof(s64), &tmp, padattr);
 }
 
 /**
@@ -816,71 +1022,47 @@ static inline int nla_put_flag(struct sk_buff *skb, int attrtype)
 }
 
 /**
- * nla_put_msecs - Add a msecs netlink attribute to a socket buffer
+ * nla_put_msecs - Add a msecs netlink attribute to a skb and align it
  * @skb: socket buffer to add attribute to
  * @attrtype: attribute type
- * @jiffies: number of msecs in jiffies
+ * @njiffies: number of jiffies to convert to msecs
+ * @padattr: attribute type for the padding
  */
 static inline int nla_put_msecs(struct sk_buff *skb, int attrtype,
-				unsigned long jiffies)
+				unsigned long njiffies, int padattr)
 {
-	u64 tmp = jiffies_to_msecs(jiffies);
-	return nla_put(skb, attrtype, sizeof(u64), &tmp);
+	u64 tmp = jiffies_to_msecs(njiffies);
+
+	return nla_put_64bit(skb, attrtype, sizeof(u64), &tmp, padattr);
 }
 
-#define NLA_PUT(skb, attrtype, attrlen, data) \
-	do { \
-		if (unlikely(nla_put(skb, attrtype, attrlen, data) < 0)) \
-			goto nla_put_failure; \
-	} while(0)
+/**
+ * nla_put_in_addr - Add an IPv4 address netlink attribute to a socket
+ * buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @addr: IPv4 address
+ */
+static inline int nla_put_in_addr(struct sk_buff *skb, int attrtype,
+				  __be32 addr)
+{
+	__be32 tmp = addr;
 
-#define NLA_PUT_TYPE(skb, type, attrtype, value) \
-	do { \
-		type __tmp = value; \
-		NLA_PUT(skb, attrtype, sizeof(type), &__tmp); \
-	} while(0)
+	return nla_put_be32(skb, attrtype, tmp);
+}
 
-#define NLA_PUT_U8(skb, attrtype, value) \
-	NLA_PUT_TYPE(skb, u8, attrtype, value)
-
-#define NLA_PUT_U16(skb, attrtype, value) \
-	NLA_PUT_TYPE(skb, u16, attrtype, value)
-
-#define NLA_PUT_LE16(skb, attrtype, value) \
-	NLA_PUT_TYPE(skb, __le16, attrtype, value)
-
-#define NLA_PUT_BE16(skb, attrtype, value) \
-	NLA_PUT_TYPE(skb, __be16, attrtype, value)
-
-#define NLA_PUT_NET16(skb, attrtype, value) \
-	NLA_PUT_BE16(skb, attrtype | NLA_F_NET_BYTEORDER, value)
-
-#define NLA_PUT_U32(skb, attrtype, value) \
-	NLA_PUT_TYPE(skb, u32, attrtype, value)
-
-#define NLA_PUT_BE32(skb, attrtype, value) \
-	NLA_PUT_TYPE(skb, __be32, attrtype, value)
-
-#define NLA_PUT_NET32(skb, attrtype, value) \
-	NLA_PUT_BE32(skb, attrtype | NLA_F_NET_BYTEORDER, value)
-
-#define NLA_PUT_U64(skb, attrtype, value) \
-	NLA_PUT_TYPE(skb, u64, attrtype, value)
-
-#define NLA_PUT_BE64(skb, attrtype, value) \
-	NLA_PUT_TYPE(skb, __be64, attrtype, value)
-
-#define NLA_PUT_NET64(skb, attrtype, value) \
-	NLA_PUT_BE64(skb, attrtype | NLA_F_NET_BYTEORDER, value)
-
-#define NLA_PUT_STRING(skb, attrtype, value) \
-	NLA_PUT(skb, attrtype, strlen(value) + 1, value)
-
-#define NLA_PUT_FLAG(skb, attrtype) \
-	NLA_PUT(skb, attrtype, 0, NULL)
-
-#define NLA_PUT_MSECS(skb, attrtype, jiffies) \
-	NLA_PUT_U64(skb, attrtype, jiffies_to_msecs(jiffies))
+/**
+ * nla_put_in6_addr - Add an IPv6 address netlink attribute to a socket
+ * buffer
+ * @skb: socket buffer to add attribute to
+ * @attrtype: attribute type
+ * @addr: IPv6 address
+ */
+static inline int nla_put_in6_addr(struct sk_buff *skb, int attrtype,
+				   const struct in6_addr *addr)
+{
+	return nla_put(skb, attrtype, sizeof(*addr), addr);
+}
 
 /**
  * nla_get_u32 - return payload of u32 attribute
@@ -898,6 +1080,15 @@ static inline u32 nla_get_u32(const struct nlattr *nla)
 static inline __be32 nla_get_be32(const struct nlattr *nla)
 {
 	return *(__be32 *) nla_data(nla);
+}
+
+/**
+ * nla_get_le32 - return payload of __le32 attribute
+ * @nla: __le32 netlink attribute
+ */
+static inline __le32 nla_get_le32(const struct nlattr *nla)
+{
+	return *(__le32 *) nla_data(nla);
 }
 
 /**
@@ -963,6 +1154,55 @@ static inline __be64 nla_get_be64(const struct nlattr *nla)
 }
 
 /**
+ * nla_get_le64 - return payload of __le64 attribute
+ * @nla: __le64 netlink attribute
+ */
+static inline __le64 nla_get_le64(const struct nlattr *nla)
+{
+	return *(__le64 *) nla_data(nla);
+}
+
+/**
+ * nla_get_s32 - return payload of s32 attribute
+ * @nla: s32 netlink attribute
+ */
+static inline s32 nla_get_s32(const struct nlattr *nla)
+{
+	return *(s32 *) nla_data(nla);
+}
+
+/**
+ * nla_get_s16 - return payload of s16 attribute
+ * @nla: s16 netlink attribute
+ */
+static inline s16 nla_get_s16(const struct nlattr *nla)
+{
+	return *(s16 *) nla_data(nla);
+}
+
+/**
+ * nla_get_s8 - return payload of s8 attribute
+ * @nla: s8 netlink attribute
+ */
+static inline s8 nla_get_s8(const struct nlattr *nla)
+{
+	return *(s8 *) nla_data(nla);
+}
+
+/**
+ * nla_get_s64 - return payload of s64 attribute
+ * @nla: s64 netlink attribute
+ */
+static inline s64 nla_get_s64(const struct nlattr *nla)
+{
+	s64 tmp;
+
+	nla_memcpy(&tmp, nla, sizeof(tmp));
+
+	return tmp;
+}
+
+/**
  * nla_get_flag - return payload of flag attribute
  * @nla: flag netlink attribute
  */
@@ -982,6 +1222,49 @@ static inline unsigned long nla_get_msecs(const struct nlattr *nla)
 	u64 msecs = nla_get_u64(nla);
 
 	return msecs_to_jiffies((unsigned long) msecs);
+}
+
+/**
+ * nla_get_in_addr - return payload of IPv4 address attribute
+ * @nla: IPv4 address netlink attribute
+ */
+static inline __be32 nla_get_in_addr(const struct nlattr *nla)
+{
+	return *(__be32 *) nla_data(nla);
+}
+
+/**
+ * nla_get_in6_addr - return payload of IPv6 address attribute
+ * @nla: IPv6 address netlink attribute
+ */
+static inline struct in6_addr nla_get_in6_addr(const struct nlattr *nla)
+{
+	struct in6_addr tmp;
+
+	nla_memcpy(&tmp, nla, sizeof(tmp));
+	return tmp;
+}
+
+/**
+ * nla_get_bitfield32 - return payload of 32 bitfield attribute
+ * @nla: nla_bitfield32 attribute
+ */
+static inline struct nla_bitfield32 nla_get_bitfield32(const struct nlattr *nla)
+{
+	struct nla_bitfield32 tmp;
+
+	nla_memcpy(&tmp, nla, sizeof(tmp));
+	return tmp;
+}
+
+/**
+ * nla_memdup - duplicate attribute memory (kmemdup)
+ * @src: netlink attribute to duplicate from
+ * @gfp: GFP mask
+ */
+static inline void *nla_memdup(const struct nlattr *src, gfp_t gfp)
+{
+	return kmemdup(nla_data(src), nla_len(src), gfp);
 }
 
 /**
@@ -1035,6 +1318,7 @@ static inline void nla_nest_cancel(struct sk_buff *skb, struct nlattr *start)
  * @start: container attribute
  * @maxtype: maximum attribute type to be expected
  * @policy: validation policy
+ * @extack: extended ACK report struct
  *
  * Validates all attributes in the nested attribute stream against the
  * specified policy. Attributes with a type exceeding maxtype will be
@@ -1043,9 +1327,66 @@ static inline void nla_nest_cancel(struct sk_buff *skb, struct nlattr *start)
  * Returns 0 on success or a negative error code.
  */
 static inline int nla_validate_nested(const struct nlattr *start, int maxtype,
-				      const struct nla_policy *policy)
+				      const struct nla_policy *policy,
+				      struct netlink_ext_ack *extack)
 {
-	return nla_validate(nla_data(start), nla_len(start), maxtype, policy);
+	return nla_validate(nla_data(start), nla_len(start), maxtype, policy,
+			    extack);
+}
+
+/**
+ * nla_need_padding_for_64bit - test 64-bit alignment of the next attribute
+ * @skb: socket buffer the message is stored in
+ *
+ * Return true if padding is needed to align the next attribute (nla_data()) to
+ * a 64-bit aligned area.
+ */
+static inline bool nla_need_padding_for_64bit(struct sk_buff *skb)
+{
+#ifndef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+	/* The nlattr header is 4 bytes in size, that's why we test
+	 * if the skb->data _is_ aligned.  A NOP attribute, plus
+	 * nlattr header for next attribute, will make nla_data()
+	 * 8-byte aligned.
+	 */
+	if (IS_ALIGNED((unsigned long)skb_tail_pointer(skb), 8))
+		return true;
+#endif
+	return false;
+}
+
+/**
+ * nla_align_64bit - 64-bit align the nla_data() of next attribute
+ * @skb: socket buffer the message is stored in
+ * @padattr: attribute type for the padding
+ *
+ * Conditionally emit a padding netlink attribute in order to make
+ * the next attribute we emit have a 64-bit aligned nla_data() area.
+ * This will only be done in architectures which do not have
+ * CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS defined.
+ *
+ * Returns zero on success or a negative error code.
+ */
+static inline int nla_align_64bit(struct sk_buff *skb, int padattr)
+{
+	if (nla_need_padding_for_64bit(skb) &&
+	    !nla_reserve(skb, padattr, 0))
+		return -EMSGSIZE;
+
+	return 0;
+}
+
+/**
+ * nla_total_size_64bit - total length of attribute including padding
+ * @payload: length of payload
+ */
+static inline int nla_total_size_64bit(int payload)
+{
+	return NLA_ALIGN(nla_attr_size(payload))
+#ifndef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+		+ NLA_ALIGN(nla_attr_size(0))
+#endif
+		;
 }
 
 /**
@@ -1068,5 +1409,15 @@ static inline int nla_validate_nested(const struct nlattr *start, int maxtype,
  */
 #define nla_for_each_nested(pos, nla, rem) \
 	nla_for_each_attr(pos, nla_data(nla), nla_len(nla), rem)
+
+/**
+ * nla_is_last - Test if attribute is last in stream
+ * @nla: attribute to test
+ * @rem: bytes remaining in stream
+ */
+static inline bool nla_is_last(const struct nlattr *nla, int rem)
+{
+	return nla->nla_len == rem;
+}
 
 #endif

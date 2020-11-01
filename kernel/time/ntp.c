@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * NTP state machine interfaces and logic.
  *
@@ -15,20 +16,24 @@
 #include <linux/time.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/rtc.h>
+#include <linux/math64.h>
 
-#include "tick-internal.h"
+#include "ntp_internal.h"
+#include "timekeeping_internal.h"
+
 
 /*
  * NTP timekeeping variables:
+ *
+ * Note: All of the NTP state is protected by the timekeeping locks.
  */
-
-DEFINE_SPINLOCK(ntp_lock);
 
 
 /* USER_HZ period (usecs): */
 unsigned long			tick_usec = TICK_USEC;
 
-/* ACTHZ period (nsecs): */
+/* SHIFTED_HZ period (nsecs): */
 unsigned long			tick_nsec;
 
 static u64			tick_length;
@@ -38,6 +43,7 @@ static u64			tick_length_base;
 #define MAX_TICKADJ		500LL		/* usecs */
 #define MAX_TICKADJ_SCALED \
 	(((MAX_TICKADJ * NSEC_PER_USEC) << NTP_SCALE_SHIFT) / NTP_INTERVAL_FREQ)
+#define MAX_TAI_OFFSET		100000
 
 /*
  * phase-lock loop variables
@@ -52,9 +58,6 @@ static int			time_state = TIME_OK;
 
 /* clock status bits:							*/
 static int			time_status = STA_UNSYNC;
-
-/* TAI offset (secs):							*/
-static long			time_tai;
 
 /* time adjustment (nsecs):						*/
 static s64			time_offset;
@@ -72,15 +75,15 @@ static long			time_esterror = NTP_PHASE_LIMIT;
 static s64			time_freq;
 
 /* time at last adjustment (secs):					*/
-static long			time_reftime;
+static time64_t		time_reftime;
 
 static long			time_adjust;
 
 /* constant (boot-param configurable) NTP tick adjustment (upscaled)	*/
 static s64			ntp_tick_adj;
 
-/* second value of the next pending leapsecond, or KTIME_MAX if no leap */
-static s64			ntp_next_leap_sec = KTIME_MAX;
+/* second value of the next pending leapsecond, or TIME64_MAX if no leap */
+static time64_t			ntp_next_leap_sec = TIME64_MAX;
 
 #ifdef CONFIG_NTP_PPS
 
@@ -101,7 +104,7 @@ static s64			ntp_next_leap_sec = KTIME_MAX;
 static int pps_valid;		/* signal watchdog counter */
 static long pps_tf[3];		/* phase median filter */
 static long pps_jitter;		/* current jitter (ns) */
-static struct timespec pps_fbase; /* beginning of the last freq interval */
+static struct timespec64 pps_fbase; /* beginning of the last freq interval */
 static int pps_shift;		/* current interval duration (s) (shift) */
 static int pps_intcnt;		/* interval counter */
 static s64 pps_freq;		/* frequency offset (scaled ns/s) */
@@ -137,8 +140,6 @@ static inline void pps_reset_freq_interval(void)
 
 /**
  * pps_clear - Clears the PPS state variables
- *
- * Must be called while holding a write on the ntp_lock
  */
 static inline void pps_clear(void)
 {
@@ -153,8 +154,6 @@ static inline void pps_clear(void)
 /* Decrease pps_valid to indicate that another second has passed since
  * the last PPS signal. When it reaches 0, indicate that PPS signal is
  * missing.
- *
- * Must be called while holding a write on the ntp_lock
  */
 static inline void pps_dec_valid(void)
 {
@@ -174,21 +173,21 @@ static inline void pps_set_freq(s64 freq)
 
 static inline int is_error_status(int status)
 {
-	return (time_status & (STA_UNSYNC|STA_CLOCKERR))
+	return (status & (STA_UNSYNC|STA_CLOCKERR))
 		/* PPS signal lost when either PPS time or
 		 * PPS frequency synchronization requested
 		 */
-		|| ((time_status & (STA_PPSFREQ|STA_PPSTIME))
-			&& !(time_status & STA_PPSSIGNAL))
+		|| ((status & (STA_PPSFREQ|STA_PPSTIME))
+			&& !(status & STA_PPSSIGNAL))
 		/* PPS jitter exceeded when
 		 * PPS time synchronization requested */
-		|| ((time_status & (STA_PPSTIME|STA_PPSJITTER))
+		|| ((status & (STA_PPSTIME|STA_PPSJITTER))
 			== (STA_PPSTIME|STA_PPSJITTER))
 		/* PPS wander exceeded or calibration error when
 		 * PPS frequency synchronization requested
 		 */
-		|| ((time_status & STA_PPSFREQ)
-			&& (time_status & (STA_PPSWANDER|STA_PPSERROR)));
+		|| ((status & STA_PPSFREQ)
+			&& (status & (STA_PPSWANDER|STA_PPSERROR)));
 }
 
 static inline void pps_fill_timex(struct timex *txc)
@@ -303,25 +302,27 @@ static void ntp_update_offset(long offset)
 	if (!(time_status & STA_PLL))
 		return;
 
-	if (!(time_status & STA_NANO))
+	if (!(time_status & STA_NANO)) {
+		/* Make sure the multiplication below won't overflow */
+		offset = clamp(offset, -USEC_PER_SEC, USEC_PER_SEC);
 		offset *= NSEC_PER_USEC;
+	}
 
 	/*
 	 * Scale the phase adjustment and
 	 * clamp to the operating range.
 	 */
-	offset = min(offset, MAXPHASE);
-	offset = max(offset, -MAXPHASE);
+	offset = clamp(offset, -MAXPHASE, MAXPHASE);
 
 	/*
 	 * Select how the frequency is to be controlled
 	 * and in which mode (PLL or FLL).
 	 */
-	secs = get_seconds() - time_reftime;
+	secs = (long)(__ktime_get_real_seconds() - time_reftime);
 	if (unlikely(time_status & STA_FREQHOLD))
 		secs = 0;
 
-	time_reftime = get_seconds();
+	time_reftime = __ktime_get_real_seconds();
 
 	offset64    = offset;
 	freq_adj    = ntp_update_offset_fll(offset64, secs);
@@ -349,38 +350,25 @@ static void ntp_update_offset(long offset)
  */
 void ntp_clear(void)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&ntp_lock, flags);
-
 	time_adjust	= 0;		/* stop active adjtime() */
 	time_status	|= STA_UNSYNC;
 	time_maxerror	= NTP_PHASE_LIMIT;
 	time_esterror	= NTP_PHASE_LIMIT;
-
-	ntp_next_leap_sec = KTIME_MAX;
 
 	ntp_update_frequency();
 
 	tick_length	= tick_length_base;
 	time_offset	= 0;
 
+	ntp_next_leap_sec = TIME64_MAX;
 	/* Clear PPS state variables */
 	pps_clear();
-	spin_unlock_irqrestore(&ntp_lock, flags);
-
 }
 
 
 u64 ntp_tick_length(void)
 {
-	unsigned long flags;
-	s64 ret;
-
-	spin_lock_irqsave(&ntp_lock, flags);
-	ret = tick_length;
-	spin_unlock_irqrestore(&ntp_lock, flags);
-	return ret;
+	return tick_length;
 }
 
 /**
@@ -395,7 +383,7 @@ ktime_t ntp_get_next_leap(void)
 
 	if ((time_state == TIME_INS) && (time_status & STA_INS))
 		return ktime_set(ntp_next_leap_sec, 0);
-	ret.tv64 = KTIME_MAX;
+	ret = KTIME_MAX;
 	return ret;
 }
 
@@ -409,13 +397,11 @@ ktime_t ntp_get_next_leap(void)
  *
  * Also handles leap second processing, and returns leap offset
  */
-int second_overflow(unsigned long secs)
+int second_overflow(time64_t secs)
 {
 	s64 delta;
 	int leap = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&ntp_lock, flags);
+	s32 rem;
 
 	/*
 	 * Leap second processing. If in leap-insert state at the end of the
@@ -426,44 +412,41 @@ int second_overflow(unsigned long secs)
 	case TIME_OK:
 		if (time_status & STA_INS) {
 			time_state = TIME_INS;
-			ntp_next_leap_sec = secs + SECS_PER_DAY -
-						(secs % SECS_PER_DAY);
+			div_s64_rem(secs, SECS_PER_DAY, &rem);
+			ntp_next_leap_sec = secs + SECS_PER_DAY - rem;
 		} else if (time_status & STA_DEL) {
 			time_state = TIME_DEL;
-			ntp_next_leap_sec = secs + SECS_PER_DAY -
-						 ((secs+1) % SECS_PER_DAY);
+			div_s64_rem(secs + 1, SECS_PER_DAY, &rem);
+			ntp_next_leap_sec = secs + SECS_PER_DAY - rem;
 		}
 		break;
 	case TIME_INS:
 		if (!(time_status & STA_INS)) {
-			ntp_next_leap_sec = KTIME_MAX;
+			ntp_next_leap_sec = TIME64_MAX;
 			time_state = TIME_OK;
-		} else if (secs % SECS_PER_DAY == 0) {
+		} else if (secs == ntp_next_leap_sec) {
 			leap = -1;
 			time_state = TIME_OOP;
-			time_tai++;
 			printk(KERN_NOTICE
 				"Clock: inserting leap second 23:59:60 UTC\n");
 		}
 		break;
 	case TIME_DEL:
 		if (!(time_status & STA_DEL)) {
-			ntp_next_leap_sec = KTIME_MAX;
+			ntp_next_leap_sec = TIME64_MAX;
 			time_state = TIME_OK;
-		} else if ((secs + 1) % SECS_PER_DAY == 0) {
+		} else if (secs == ntp_next_leap_sec) {
 			leap = 1;
-			ntp_next_leap_sec = KTIME_MAX;
-			time_tai--;
+			ntp_next_leap_sec = TIME64_MAX;
 			time_state = TIME_WAIT;
 			printk(KERN_NOTICE
 				"Clock: deleting leap second 23:59:59 UTC\n");
 		}
 		break;
 	case TIME_OOP:
-		ntp_next_leap_sec = KTIME_MAX;
+		ntp_next_leap_sec = TIME64_MAX;
 		time_state = TIME_WAIT;
 		break;
-
 	case TIME_WAIT:
 		if (!(time_status & (STA_INS | STA_DEL)))
 			time_state = TIME_OK;
@@ -507,23 +490,34 @@ int second_overflow(unsigned long secs)
 							 << NTP_SCALE_SHIFT;
 	time_adjust = 0;
 
-
-
 out:
-	spin_unlock_irqrestore(&ntp_lock, flags);
-
 	return leap;
 }
 
 #ifdef CONFIG_GENERIC_CMOS_UPDATE
+int __weak update_persistent_clock(struct timespec now)
+{
+	return -ENODEV;
+}
 
+int __weak update_persistent_clock64(struct timespec64 now64)
+{
+	struct timespec now;
+
+	now = timespec64_to_timespec(now64);
+	return update_persistent_clock(now);
+}
+#endif
+
+#if defined(CONFIG_GENERIC_CMOS_UPDATE) || defined(CONFIG_RTC_SYSTOHC)
 static void sync_cmos_clock(struct work_struct *work);
 
 static DECLARE_DELAYED_WORK(sync_cmos_work, sync_cmos_clock);
 
 static void sync_cmos_clock(struct work_struct *work)
 {
-	struct timespec now, next;
+	struct timespec64 now;
+	struct timespec64 next;
 	int fail = 1;
 
 	/*
@@ -532,6 +526,7 @@ static void sync_cmos_clock(struct work_struct *work)
 	 * called as close as possible to 500 ms before the new second starts.
 	 * This code is run on a timer.  If the clock is set, that timer
 	 * may not expire at the correct time.  Thus, we adjust...
+	 * We want the clock to be within a couple of ticks from the target.
 	 */
 	if (!ntp_synced()) {
 		/*
@@ -541,15 +536,28 @@ static void sync_cmos_clock(struct work_struct *work)
 		return;
 	}
 
-	getnstimeofday(&now);
-	if (abs(now.tv_nsec - (NSEC_PER_SEC / 2)) <= tick_nsec / 2)
-		fail = update_persistent_clock(now);
+	getnstimeofday64(&now);
+	if (abs(now.tv_nsec - (NSEC_PER_SEC / 2)) <= tick_nsec * 5) {
+		struct timespec64 adjust = now;
+
+		fail = -ENODEV;
+		if (persistent_clock_is_local)
+			adjust.tv_sec -= (sys_tz.tz_minuteswest * 60);
+#ifdef CONFIG_GENERIC_CMOS_UPDATE
+		fail = update_persistent_clock64(adjust);
+#endif
+
+#ifdef CONFIG_RTC_SYSTOHC
+		if (fail == -ENODEV)
+			fail = rtc_set_ntp_time(adjust);
+#endif
+	}
 
 	next.tv_nsec = (NSEC_PER_SEC / 2) - now.tv_nsec - (TICK_NSEC / 2);
 	if (next.tv_nsec <= 0)
 		next.tv_nsec += NSEC_PER_SEC;
 
-	if (!fail)
+	if (!fail || fail == -ENODEV)
 		next.tv_sec = 659;
 	else
 		next.tv_sec = 0;
@@ -558,28 +566,29 @@ static void sync_cmos_clock(struct work_struct *work)
 		next.tv_sec++;
 		next.tv_nsec -= NSEC_PER_SEC;
 	}
-	schedule_delayed_work(&sync_cmos_work, timespec_to_jiffies(&next));
+	queue_delayed_work(system_power_efficient_wq,
+			   &sync_cmos_work, timespec64_to_jiffies(&next));
 }
 
-static void notify_cmos_timer(void)
+void ntp_notify_cmos_timer(void)
 {
-	schedule_delayed_work(&sync_cmos_work, 0);
+	queue_delayed_work(system_power_efficient_wq, &sync_cmos_work, 0);
 }
 
 #else
-static inline void notify_cmos_timer(void) { }
+void ntp_notify_cmos_timer(void) { }
 #endif
 
 
 /*
  * Propagate a new txc->status value into the NTP state:
  */
-static inline void process_adj_status(struct timex *txc, struct timespec *ts)
+static inline void process_adj_status(struct timex *txc, struct timespec64 *ts)
 {
 	if ((time_status & STA_PLL) && !(txc->status & STA_PLL)) {
 		time_state = TIME_OK;
 		time_status = STA_UNSYNC;
-		ntp_next_leap_sec = KTIME_MAX;
+		ntp_next_leap_sec = TIME64_MAX;
 		/* restart PPS frequency calibration */
 		pps_reset_freq_interval();
 	}
@@ -589,18 +598,17 @@ static inline void process_adj_status(struct timex *txc, struct timespec *ts)
 	 * reference time to current time.
 	 */
 	if (!(time_status & STA_PLL) && (txc->status & STA_PLL))
-		time_reftime = get_seconds();
+		time_reftime = __ktime_get_real_seconds();
 
 	/* only set allowed bits */
 	time_status &= STA_RONLY;
 	time_status |= txc->status & ~STA_RONLY;
-
 }
-/*
- * Called with the xtime lock held, so we can access and modify
- * all the global NTP state:
- */
-static inline void process_adjtimex_modes(struct timex *txc, struct timespec *ts)
+
+
+static inline void process_adjtimex_modes(struct timex *txc,
+						struct timespec64 *ts,
+						s32 *time_tai)
 {
 	if (txc->modes & ADJ_STATUS)
 		process_adj_status(txc, ts);
@@ -633,8 +641,9 @@ static inline void process_adjtimex_modes(struct timex *txc, struct timespec *ts
 		time_constant = max(time_constant, 0l);
 	}
 
-	if (txc->modes & ADJ_TAI && txc->constant > 0)
-		time_tai = txc->constant;
+	if (txc->modes & ADJ_TAI &&
+			txc->constant >= 0 && txc->constant <= MAX_TAI_OFFSET)
+		*time_tai = txc->constant;
 
 	if (txc->modes & ADJ_OFFSET)
 		ntp_update_offset(txc->offset);
@@ -646,16 +655,13 @@ static inline void process_adjtimex_modes(struct timex *txc, struct timespec *ts
 		ntp_update_frequency();
 }
 
-/*
- * adjtimex mainly allows reading (and writing, if superuser) of
- * kernel time-keeping variables. used by xntpd.
- */
-int __do_adjtimex(struct timex *txc)
-{
-	struct timespec ts;
-	int result;
 
-	/* Validate the data before disabling interrupts */
+
+/**
+ * ntp_validate_timex - Ensures the timex is ok for use in do_adjtimex
+ */
+int ntp_validate_timex(struct timex *txc)
+{
 	if (txc->modes & ADJ_ADJTIME) {
 		/* singleshot must not be used with any other mode bits */
 		if (!(txc->modes & ADJ_OFFSET_SINGLESHOT))
@@ -667,7 +673,6 @@ int __do_adjtimex(struct timex *txc)
 		/* In order to modify anything, you gotta be super-user! */
 		 if (txc->modes && !capable(CAP_SYS_TIME))
 			return -EPERM;
-
 		/*
 		 * if the quartz is off by more than 10% then
 		 * something is VERY wrong!
@@ -679,16 +684,22 @@ int __do_adjtimex(struct timex *txc)
 	}
 
 	if (txc->modes & ADJ_SETOFFSET) {
-		struct timespec delta;
-		delta.tv_sec  = txc->time.tv_sec;
-		delta.tv_nsec = txc->time.tv_usec;
+		/* In order to inject time, you gotta be super-user! */
 		if (!capable(CAP_SYS_TIME))
 			return -EPERM;
-		if (!(txc->modes & ADJ_NANO))
-			delta.tv_nsec *= 1000;
-		result = timekeeping_inject_offset(&delta);
-		if (result)
-			return result;
+
+		if (txc->modes & ADJ_NANO) {
+			struct timespec ts;
+
+			ts.tv_sec = txc->time.tv_sec;
+			ts.tv_nsec = txc->time.tv_usec;
+			if (!timespec_inject_offset_valid(&ts))
+				return -EINVAL;
+
+		} else {
+			if (!timeval_inject_offset_valid(&txc->time))
+				return -EINVAL;
+		}
 	}
 
 	/*
@@ -702,9 +713,17 @@ int __do_adjtimex(struct timex *txc)
 			return -EINVAL;
 	}
 
-	getnstimeofday(&ts);
+	return 0;
+}
 
-	spin_lock_irq(&ntp_lock);
+
+/*
+ * adjtimex mainly allows reading (and writing, if superuser) of
+ * kernel time-keeping variables. used by xntpd.
+ */
+int __do_adjtimex(struct timex *txc, struct timespec64 *ts, s32 *time_tai)
+{
+	int result;
 
 	if (txc->modes & ADJ_ADJTIME) {
 		long save_adjust = time_adjust;
@@ -719,7 +738,7 @@ int __do_adjtimex(struct timex *txc)
 
 		/* If there are input parameters, then process them: */
 		if (txc->modes)
-			process_adjtimex_modes(txc, &ts);
+			process_adjtimex_modes(txc, ts, time_tai);
 
 		txc->offset = shift_right(time_offset * NTP_INTERVAL_FREQ,
 				  NTP_SCALE_SHIFT);
@@ -741,19 +760,33 @@ int __do_adjtimex(struct timex *txc)
 	txc->precision	   = 1;
 	txc->tolerance	   = MAXFREQ_SCALED / PPM_SCALE;
 	txc->tick	   = tick_usec;
-	txc->tai	   = time_tai;
+	txc->tai	   = *time_tai;
 
 	/* fill PPS status fields */
 	pps_fill_timex(txc);
 
-	spin_unlock_irq(&ntp_lock);
-
-	txc->time.tv_sec = ts.tv_sec;
-	txc->time.tv_usec = ts.tv_nsec;
+	txc->time.tv_sec = (time_t)ts->tv_sec;
+	txc->time.tv_usec = ts->tv_nsec;
 	if (!(time_status & STA_NANO))
 		txc->time.tv_usec /= NSEC_PER_USEC;
 
-	notify_cmos_timer();
+	/* Handle leapsec adjustments */
+	if (unlikely(ts->tv_sec >= ntp_next_leap_sec)) {
+		if ((time_state == TIME_INS) && (time_status & STA_INS)) {
+			result = TIME_OOP;
+			txc->tai++;
+			txc->time.tv_sec--;
+		}
+		if ((time_state == TIME_DEL) && (time_status & STA_DEL)) {
+			result = TIME_WAIT;
+			txc->tai--;
+			txc->time.tv_sec++;
+		}
+		if ((time_state == TIME_OOP) &&
+					(ts->tv_sec == ntp_next_leap_sec)) {
+			result = TIME_WAIT;
+		}
+	}
 
 	return result;
 }
@@ -765,13 +798,13 @@ int __do_adjtimex(struct timex *txc)
  * pps_normtime.nsec has a range of ( -NSEC_PER_SEC / 2, NSEC_PER_SEC / 2 ]
  * while timespec.tv_nsec has a range of [0, NSEC_PER_SEC) */
 struct pps_normtime {
-	__kernel_time_t	sec;	/* seconds */
+	s64		sec;	/* seconds */
 	long		nsec;	/* nanoseconds */
 };
 
 /* normalize the timestamp so that nsec is in the
    ( -NSEC_PER_SEC / 2, NSEC_PER_SEC / 2 ] interval */
-static inline struct pps_normtime pps_normalize_ts(struct timespec ts)
+static inline struct pps_normtime pps_normalize_ts(struct timespec64 ts)
 {
 	struct pps_normtime norm = {
 		.sec = ts.tv_sec,
@@ -852,8 +885,9 @@ static long hardpps_update_freq(struct pps_normtime freq_norm)
 		time_status |= STA_PPSERROR;
 		pps_errcnt++;
 		pps_dec_freq_interval();
-		pr_err("hardpps: PPSERROR: interval too long - %ld s\n",
-				freq_norm.sec);
+		printk_deferred(KERN_ERR
+			"hardpps: PPSERROR: interval too long - %lld s\n",
+			freq_norm.sec);
 		return 0;
 	}
 
@@ -866,7 +900,8 @@ static long hardpps_update_freq(struct pps_normtime freq_norm)
 	delta = shift_right(ftemp - pps_freq, NTP_SCALE_SHIFT);
 	pps_freq = ftemp;
 	if (delta > PPS_MAXWANDER || delta < -PPS_MAXWANDER) {
-		pr_warning("hardpps: PPSWANDER: change=%ld\n", delta);
+		printk_deferred(KERN_WARNING
+				"hardpps: PPSWANDER: change=%ld\n", delta);
 		time_status |= STA_PPSWANDER;
 		pps_stbcnt++;
 		pps_dec_freq_interval();
@@ -910,8 +945,9 @@ static void hardpps_update_phase(long error)
 	 * the time offset is updated.
 	 */
 	if (jitter > (pps_jitter << PPS_POPCORN)) {
-		pr_warning("hardpps: PPSJITTER: jitter=%ld, limit=%ld\n",
-		       jitter, (pps_jitter << PPS_POPCORN));
+		printk_deferred(KERN_WARNING
+				"hardpps: PPSJITTER: jitter=%ld, limit=%ld\n",
+				jitter, (pps_jitter << PPS_POPCORN));
 		time_status |= STA_PPSJITTER;
 		pps_jitcnt++;
 	} else if (time_status & STA_PPSTIME) {
@@ -926,7 +962,7 @@ static void hardpps_update_phase(long error)
 }
 
 /*
- * hardpps() - discipline CPU clock oscillator to external PPS signal
+ * __hardpps() - discipline CPU clock oscillator to external PPS signal
  *
  * This routine is called at each PPS signal arrival in order to
  * discipline the CPU clock oscillator to the PPS signal. It takes two
@@ -937,14 +973,11 @@ static void hardpps_update_phase(long error)
  * This code is based on David Mills's reference nanokernel
  * implementation. It was mostly rewritten but keeps the same idea.
  */
-void hardpps(const struct timespec *phase_ts, const struct timespec *raw_ts)
+void __hardpps(const struct timespec64 *phase_ts, const struct timespec64 *raw_ts)
 {
 	struct pps_normtime pts_norm, freq_norm;
-	unsigned long flags;
 
 	pts_norm = pps_normalize_ts(*phase_ts);
-
-	spin_lock_irqsave(&ntp_lock, flags);
 
 	/* clear the error bits, they will be set again if needed */
 	time_status &= ~(STA_PPSJITTER | STA_PPSWANDER | STA_PPSERROR);
@@ -957,12 +990,11 @@ void hardpps(const struct timespec *phase_ts, const struct timespec *raw_ts)
 	 * just start the frequency interval */
 	if (unlikely(pps_fbase.tv_sec == 0)) {
 		pps_fbase = *raw_ts;
-		spin_unlock_irqrestore(&ntp_lock, flags);
 		return;
 	}
 
 	/* ok, now we have a base for frequency calculation */
-	freq_norm = pps_normalize_ts(timespec_sub(*raw_ts, pps_fbase));
+	freq_norm = pps_normalize_ts(timespec64_sub(*raw_ts, pps_fbase));
 
 	/* check that the signal is in the range
 	 * [1s - MAXFREQ us, 1s + MAXFREQ us], otherwise reject it */
@@ -972,8 +1004,7 @@ void hardpps(const struct timespec *phase_ts, const struct timespec *raw_ts)
 		time_status |= STA_PPSJITTER;
 		/* restart the frequency calibration interval */
 		pps_fbase = *raw_ts;
-		spin_unlock_irqrestore(&ntp_lock, flags);
-		pr_err("hardpps: PPSJITTER: bad pulse\n");
+		printk_deferred(KERN_ERR "hardpps: PPSJITTER: bad pulse\n");
 		return;
 	}
 
@@ -989,15 +1020,15 @@ void hardpps(const struct timespec *phase_ts, const struct timespec *raw_ts)
 
 	hardpps_update_phase(pts_norm.nsec);
 
-	spin_unlock_irqrestore(&ntp_lock, flags);
 }
-EXPORT_SYMBOL(hardpps);
-
 #endif	/* CONFIG_NTP_PPS */
 
 static int __init ntp_tick_adj_setup(char *str)
 {
-	ntp_tick_adj = simple_strtol(str, NULL, 0);
+	int rc = kstrtol(str, 0, (long *)&ntp_tick_adj);
+
+	if (rc)
+		return rc;
 	ntp_tick_adj <<= NTP_SCALE_SHIFT;
 
 	return 1;

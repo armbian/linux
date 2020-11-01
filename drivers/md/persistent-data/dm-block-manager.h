@@ -33,7 +33,7 @@ void *dm_block_data(struct dm_block *b);
 struct dm_block_manager;
 struct dm_block_manager *dm_block_manager_create(
 	struct block_device *bdev, unsigned block_size,
-	unsigned cache_size, unsigned max_held_per_thread);
+	unsigned max_held_per_thread);
 void dm_block_manager_destroy(struct dm_block_manager *bm);
 
 unsigned dm_bm_block_size(struct dm_block_manager *bm);
@@ -94,15 +94,7 @@ int dm_bm_write_lock_zero(struct dm_block_manager *bm, dm_block_t b,
 			  struct dm_block_validator *v,
 			  struct dm_block **result);
 
-int dm_bm_unlock(struct dm_block *b);
-
-/*
- * An optimisation; we often want to copy a block's contents to a new
- * block.  eg, as part of the shadowing operation.  It's far better for
- * bufio to do this move behind the scenes than hold 2 locks and memcpy the
- * data.
- */
-int dm_bm_unlock_move(struct dm_block *b, dm_block_t n);
+void dm_bm_unlock(struct dm_block *b);
 
 /*
  * It's a common idiom to have a superblock that should be committed last.
@@ -113,8 +105,27 @@ int dm_bm_unlock_move(struct dm_block *b, dm_block_t n);
  *
  * This method always blocks.
  */
-int dm_bm_flush_and_unlock(struct dm_block_manager *bm,
-			   struct dm_block *superblock);
+int dm_bm_flush(struct dm_block_manager *bm);
+
+/*
+ * Request data is prefetched into the cache.
+ */
+void dm_bm_prefetch(struct dm_block_manager *bm, dm_block_t b);
+
+/*
+ * Switches the bm to a read only mode.  Once read-only mode
+ * has been entered the following functions will return -EPERM.
+ *
+ *   dm_bm_write_lock
+ *   dm_bm_write_lock_zero
+ *   dm_bm_flush_and_unlock
+ *
+ * Additionally you should not use dm_bm_unlock_move, however no error will
+ * be returned if you do.
+ */
+bool dm_bm_is_read_only(struct dm_block_manager *bm);
+void dm_bm_set_read_only(struct dm_block_manager *bm);
+void dm_bm_set_read_write(struct dm_block_manager *bm);
 
 u32 dm_bm_checksum(const void *data, size_t len, u32 init_xor);
 

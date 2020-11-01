@@ -51,7 +51,7 @@
    #define _IPS_H_
 
 #include <linux/nmi.h>
-   #include <asm/uaccess.h>
+#include <linux/uaccess.h>
    #include <asm/io.h>
 
    /*
@@ -416,7 +416,6 @@
    /*
     * Scsi_Host Template
     */
-   static int ips_proc_info(struct Scsi_Host *, char *, char **, off_t, int, int);
    static int ips_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 		sector_t capacity, int geom[]);
    static int ips_slave_configure(struct scsi_device *SDptr);
@@ -959,14 +958,6 @@ typedef union {
    IPS_ENH_SG_LIST  *enh_list;
 } IPS_SG_LIST;
 
-typedef struct _IPS_INFOSTR {
-   char *buffer;
-   int   length;
-   int   offset;
-   int   pos;
-   int   localpos;
-} IPS_INFOSTR;
-
 typedef struct {
    char *option_name;
    int  *option_flag;
@@ -998,7 +989,7 @@ typedef struct ips_wait_queue {
 	struct scsi_cmnd *head;
 	struct scsi_cmnd *tail;
 	int count;
-} ips_wait_queue_t;
+} ips_wait_queue_entry_t;
 
 typedef struct ips_copp_wait_item {
 	struct scsi_cmnd *scsi_cmd;
@@ -1044,7 +1035,7 @@ typedef struct ips_ha {
    ips_stat_t         sp;                 /* Status packer pointer      */
    struct ips_scb    *scbs;               /* Array of all CCBS          */
    struct ips_scb    *scb_freelist;       /* SCB free list              */
-   ips_wait_queue_t   scb_waitlist;       /* Pending SCB list           */
+   ips_wait_queue_entry_t   scb_waitlist;       /* Pending SCB list           */
    ips_copp_queue_t   copp_waitlist;      /* Pending PT list            */
    ips_scb_queue_t    scb_activelist;     /* Active SCB list            */
    IPS_IO_CMD        *dummy;              /* dummy command              */

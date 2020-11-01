@@ -18,6 +18,7 @@
 #include <asm/unistd.h>
 #include <asm/asm-compat.h>
 #include <asm/asm-offsets.h>
+#include <asm/export.h>
 
 	.text
 
@@ -53,13 +54,6 @@ _GLOBAL(add_reloc_offset)
 
 	.align	3
 2:	PPC_LONG 1b
-
-_GLOBAL(kernel_execve)
-	li	r0,__NR_execve
-	sc
-	bnslr
-	neg	r3,r3
-	blr
 
 _GLOBAL(setjmp)
 	mflr	r0
@@ -121,3 +115,8 @@ _GLOBAL(longjmp)
 	mtlr	r0
 	mr	r3,r4
 	blr
+
+_GLOBAL(current_stack_pointer)
+	PPC_LL	r3,0(r1)
+	blr
+EXPORT_SYMBOL(current_stack_pointer)

@@ -28,7 +28,7 @@
 #include <linux/bcma/bcma.h>
 #include <bcm47xx.h>
 
-int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	return 0;
 }
@@ -91,7 +91,7 @@ static int bcm47xx_pcibios_plat_dev_init_bcma(struct pci_dev *dev)
 int pcibios_plat_dev_init(struct pci_dev *dev)
 {
 #ifdef CONFIG_BCM47XX_SSB
-	if (bcm47xx_bus_type ==  BCM47XX_BUS_TYPE_SSB)
+	if (bcm47xx_bus_type ==	 BCM47XX_BUS_TYPE_SSB)
 		return bcm47xx_pcibios_plat_dev_init_ssb(dev);
 	else
 #endif

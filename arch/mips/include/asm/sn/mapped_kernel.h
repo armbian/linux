@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * File created by Kanoj Sarcar 06/06/00.
  * Copyright 2000 Silicon Graphics, Inc.
@@ -48,7 +49,7 @@
 
 #endif /* CONFIG_MAPPED_KERNEL */
 
-#define MAPPED_KERN_RO_TO_K0(x)	PHYS_TO_K0(MAPPED_KERN_RO_TO_PHYS(x))
-#define MAPPED_KERN_RW_TO_K0(x)	PHYS_TO_K0(MAPPED_KERN_RW_TO_PHYS(x))
+#define MAPPED_KERN_RO_TO_K0(x) PHYS_TO_K0(MAPPED_KERN_RO_TO_PHYS(x))
+#define MAPPED_KERN_RW_TO_K0(x) PHYS_TO_K0(MAPPED_KERN_RW_TO_PHYS(x))
 
 #endif /* __ASM_SN_MAPPED_KERNEL_H  */

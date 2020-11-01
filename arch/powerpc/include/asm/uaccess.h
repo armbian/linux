@@ -1,17 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ARCH_POWERPC_UACCESS_H
 #define _ARCH_POWERPC_UACCESS_H
 
-#ifdef __KERNEL__
-#ifndef __ASSEMBLY__
-
-#include <linux/sched.h>
-#include <linux/errno.h>
 #include <asm/asm-compat.h>
+#include <asm/ppc_asm.h>
 #include <asm/processor.h>
 #include <asm/page.h>
-
-#define VERIFY_READ	0
-#define VERIFY_WRITE	1
+#include <asm/extable.h>
 
 /*
  * The fs value determines whether argument validity checking should be
@@ -40,6 +35,8 @@
 
 #define segment_eq(a, b)	((a).seg == (b).seg)
 
+#define user_addr_max()	(get_fs().seg)
+
 #ifdef __powerpc64__
 /*
  * This check is sufficient because there is a large enough
@@ -57,26 +54,8 @@
 #endif
 
 #define access_ok(type, addr, size)		\
-	(__chk_user_ptr(addr),			\
+	(__chk_user_ptr(addr), (void)(type),		\
 	 __access_ok((__force unsigned long)(addr), (size), get_fs()))
-
-/*
- * The exception table consists of pairs of addresses: the first is the
- * address of an instruction that is allowed to fault, and the second is
- * the address at which the program should continue.  No registers are
- * modified, so it is entirely up to the continuation code to figure out
- * what to do.
- *
- * All the routines below use bits of fixup code that are out of line
- * with the main instruction path.  This means when everything is well,
- * we don't even have to jump over them.  Further, they do not intrude
- * on our cache or tlb entries.
- */
-
-struct exception_table_entry {
-	unsigned long insn;
-	unsigned long fixup;
-};
 
 /*
  * These are the main single-value transfer routines.  They automatically
@@ -96,11 +75,6 @@ struct exception_table_entry {
  * PowerPC, we can just do these as direct assignments.  (Of course, the
  * exception handling means that it's no longer "just"...)
  *
- * The "user64" versions of the user access functions are versions that
- * allow access of 64-bit data. The "get_user" functions do not
- * properly handle 64-bit data because the value gets down cast to a long.
- * The "put_user" functions already handle 64-bit data properly but we add
- * "user64" versions for completeness
  */
 #define get_user(x, ptr) \
 	__get_user_check((x), (ptr), sizeof(*(ptr)))
@@ -112,19 +86,10 @@ struct exception_table_entry {
 #define __put_user(x, ptr) \
 	__put_user_nocheck((__typeof__(*(ptr)))(x), (ptr), sizeof(*(ptr)))
 
-#ifndef __powerpc64__
-#define __get_user64(x, ptr) \
-	__get_user64_nocheck((x), (ptr), sizeof(*(ptr)))
-#define __put_user64(x, ptr) __put_user(x, ptr)
-#endif
-
 #define __get_user_inatomic(x, ptr) \
 	__get_user_nosleep((x), (ptr), sizeof(*(ptr)))
 #define __put_user_inatomic(x, ptr) \
 	__put_user_nosleep((__typeof__(*(ptr)))(x), (ptr), sizeof(*(ptr)))
-
-#define __get_user_unaligned __get_user
-#define __put_user_unaligned __put_user
 
 extern long __put_user_bad(void);
 
@@ -141,10 +106,7 @@ extern long __put_user_bad(void);
 		"3:	li %0,%3\n"				\
 		"	b 2b\n"					\
 		".previous\n"					\
-		".section __ex_table,\"a\"\n"			\
-			PPC_LONG_ALIGN "\n"			\
-			PPC_LONG "1b,3b\n"			\
-		".previous"					\
+		EX_TABLE(1b, 3b)				\
 		: "=r" (err)					\
 		: "r" (x), "b" (addr), "i" (-EFAULT), "0" (err))
 
@@ -161,11 +123,8 @@ extern long __put_user_bad(void);
 		"4:	li %0,%3\n"				\
 		"	b 3b\n"					\
 		".previous\n"					\
-		".section __ex_table,\"a\"\n"			\
-			PPC_LONG_ALIGN "\n"			\
-			PPC_LONG "1b,4b\n"			\
-			PPC_LONG "2b,4b\n"			\
-		".previous"					\
+		EX_TABLE(1b, 4b)				\
+		EX_TABLE(2b, 4b)				\
 		: "=r" (err)					\
 		: "r" (x), "b" (addr), "i" (-EFAULT), "0" (err))
 #endif /* __powerpc64__ */
@@ -187,7 +146,7 @@ do {								\
 	long __pu_err;						\
 	__typeof__(*(ptr)) __user *__pu_addr = (ptr);		\
 	if (!is_kernel_addr((unsigned long)__pu_addr))		\
-		might_sleep();					\
+		might_fault();					\
 	__chk_user_ptr(ptr);					\
 	__put_user_size((x), __pu_addr, (size), __pu_err);	\
 	__pu_err;						\
@@ -197,7 +156,7 @@ do {								\
 ({									\
 	long __pu_err = -EFAULT;					\
 	__typeof__(*(ptr)) __user *__pu_addr = (ptr);			\
-	might_sleep();							\
+	might_fault();							\
 	if (access_ok(VERIFY_WRITE, __pu_addr, size))			\
 		__put_user_size((x), __pu_addr, (size), __pu_err);	\
 	__pu_err;							\
@@ -224,10 +183,7 @@ extern long __get_user_bad(void);
 		"	li %1,0\n"			\
 		"	b 2b\n"				\
 		".previous\n"				\
-		".section __ex_table,\"a\"\n"		\
-			PPC_LONG_ALIGN "\n"		\
-			PPC_LONG "1b,3b\n"		\
-		".previous"				\
+		EX_TABLE(1b, 3b)			\
 		: "=r" (err), "=r" (x)			\
 		: "b" (addr), "i" (-EFAULT), "0" (err))
 
@@ -246,11 +202,8 @@ extern long __get_user_bad(void);
 		"	li %1+1,0\n"			\
 		"	b 3b\n"				\
 		".previous\n"				\
-		".section __ex_table,\"a\"\n"		\
-			PPC_LONG_ALIGN "\n"		\
-			PPC_LONG "1b,4b\n"		\
-			PPC_LONG "2b,4b\n"		\
-		".previous"				\
+		EX_TABLE(1b, 4b)			\
+		EX_TABLE(2b, 4b)			\
 		: "=r" (err), "=&r" (x)			\
 		: "b" (addr), "i" (-EFAULT), "0" (err))
 #endif /* __powerpc64__ */
@@ -270,54 +223,50 @@ do {								\
 	}							\
 } while (0)
 
+/*
+ * This is a type: either unsigned long, if the argument fits into
+ * that type, or otherwise unsigned long long.
+ */
+#define __long_type(x) \
+	__typeof__(__builtin_choose_expr(sizeof(x) > sizeof(0UL), 0ULL, 0UL))
+
 #define __get_user_nocheck(x, ptr, size)			\
 ({								\
 	long __gu_err;						\
-	unsigned long __gu_val;					\
-	const __typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
+	__long_type(*(ptr)) __gu_val;				\
+	__typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
 	__chk_user_ptr(ptr);					\
 	if (!is_kernel_addr((unsigned long)__gu_addr))		\
-		might_sleep();					\
+		might_fault();					\
+	barrier_nospec();					\
 	__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
 	(x) = (__typeof__(*(ptr)))__gu_val;			\
 	__gu_err;						\
 })
-
-#ifndef __powerpc64__
-#define __get_user64_nocheck(x, ptr, size)			\
-({								\
-	long __gu_err;						\
-	long long __gu_val;					\
-	const __typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
-	__chk_user_ptr(ptr);					\
-	if (!is_kernel_addr((unsigned long)__gu_addr))		\
-		might_sleep();					\
-	__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
-	(x) = (__typeof__(*(ptr)))__gu_val;			\
-	__gu_err;						\
-})
-#endif /* __powerpc64__ */
 
 #define __get_user_check(x, ptr, size)					\
 ({									\
 	long __gu_err = -EFAULT;					\
-	unsigned long  __gu_val = 0;					\
-	const __typeof__(*(ptr)) __user *__gu_addr = (ptr);		\
-	might_sleep();							\
-	if (access_ok(VERIFY_READ, __gu_addr, (size)))			\
+	__long_type(*(ptr)) __gu_val = 0;				\
+	__typeof__(*(ptr)) __user *__gu_addr = (ptr);		\
+	might_fault();							\
+	if (access_ok(VERIFY_READ, __gu_addr, (size))) {		\
+		barrier_nospec();					\
 		__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
-	(x) = (__typeof__(*(ptr)))__gu_val;				\
+	}								\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;				\
 	__gu_err;							\
 })
 
 #define __get_user_nosleep(x, ptr, size)			\
 ({								\
 	long __gu_err;						\
-	unsigned long __gu_val;					\
-	const __typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
+	__long_type(*(ptr)) __gu_val;				\
+	__typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
 	__chk_user_ptr(ptr);					\
+	barrier_nospec();					\
 	__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
-	(x) = (__typeof__(*(ptr)))__gu_val;			\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
 	__gu_err;						\
 })
 
@@ -327,53 +276,16 @@ do {								\
 extern unsigned long __copy_tofrom_user(void __user *to,
 		const void __user *from, unsigned long size);
 
-#ifndef __powerpc64__
-
-static inline unsigned long copy_from_user(void *to,
-		const void __user *from, unsigned long n)
+#ifdef __powerpc64__
+static inline unsigned long
+raw_copy_in_user(void __user *to, const void __user *from, unsigned long n)
 {
-	unsigned long over;
-
-	if (access_ok(VERIFY_READ, from, n))
-		return __copy_tofrom_user((__force void __user *)to, from, n);
-	if ((unsigned long)from < TASK_SIZE) {
-		over = (unsigned long)from + n - TASK_SIZE;
-		return __copy_tofrom_user((__force void __user *)to, from,
-				n - over) + over;
-	}
-	return n;
+	barrier_nospec();
+	return __copy_tofrom_user(to, from, n);
 }
-
-static inline unsigned long copy_to_user(void __user *to,
-		const void *from, unsigned long n)
-{
-	unsigned long over;
-
-	if (access_ok(VERIFY_WRITE, to, n))
-		return __copy_tofrom_user(to, (__force void __user *)from, n);
-	if ((unsigned long)to < TASK_SIZE) {
-		over = (unsigned long)to + n - TASK_SIZE;
-		return __copy_tofrom_user(to, (__force void __user *)from,
-				n - over) + over;
-	}
-	return n;
-}
-
-#else /* __powerpc64__ */
-
-#define __copy_in_user(to, from, size) \
-	__copy_tofrom_user((to), (from), (size))
-
-extern unsigned long copy_from_user(void *to, const void __user *from,
-				    unsigned long n);
-extern unsigned long copy_to_user(void __user *to, const void *from,
-				  unsigned long n);
-extern unsigned long copy_in_user(void __user *to, const void __user *from,
-				  unsigned long n);
-
 #endif /* __powerpc64__ */
 
-static inline unsigned long __copy_from_user_inatomic(void *to,
+static inline unsigned long raw_copy_from_user(void *to,
 		const void __user *from, unsigned long n)
 {
 	if (__builtin_constant_p(n) && (n <= 8)) {
@@ -381,25 +293,31 @@ static inline unsigned long __copy_from_user_inatomic(void *to,
 
 		switch (n) {
 		case 1:
+			barrier_nospec();
 			__get_user_size(*(u8 *)to, from, 1, ret);
 			break;
 		case 2:
+			barrier_nospec();
 			__get_user_size(*(u16 *)to, from, 2, ret);
 			break;
 		case 4:
+			barrier_nospec();
 			__get_user_size(*(u32 *)to, from, 4, ret);
 			break;
 		case 8:
+			barrier_nospec();
 			__get_user_size(*(u64 *)to, from, 8, ret);
 			break;
 		}
 		if (ret == 0)
 			return 0;
 	}
+
+	barrier_nospec();
 	return __copy_tofrom_user((__force void __user *)to, from, n);
 }
 
-static inline unsigned long __copy_to_user_inatomic(void __user *to,
+static inline unsigned long raw_copy_to_user(void __user *to,
 		const void *from, unsigned long n)
 {
 	if (__builtin_constant_p(n) && (n <= 8)) {
@@ -422,75 +340,21 @@ static inline unsigned long __copy_to_user_inatomic(void __user *to,
 		if (ret == 0)
 			return 0;
 	}
+
 	return __copy_tofrom_user(to, (__force const void __user *)from, n);
-}
-
-static inline unsigned long __copy_from_user(void *to,
-		const void __user *from, unsigned long size)
-{
-	might_sleep();
-	return __copy_from_user_inatomic(to, from, size);
-}
-
-static inline unsigned long __copy_to_user(void __user *to,
-		const void *from, unsigned long size)
-{
-	might_sleep();
-	return __copy_to_user_inatomic(to, from, size);
 }
 
 extern unsigned long __clear_user(void __user *addr, unsigned long size);
 
 static inline unsigned long clear_user(void __user *addr, unsigned long size)
 {
-	might_sleep();
+	might_fault();
 	if (likely(access_ok(VERIFY_WRITE, addr, size)))
 		return __clear_user(addr, size);
-	if ((unsigned long)addr < TASK_SIZE) {
-		unsigned long over = (unsigned long)addr + size - TASK_SIZE;
-		return __clear_user(addr, size - over) + over;
-	}
 	return size;
 }
 
-extern int __strncpy_from_user(char *dst, const char __user *src, long count);
-
-static inline long strncpy_from_user(char *dst, const char __user *src,
-		long count)
-{
-	might_sleep();
-	if (likely(access_ok(VERIFY_READ, src, 1)))
-		return __strncpy_from_user(dst, src, count);
-	return -EFAULT;
-}
-
-/*
- * Return the size of a string (including the ending 0)
- *
- * Return 0 for error
- */
-extern int __strnlen_user(const char __user *str, long len, unsigned long top);
-
-/*
- * Returns the length of the string at str (including the null byte),
- * or 0 if we hit a page we can't access,
- * or something > len if we didn't find a null byte.
- *
- * The `top' parameter to __strnlen_user is to make sure that
- * we can never overflow from the user area into kernel space.
- */
-static inline int strnlen_user(const char __user *str, long len)
-{
-	unsigned long top = current->thread.fs.seg;
-
-	if ((unsigned long)str > top)
-		return 0;
-	return __strnlen_user(str, len, top);
-}
-
-#define strlen_user(str)	strnlen_user((str), 0x7ffffffe)
-
-#endif  /* __ASSEMBLY__ */
-#endif /* __KERNEL__ */
+extern long strncpy_from_user(char *dst, const char __user *src, long count);
+extern __must_check long strnlen_user(const char __user *str, long n);
 
 #endif	/* _ARCH_POWERPC_UACCESS_H */

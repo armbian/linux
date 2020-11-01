@@ -175,10 +175,9 @@ static int ptp_ixp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	return 0;
 }
 
-static int ptp_ixp_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
+static int ptp_ixp_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	u64 ns;
-	u32 remainder;
 	unsigned long flags;
 	struct ixp_clock *ixp_clock = container_of(ptp, struct ixp_clock, caps);
 	struct ixp46x_ts_regs *regs = ixp_clock->regs;
@@ -189,21 +188,19 @@ static int ptp_ixp_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
 
 	spin_unlock_irqrestore(&register_lock, flags);
 
-	ts->tv_sec = div_u64_rem(ns, 1000000000, &remainder);
-	ts->tv_nsec = remainder;
+	*ts = ns_to_timespec64(ns);
 	return 0;
 }
 
 static int ptp_ixp_settime(struct ptp_clock_info *ptp,
-			   const struct timespec *ts)
+			   const struct timespec64 *ts)
 {
 	u64 ns;
 	unsigned long flags;
 	struct ixp_clock *ixp_clock = container_of(ptp, struct ixp_clock, caps);
 	struct ixp46x_ts_regs *regs = ixp_clock->regs;
 
-	ns = ts->tv_sec * 1000000000ULL;
-	ns += ts->tv_nsec;
+	ns = timespec64_to_ns(ts);
 
 	spin_lock_irqsave(&register_lock, flags);
 
@@ -239,16 +236,17 @@ static int ptp_ixp_enable(struct ptp_clock_info *ptp,
 	return -EOPNOTSUPP;
 }
 
-static struct ptp_clock_info ptp_ixp_caps = {
+static const struct ptp_clock_info ptp_ixp_caps = {
 	.owner		= THIS_MODULE,
 	.name		= "IXP46X timer",
 	.max_adj	= 66666655,
 	.n_ext_ts	= N_EXT_TS,
+	.n_pins		= 0,
 	.pps		= 0,
 	.adjfreq	= ptp_ixp_adjfreq,
 	.adjtime	= ptp_ixp_adjtime,
-	.gettime	= ptp_ixp_gettime,
-	.settime	= ptp_ixp_settime,
+	.gettime64	= ptp_ixp_gettime,
+	.settime64	= ptp_ixp_settime,
 	.enable		= ptp_ixp_enable,
 };
 
@@ -259,22 +257,30 @@ static struct ixp_clock ixp_clock;
 static int setup_interrupt(int gpio)
 {
 	int irq;
+	int err;
 
-	gpio_line_config(gpio, IXP4XX_GPIO_IN);
+	err = gpio_request(gpio, "ixp4-ptp");
+	if (err)
+		return err;
+
+	err = gpio_direction_input(gpio);
+	if (err)
+		return err;
 
 	irq = gpio_to_irq(gpio);
+	if (irq < 0)
+		return irq;
 
-	if (NO_IRQ == irq)
-		return NO_IRQ;
-
-	if (irq_set_irq_type(irq, IRQF_TRIGGER_FALLING)) {
+	err = irq_set_irq_type(irq, IRQF_TRIGGER_FALLING);
+	if (err) {
 		pr_err("cannot set trigger type for irq %d\n", irq);
-		return NO_IRQ;
+		return err;
 	}
 
-	if (request_irq(irq, isr, 0, DRIVER, &ixp_clock)) {
+	err = request_irq(irq, isr, 0, DRIVER, &ixp_clock);
+	if (err) {
 		pr_err("request_irq failed for irq %d\n", irq);
-		return NO_IRQ;
+		return err;
 	}
 
 	return irq;
@@ -284,6 +290,7 @@ static void __exit ptp_ixp_exit(void)
 {
 	free_irq(MASTER_IRQ, &ixp_clock);
 	free_irq(SLAVE_IRQ, &ixp_clock);
+	ixp46x_phc_index = -1;
 	ptp_clock_unregister(ixp_clock.ptp_clock);
 }
 
@@ -297,10 +304,12 @@ static int __init ptp_ixp_init(void)
 
 	ixp_clock.caps = ptp_ixp_caps;
 
-	ixp_clock.ptp_clock = ptp_clock_register(&ixp_clock.caps);
+	ixp_clock.ptp_clock = ptp_clock_register(&ixp_clock.caps, NULL);
 
 	if (IS_ERR(ixp_clock.ptp_clock))
 		return PTR_ERR(ixp_clock.ptp_clock);
+
+	ixp46x_phc_index = ptp_clock_index(ixp_clock.ptp_clock);
 
 	__raw_writel(DEFAULT_ADDEND, &ixp_clock.regs->addend);
 	__raw_writel(1, &ixp_clock.regs->trgt_lo);

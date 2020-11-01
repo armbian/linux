@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PFXLEN_H
 #define _PFXLEN_H
 
@@ -40,5 +41,14 @@ do {						\
 	from &= ip_set_hostmask(cidr);		\
 	to = from | ~ip_set_hostmask(cidr);	\
 } while (0)
+
+static inline void
+ip6_netmask(union nf_inet_addr *ip, u8 prefix)
+{
+	ip->ip6[0] &= ip_set_netmask6(prefix)[0];
+	ip->ip6[1] &= ip_set_netmask6(prefix)[1];
+	ip->ip6[2] &= ip_set_netmask6(prefix)[2];
+	ip->ip6[3] &= ip_set_netmask6(prefix)[3];
+}
 
 #endif /*_PFXLEN_H */

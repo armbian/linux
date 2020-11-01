@@ -12,6 +12,7 @@
 #include <linux/utsname.h>
 #include <generated/utsrelease.h>
 #include <linux/version.h>
+#include <linux/proc_ns.h>
 
 #ifndef CONFIG_KALLSYMS
 #define version(a) Version_ ## a
@@ -22,9 +23,7 @@ int version_string(LINUX_VERSION_CODE);
 #endif
 
 struct uts_namespace init_uts_ns = {
-	.kref = {
-		.refcount	= ATOMIC_INIT(2),
-	},
+	.kref = KREF_INIT(2),
 	.name = {
 		.sysname	= UTS_SYSNAME,
 		.nodename	= UTS_NODENAME,
@@ -34,6 +33,10 @@ struct uts_namespace init_uts_ns = {
 		.domainname	= UTS_DOMAINNAME,
 	},
 	.user_ns = &init_user_ns,
+	.ns.inum = PROC_UTS_INIT_INO,
+#ifdef CONFIG_UTS_NS
+	.ns.ops = &utsns_operations,
+#endif
 };
 EXPORT_SYMBOL_GPL(init_uts_ns);
 

@@ -52,7 +52,7 @@ struct snd_seq_timer {
 	unsigned int skew;
 	unsigned int skew_base;
 
-	struct timeval 		last_update;	 /* time of last clock update, used for interpolation */
+	struct timespec64	last_update;	 /* time of last clock update, used for interpolation */
 
 	spinlock_t lock;
 };
@@ -135,7 +135,8 @@ int snd_seq_timer_set_ppq(struct snd_seq_timer *tmr, int ppq);
 int snd_seq_timer_set_position_tick(struct snd_seq_timer *tmr, snd_seq_tick_time_t position);
 int snd_seq_timer_set_position_time(struct snd_seq_timer *tmr, snd_seq_real_time_t position);
 int snd_seq_timer_set_skew(struct snd_seq_timer *tmr, unsigned int skew, unsigned int base);
-snd_seq_real_time_t snd_seq_timer_get_cur_time(struct snd_seq_timer *tmr);
+snd_seq_real_time_t snd_seq_timer_get_cur_time(struct snd_seq_timer *tmr,
+					       bool adjust_ktime);
 snd_seq_tick_time_t snd_seq_timer_get_cur_tick(struct snd_seq_timer *tmr);
 
 extern int seq_default_timer_class;

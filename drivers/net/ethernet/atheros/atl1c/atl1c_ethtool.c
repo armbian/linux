@@ -26,46 +26,52 @@
 
 #include "atl1c.h"
 
-static int atl1c_get_settings(struct net_device *netdev,
-			      struct ethtool_cmd *ecmd)
+static int atl1c_get_link_ksettings(struct net_device *netdev,
+				    struct ethtool_link_ksettings *cmd)
 {
 	struct atl1c_adapter *adapter = netdev_priv(netdev);
 	struct atl1c_hw *hw = &adapter->hw;
+	u32 supported, advertising;
 
-	ecmd->supported = (SUPPORTED_10baseT_Half  |
+	supported = (SUPPORTED_10baseT_Half  |
 			   SUPPORTED_10baseT_Full  |
 			   SUPPORTED_100baseT_Half |
 			   SUPPORTED_100baseT_Full |
 			   SUPPORTED_Autoneg       |
 			   SUPPORTED_TP);
 	if (hw->link_cap_flags & ATL1C_LINK_CAP_1000M)
-		ecmd->supported |= SUPPORTED_1000baseT_Full;
+		supported |= SUPPORTED_1000baseT_Full;
 
-	ecmd->advertising = ADVERTISED_TP;
+	advertising = ADVERTISED_TP;
 
-	ecmd->advertising |= hw->autoneg_advertised;
+	advertising |= hw->autoneg_advertised;
 
-	ecmd->port = PORT_TP;
-	ecmd->phy_address = 0;
-	ecmd->transceiver = XCVR_INTERNAL;
+	cmd->base.port = PORT_TP;
+	cmd->base.phy_address = 0;
 
 	if (adapter->link_speed != SPEED_0) {
-		ethtool_cmd_speed_set(ecmd, adapter->link_speed);
+		cmd->base.speed = adapter->link_speed;
 		if (adapter->link_duplex == FULL_DUPLEX)
-			ecmd->duplex = DUPLEX_FULL;
+			cmd->base.duplex = DUPLEX_FULL;
 		else
-			ecmd->duplex = DUPLEX_HALF;
+			cmd->base.duplex = DUPLEX_HALF;
 	} else {
-		ethtool_cmd_speed_set(ecmd, -1);
-		ecmd->duplex = -1;
+		cmd->base.speed = SPEED_UNKNOWN;
+		cmd->base.duplex = DUPLEX_UNKNOWN;
 	}
 
-	ecmd->autoneg = AUTONEG_ENABLE;
+	cmd->base.autoneg = AUTONEG_ENABLE;
+
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
+						supported);
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
+						advertising);
+
 	return 0;
 }
 
-static int atl1c_set_settings(struct net_device *netdev,
-			      struct ethtool_cmd *ecmd)
+static int atl1c_set_link_ksettings(struct net_device *netdev,
+				    const struct ethtool_link_ksettings *cmd)
 {
 	struct atl1c_adapter *adapter = netdev_priv(netdev);
 	struct atl1c_hw *hw = &adapter->hw;
@@ -74,12 +80,12 @@ static int atl1c_set_settings(struct net_device *netdev,
 	while (test_and_set_bit(__AT_RESETTING, &adapter->flags))
 		msleep(1);
 
-	if (ecmd->autoneg == AUTONEG_ENABLE) {
+	if (cmd->base.autoneg == AUTONEG_ENABLE) {
 		autoneg_advertised = ADVERTISED_Autoneg;
 	} else {
-		u32 speed = ethtool_cmd_speed(ecmd);
+		u32 speed = cmd->base.speed;
 		if (speed == SPEED_1000) {
-			if (ecmd->duplex != DUPLEX_FULL) {
+			if (cmd->base.duplex != DUPLEX_FULL) {
 				if (netif_msg_link(adapter))
 					dev_warn(&adapter->pdev->dev,
 						"1000M half is invalid\n");
@@ -88,12 +94,12 @@ static int atl1c_set_settings(struct net_device *netdev,
 			}
 			autoneg_advertised = ADVERTISED_1000baseT_Full;
 		} else if (speed == SPEED_100) {
-			if (ecmd->duplex == DUPLEX_FULL)
+			if (cmd->base.duplex == DUPLEX_FULL)
 				autoneg_advertised = ADVERTISED_100baseT_Full;
 			else
 				autoneg_advertised = ADVERTISED_100baseT_Half;
 		} else {
-			if (ecmd->duplex == DUPLEX_FULL)
+			if (cmd->base.duplex == DUPLEX_FULL)
 				autoneg_advertised = ADVERTISED_10baseT_Full;
 			else
 				autoneg_advertised = ADVERTISED_10baseT_Half;
@@ -141,8 +147,7 @@ static void atl1c_get_regs(struct net_device *netdev,
 
 	memset(p, 0, AT_REGS_LEN);
 
-	regs->version = 0;
-	AT_READ_REG(hw, REG_VPD_CAP, 		  p++);
+	regs->version = 1;
 	AT_READ_REG(hw, REG_PM_CTRL, 		  p++);
 	AT_READ_REG(hw, REG_MAC_HALF_DUPLX_CTRL,  p++);
 	AT_READ_REG(hw, REG_TWSI_CTRL, 		  p++);
@@ -154,7 +159,7 @@ static void atl1c_get_regs(struct net_device *netdev,
 	AT_READ_REG(hw, REG_LINK_CTRL, 		  p++);
 	AT_READ_REG(hw, REG_IDLE_STATUS, 	  p++);
 	AT_READ_REG(hw, REG_MDIO_CTRL, 		  p++);
-	AT_READ_REG(hw, REG_SERDES_LOCK, 	  p++);
+	AT_READ_REG(hw, REG_SERDES,		  p++);
 	AT_READ_REG(hw, REG_MAC_CTRL, 		  p++);
 	AT_READ_REG(hw, REG_MAC_IPG_IFG, 	  p++);
 	AT_READ_REG(hw, REG_MAC_STA_ADDR, 	  p++);
@@ -167,9 +172,9 @@ static void atl1c_get_regs(struct net_device *netdev,
 	AT_READ_REG(hw, REG_WOL_CTRL, 		  p++);
 
 	atl1c_read_phy_reg(hw, MII_BMCR, &phy_data);
-	regs_buff[73] =	(u32) phy_data;
+	regs_buff[AT_REGS_LEN/sizeof(u32) - 2] = (u32) phy_data;
 	atl1c_read_phy_reg(hw, MII_BMSR, &phy_data);
-	regs_buff[74] = (u32) phy_data;
+	regs_buff[AT_REGS_LEN/sizeof(u32) - 1] = (u32) phy_data;
 }
 
 static int atl1c_get_eeprom_len(struct net_device *netdev)
@@ -234,10 +239,6 @@ static void atl1c_get_drvinfo(struct net_device *netdev,
 		sizeof(drvinfo->version));
 	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev),
 		sizeof(drvinfo->bus_info));
-	drvinfo->n_stats = 0;
-	drvinfo->testinfo_len = 0;
-	drvinfo->regdump_len = atl1c_get_regs_len(netdev);
-	drvinfo->eedump_len = atl1c_get_eeprom_len(netdev);
 }
 
 static void atl1c_get_wol(struct net_device *netdev,
@@ -289,8 +290,6 @@ static int atl1c_nway_reset(struct net_device *netdev)
 }
 
 static const struct ethtool_ops atl1c_ethtool_ops = {
-	.get_settings           = atl1c_get_settings,
-	.set_settings           = atl1c_set_settings,
 	.get_drvinfo            = atl1c_get_drvinfo,
 	.get_regs_len           = atl1c_get_regs_len,
 	.get_regs               = atl1c_get_regs,
@@ -302,9 +301,11 @@ static const struct ethtool_ops atl1c_ethtool_ops = {
 	.get_link               = ethtool_op_get_link,
 	.get_eeprom_len         = atl1c_get_eeprom_len,
 	.get_eeprom             = atl1c_get_eeprom,
+	.get_link_ksettings     = atl1c_get_link_ksettings,
+	.set_link_ksettings     = atl1c_set_link_ksettings,
 };
 
 void atl1c_set_ethtool_ops(struct net_device *netdev)
 {
-	SET_ETHTOOL_OPS(netdev, &atl1c_ethtool_ops);
+	netdev->ethtool_ops = &atl1c_ethtool_ops;
 }

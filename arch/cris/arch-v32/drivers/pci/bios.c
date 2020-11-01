@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/pci.h>
 #include <linux/kernel.h>
-#include <arch/hwregs/intr_vect.h>
-
-void __devinit  pcibios_fixup_bus(struct pci_bus *b)
-{
-}
-
-char * __devinit  pcibios_setup(char *str)
-{
-	return NULL;
-}
+#include <hwregs/intr_vect.h>
 
 void pcibios_set_master(struct pci_dev *dev)
 {
@@ -17,28 +9,6 @@ void pcibios_set_master(struct pci_dev *dev)
 	pci_read_config_byte(dev, PCI_LATENCY_TIMER, &lat);
 	printk(KERN_DEBUG "PCI: Setting latency timer of device %s to %d\n", pci_name(dev), lat);
 	pci_write_config_byte(dev, PCI_LATENCY_TIMER, lat);
-}
-
-int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
-			enum pci_mmap_state mmap_state, int write_combine)
-{
-	unsigned long prot;
-
-	/* Leave vm_pgoff as-is, the PCI space address is the physical
-	 * address on this platform.
-	 */
-	prot = pgprot_val(vma->vm_page_prot);
-	vma->vm_page_prot = __pgprot(prot);
-
-	/* Write-combine setting is ignored, it is changed via the mtrr
-	 * interfaces on this platform.
-	 */
-	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
-			     vma->vm_end - vma->vm_start,
-			     vma->vm_page_prot))
-		return -EAGAIN;
-
-	return 0;
 }
 
 resource_size_t
@@ -102,28 +72,3 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 		pcibios_enable_irq(dev);
 	return 0;
 }
-
-int pcibios_assign_resources(void)
-{
-	struct pci_dev *dev = NULL;
-	int idx;
-	struct resource *r;
-
-	while ((dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL) {
-		int class = dev->class >> 8;
-
-		/* Don't touch classless devices and host bridges */
-		if (!class || class == PCI_CLASS_BRIDGE_HOST)
-			continue;
-
-		for(idx=0; idx<6; idx++) {
-			r = &dev->resource[idx];
-
-			if (!r->start && r->end)
-				pci_assign_resource(dev, idx);
-		}
-	}
-	return 0;
-}
-
-EXPORT_SYMBOL(pcibios_assign_resources);

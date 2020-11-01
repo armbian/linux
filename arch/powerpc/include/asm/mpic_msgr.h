@@ -14,6 +14,7 @@
 #include <linux/types.h>
 #include <linux/spinlock.h>
 #include <asm/smp.h>
+#include <asm/io.h>
 
 struct mpic_msgr {
 	u32 __iomem *base;
@@ -121,9 +122,9 @@ static inline void mpic_msgr_set_destination(struct mpic_msgr *msgr,
  * @msgr:	the message register whose IRQ is to be returned
  *
  * Returns the IRQ number associated with the given message register.
- * NO_IRQ is returned if this message register is not capable of
- * receiving interrupts.  What message register can and cannot receive
- * interrupts is specified in the device tree for the system.
+ * 0 is returned if this message register is not capable of receiving
+ * interrupts.  What message register can and cannot receive interrupts is
+ * specified in the device tree for the system.
  */
 static inline int mpic_msgr_get_irq(struct mpic_msgr *msgr)
 {

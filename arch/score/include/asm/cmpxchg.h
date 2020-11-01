@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_SCORE_CMPXCHG_H
 #define _ASM_SCORE_CMPXCHG_H
 
@@ -41,8 +42,6 @@ static inline unsigned long __cmpxchg(volatile unsigned long *m,
 	((__typeof__(*(ptr))) __cmpxchg((unsigned long *)(ptr),	\
 					(unsigned long)(o),	\
 					(unsigned long)(n)))
-
-#define __HAVE_ARCH_CMPXCHG	1
 
 #include <asm-generic/cmpxchg-local.h>
 

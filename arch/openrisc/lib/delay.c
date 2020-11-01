@@ -16,13 +16,14 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/init.h>
+#include <asm/param.h>
 #include <asm/delay.h>
 #include <asm/timex.h>
 #include <asm/processor.h>
 
-int __devinit read_current_timer(unsigned long *timer_value)
+int read_current_timer(unsigned long *timer_value)
 {
 	*timer_value = mfspr(SPR_TTCR);
 	return 0;
@@ -30,9 +31,9 @@ int __devinit read_current_timer(unsigned long *timer_value)
 
 void __delay(unsigned long cycles)
 {
-	cycles_t target = get_cycles() + cycles;
+	cycles_t start = get_cycles();
 
-	while (get_cycles() < target)
+	while ((get_cycles() - start) < cycles)
 		cpu_relax();
 }
 EXPORT_SYMBOL(__delay);
@@ -41,7 +42,7 @@ inline void __const_udelay(unsigned long xloops)
 {
 	unsigned long long loops;
 
-	loops = xloops * loops_per_jiffy * HZ;
+	loops = (unsigned long long)xloops * loops_per_jiffy * HZ;
 
 	__delay(loops >> 32);
 }

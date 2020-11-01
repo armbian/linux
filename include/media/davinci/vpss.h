@@ -11,10 +11,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  * vpss - video processing subsystem module header file.
  *
  * Include this header file if a driver needs to configure vpss system
@@ -105,4 +101,20 @@ enum vpss_wbl_sel {
 };
 /* clear wbl overflow flag for DM6446 */
 int vpss_clear_wbl_overflow(enum vpss_wbl_sel wbl_sel);
+
+/* set sync polarity*/
+void vpss_set_sync_pol(struct vpss_sync_pol sync);
+/* set the PG_FRAME_SIZE register */
+void vpss_set_pg_frame_size(struct vpss_pg_frame_size frame_size);
+/*
+ * vpss_check_and_clear_interrupt - check and clear interrupt
+ * @irq - common enumerator for IRQ
+ *
+ * Following return values used:-
+ * 0 - interrupt occurred and cleared
+ * 1 - interrupt not occurred
+ * 2 - interrupt status not available
+ */
+int vpss_dma_complete_interrupt(void);
+
 #endif

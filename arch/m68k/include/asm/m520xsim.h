@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /****************************************************************************/
 
 /*
@@ -42,11 +43,15 @@
 #define MCFINTC1_SIMR       (0)
 #define MCFINTC1_CIMR       (0)
 #define	MCFINTC1_ICR0       (0)
+#define MCFINTC2_SIMR       (0)
+#define MCFINTC2_CIMR       (0)
+#define MCFINTC2_ICR0       (0)
 
 #define MCFINT_VECBASE      64
 #define MCFINT_UART0        26          /* Interrupt number for UART0 */
 #define MCFINT_UART1        27          /* Interrupt number for UART1 */
 #define MCFINT_UART2        28          /* Interrupt number for UART2 */
+#define MCFINT_I2C0         30          /* Interrupt number for I2C */
 #define MCFINT_QSPI         31          /* Interrupt number for QSPI */
 #define MCFINT_FECRX0	    36		/* Interrupt number for FEC RX */
 #define MCFINT_FECTX0	    40		/* Interrupt number for FEC RX */
@@ -62,7 +67,9 @@
 #define MCF_IRQ_FECENTC0    (MCFINT_VECBASE + MCFINT_FECENTC0)
 
 #define	MCF_IRQ_QSPI	    (MCFINT_VECBASE + MCFINT_QSPI)
+#define MCF_IRQ_PIT1        (MCFINT_VECBASE + MCFINT_PIT1)
 
+#define MCF_IRQ_I2C0        (MCFINT_VECBASE + MCFINT_I2C0)
 /*
  *  SDRAM configuration registers.
  */
@@ -185,6 +192,22 @@
 
 #define	MCF_RCR_SWRESET		0x80		/* Software reset bit */
 #define	MCF_RCR_FRCSTOUT	0x40		/* Force external reset */
+
+/*
+ *  Power Management.
+ */
+#define MCFPM_WCR		0xfc040013
+#define MCFPM_PPMSR0		0xfc04002c
+#define MCFPM_PPMCR0		0xfc04002d
+#define MCFPM_PPMHR0		0xfc040030
+#define MCFPM_PPMLR0		0xfc040034
+#define MCFPM_LPCR		0xfc0a0007
+
+/*
+ * I2C module.
+ */
+#define MCFI2C_BASE0		0xFC058000
+#define MCFI2C_SIZE0		0x40
 
 /****************************************************************************/
 #endif  /* m520xsim_h */

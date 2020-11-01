@@ -61,7 +61,7 @@ static void set_filterQ(struct snd_emu10k1 *hw, struct snd_emux_voice *vp);
 /*
  * set up operators
  */
-static struct snd_emux_operators emu10k1_ops = {
+static const struct snd_emux_operators emu10k1_ops = {
 	.owner =	THIS_MODULE,
 	.get_voice =	get_voice,
 	.prepare =	start_voice,
@@ -105,7 +105,7 @@ snd_emu10k1_synth_get_voice(struct snd_emu10k1 *hw)
 			vp = &emu->voices[best[i].voice];
 			if ((ch = vp->ch) < 0) {
 				/*
-				printk(KERN_WARNING
+				dev_warn(emu->card->dev,
 				       "synth_get_voice: ch < 0 (%d) ??", i);
 				*/
 				continue;
@@ -226,7 +226,7 @@ lookup_voices(struct snd_emux *emu, struct snd_emu10k1 *hw,
 	int  i;
 
 	for (i = 0; i < V_END; i++) {
-		best[i].time = (unsigned int)-1; /* XXX MAX_?INT really */;
+		best[i].time = (unsigned int)-1; /* XXX MAX_?INT really */
 		best[i].voice = -1;
 	}
 
@@ -337,7 +337,7 @@ start_voice(struct snd_emux_voice *vp)
 		return -EINVAL;
 	emem->map_locked++;
 	if (snd_emu10k1_memblk_map(hw, emem) < 0) {
-		/* printk(KERN_ERR "emu: cannot map!\n"); */
+		/* dev_err(hw->card->devK, "emu: cannot map!\n"); */
 		return -ENOMEM;
 	}
 	mapped_offset = snd_emu10k1_memblk_offset(emem) >> 1;

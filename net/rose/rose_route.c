@@ -25,13 +25,12 @@
 #include <linux/skbuff.h>
 #include <net/sock.h>
 #include <net/tcp_states.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/fcntl.h>
 #include <linux/termios.h>	/* For TIOCINQ/OUTQ */
 #include <linux/mm.h>
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
-#include <linux/netfilter.h>
 #include <linux/init.h>
 #include <net/rose.h>
 #include <linux/seq_file.h>
@@ -105,8 +104,8 @@ static int __must_check rose_add_node(struct rose_route_struct *rose_route,
 
 		skb_queue_head_init(&rose_neigh->queue);
 
-		init_timer(&rose_neigh->ftimer);
-		init_timer(&rose_neigh->t0timer);
+		timer_setup(&rose_neigh->ftimer, NULL, 0);
+		timer_setup(&rose_neigh->t0timer, NULL, 0);
 
 		if (rose_route->ndigis != 0) {
 			rose_neigh->digipeat =
@@ -391,8 +390,8 @@ void rose_add_loopback_neigh(void)
 
 	skb_queue_head_init(&sn->queue);
 
-	init_timer(&sn->ftimer);
-	init_timer(&sn->t0timer);
+	timer_setup(&sn->ftimer, NULL, 0);
+	timer_setup(&sn->t0timer, NULL, 0);
 
 	spin_lock_bh(&rose_neigh_list_lock);
 	sn->next = rose_neigh_list;
@@ -849,6 +848,7 @@ void rose_link_device_down(struct net_device *dev)
 
 /*
  *	Route a frame to an appropriate AX.25 connection.
+ *	A NULL ax25_cb indicates an internally generated frame.
  */
 int rose_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 {
@@ -866,6 +866,10 @@ int rose_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 
 	if (skb->len < ROSE_MIN_LEN)
 		return res;
+
+	if (!ax25)
+		return rose_loopback_queue(skb, NULL);
+
 	frametype = skb->data[2];
 	lci = ((skb->data[0] << 8) & 0xF00) + ((skb->data[1] << 0) & 0x0FF);
 	if (frametype == ROSE_CALL_REQUEST &&

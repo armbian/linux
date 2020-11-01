@@ -24,7 +24,7 @@
 #include <linux/slab.h>
 #include <asm/io.h>
 #include <linux/init.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/netdevice.h>
 #include <linux/isdn/capilli.h>
 #include "avmcard.h"
@@ -423,7 +423,7 @@ void b1_parse_version(avmctrl_info *cinfo)
 	int i, j;
 
 	for (j = 0; j < AVM_MAXVERSION; j++)
-		cinfo->version[j] = "\0\0" + 1;
+		cinfo->version[j] = "";
 	for (i = 0, j = 0;
 	     j < AVM_MAXVERSION && i < cinfo->versionlen;
 	     j++, i += cinfo->versionbuf[i] + 1)
@@ -529,8 +529,8 @@ irqreturn_t b1_interrupt(int interrupt, void *devptr)
 			printk(KERN_ERR "%s: incoming packet dropped\n",
 			       card->name);
 		} else {
-			memcpy(skb_put(skb, MsgLen), card->msgbuf, MsgLen);
-			memcpy(skb_put(skb, DataB3Len), card->databuf, DataB3Len);
+			skb_put_data(skb, card->msgbuf, MsgLen);
+			skb_put_data(skb, card->databuf, DataB3Len);
 			capi_ctr_handle_message(ctrl, ApplId, skb);
 		}
 		break;
@@ -544,7 +544,7 @@ irqreturn_t b1_interrupt(int interrupt, void *devptr)
 			       card->name);
 			spin_unlock_irqrestore(&card->lock, flags);
 		} else {
-			memcpy(skb_put(skb, MsgLen), card->msgbuf, MsgLen);
+			skb_put_data(skb, card->msgbuf, MsgLen);
 			if (CAPIMSG_CMD(skb->data) == CAPI_DATA_B3_CONF)
 				capilib_data_b3_conf(&cinfo->ncci_head, ApplId,
 						     CAPIMSG_NCCI(skb->data),
@@ -702,7 +702,7 @@ static int b1ctl_proc_show(struct seq_file *m, void *v)
 
 static int b1ctl_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, b1ctl_proc_show, PDE(inode)->data);
+	return single_open(file, b1ctl_proc_show, PDE_DATA(inode));
 }
 
 const struct file_operations b1ctl_proc_fops = {

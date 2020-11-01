@@ -1,6 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  include/asm-s390/shmparam.h
- *
  *  S390 version
  *
  *  Derived from "include/asm-i386/shmparam.h"

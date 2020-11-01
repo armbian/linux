@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Dynamic DMA mapping support.
  */
@@ -32,16 +33,6 @@ int force_iommu __read_mostly;
 #endif
 
 int iommu_pass_through;
-int iommu_group_mf;
-
-/* Dummy device used for NULL arguments (normally ISA). Better would
-   be probably a smaller DMA mask, but this is bug-to-bug compatible
-   to i386. */
-struct device fallback_dev = {
-	.init_name = "fallback device",
-	.coherent_dma_mask = DMA_BIT_MASK(32),
-	.dma_mask = &fallback_dev.coherent_dma_mask,
-};
 
 extern struct dma_map_ops intel_dma_ops;
 
@@ -100,11 +91,11 @@ void __init pci_iommu_alloc(void)
 {
 	dma_ops = &intel_dma_ops;
 
-	dma_ops->sync_single_for_cpu = machvec_dma_sync_single;
-	dma_ops->sync_sg_for_cpu = machvec_dma_sync_sg;
-	dma_ops->sync_single_for_device = machvec_dma_sync_single;
-	dma_ops->sync_sg_for_device = machvec_dma_sync_sg;
-	dma_ops->dma_supported = iommu_dma_supported;
+	intel_dma_ops.sync_single_for_cpu = machvec_dma_sync_single;
+	intel_dma_ops.sync_sg_for_cpu = machvec_dma_sync_sg;
+	intel_dma_ops.sync_single_for_device = machvec_dma_sync_single;
+	intel_dma_ops.sync_sg_for_device = machvec_dma_sync_sg;
+	intel_dma_ops.dma_supported = iommu_dma_supported;
 
 	/*
 	 * The order of these functions is important for

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_M32R_BITOPS_H
 #define _ASM_M32R_BITOPS_H
 
@@ -21,6 +22,7 @@
 #include <asm/byteorder.h>
 #include <asm/dcache_clear.h>
 #include <asm/types.h>
+#include <asm/barrier.h>
 
 /*
  * These have to be done with inline assembly: that way the bit-setting
@@ -73,7 +75,7 @@ static __inline__ void set_bit(int nr, volatile void * addr)
  *
  * clear_bit() is atomic and may not be reordered.  However, it does
  * not contain a memory barrier, so if it is used for locking purposes,
- * you should call smp_mb__before_clear_bit() and/or smp_mb__after_clear_bit()
+ * you should call smp_mb__before_atomic() and/or smp_mb__after_atomic()
  * in order to ensure changes are visible on other processors.
  */
 static __inline__ void clear_bit(int nr, volatile void * addr)
@@ -102,9 +104,6 @@ static __inline__ void clear_bit(int nr, volatile void * addr)
 	);
 	local_irq_restore(flags);
 }
-
-#define smp_mb__before_clear_bit()	barrier()
-#define smp_mb__after_clear_bit()	barrier()
 
 /**
  * change_bit - Toggle a bit in memory

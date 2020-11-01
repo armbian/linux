@@ -17,11 +17,12 @@
 #include <linux/device.h>
 #include <linux/serial.h>
 #include <linux/tty.h>
-#include <linux/export.h>
+#include <linux/module.h>
+#include <linux/spinlock.h>
 
 struct ttyprintk_port {
 	struct tty_port port;
-	struct mutex port_write_mutex;
+	spinlock_t spinlock;
 };
 
 static struct ttyprintk_port tpk_port;
@@ -31,60 +32,53 @@ static struct ttyprintk_port tpk_port;
  * printk messages (also suitable for logging service):
  * - any cr is replaced by nl
  * - adds a ttyprintk source tag in front of each line
- * - too long message is fragmeted, with '\'nl between fragments
- * - TPK_STR_SIZE isn't really the write_room limiting factor, bcause
+ * - too long message is fragmented, with '\'nl between fragments
+ * - TPK_STR_SIZE isn't really the write_room limiting factor, because
  *   it is emptied on the fly during preformatting.
  */
 #define TPK_STR_SIZE 508 /* should be bigger then max expected line length */
 #define TPK_MAX_ROOM 4096 /* we could assume 4K for instance */
-static const char *tpk_tag = "[U] "; /* U for User */
 static int tpk_curr;
+
+static char tpk_buffer[TPK_STR_SIZE + 4];
+
+static void tpk_flush(void)
+{
+	if (tpk_curr > 0) {
+		tpk_buffer[tpk_curr] = '\0';
+		pr_info("[U] %s\n", tpk_buffer);
+		tpk_curr = 0;
+	}
+}
 
 static int tpk_printk(const unsigned char *buf, int count)
 {
-	static char tmp[TPK_STR_SIZE + 4];
 	int i = tpk_curr;
 
 	if (buf == NULL) {
-		/* flush tmp[] */
-		if (tpk_curr > 0) {
-			/* non nl or cr terminated message - add nl */
-			tmp[tpk_curr + 0] = '\n';
-			tmp[tpk_curr + 1] = '\0';
-			printk(KERN_INFO "%s%s", tpk_tag, tmp);
-			tpk_curr = 0;
-		}
+		tpk_flush();
 		return i;
 	}
 
 	for (i = 0; i < count; i++) {
-		tmp[tpk_curr] = buf[i];
-		if (tpk_curr < TPK_STR_SIZE) {
-			switch (buf[i]) {
-			case '\r':
-				/* replace cr with nl */
-				tmp[tpk_curr + 0] = '\n';
-				tmp[tpk_curr + 1] = '\0';
-				printk(KERN_INFO "%s%s", tpk_tag, tmp);
-				tpk_curr = 0;
-				if ((i + 1) < count && buf[i + 1] == '\n')
-					i++;
-				break;
-			case '\n':
-				tmp[tpk_curr + 1] = '\0';
-				printk(KERN_INFO "%s%s", tpk_tag, tmp);
-				tpk_curr = 0;
-				break;
-			default:
-				tpk_curr++;
-			}
-		} else {
+		if (tpk_curr >= TPK_STR_SIZE) {
 			/* end of tmp buffer reached: cut the message in two */
-			tmp[tpk_curr + 1] = '\\';
-			tmp[tpk_curr + 2] = '\n';
-			tmp[tpk_curr + 3] = '\0';
-			printk(KERN_INFO "%s%s", tpk_tag, tmp);
-			tpk_curr = 0;
+			tpk_buffer[tpk_curr++] = '\\';
+			tpk_flush();
+		}
+
+		switch (buf[i]) {
+		case '\r':
+			tpk_flush();
+			if ((i + 1) < count && buf[i + 1] == '\n')
+				i++;
+			break;
+		case '\n':
+			tpk_flush();
+			break;
+		default:
+			tpk_buffer[tpk_curr++] = buf[i];
+			break;
 		}
 	}
 
@@ -107,11 +101,12 @@ static int tpk_open(struct tty_struct *tty, struct file *filp)
 static void tpk_close(struct tty_struct *tty, struct file *filp)
 {
 	struct ttyprintk_port *tpkp = tty->driver_data;
+	unsigned long flags;
 
-	mutex_lock(&tpkp->port_write_mutex);
+	spin_lock_irqsave(&tpkp->spinlock, flags);
 	/* flush tpk_printk buffer */
 	tpk_printk(NULL, 0);
-	mutex_unlock(&tpkp->port_write_mutex);
+	spin_unlock_irqrestore(&tpkp->spinlock, flags);
 
 	tty_port_close(&tpkp->port, tty, filp);
 }
@@ -123,13 +118,14 @@ static int tpk_write(struct tty_struct *tty,
 		const unsigned char *buf, int count)
 {
 	struct ttyprintk_port *tpkp = tty->driver_data;
+	unsigned long flags;
 	int ret;
 
 
 	/* exclusive use of tpk_printk within this tty */
-	mutex_lock(&tpkp->port_write_mutex);
+	spin_lock_irqsave(&tpkp->spinlock, flags);
 	ret = tpk_printk(buf, count);
-	mutex_unlock(&tpkp->port_write_mutex);
+	spin_unlock_irqrestore(&tpkp->spinlock, flags);
 
 	return ret;
 }
@@ -171,18 +167,25 @@ static const struct tty_operations ttyprintk_ops = {
 	.ioctl = tpk_ioctl,
 };
 
-static struct tty_port_operations null_ops = { };
+static const struct tty_port_operations null_ops = { };
 
 static struct tty_driver *ttyprintk_driver;
 
 static int __init ttyprintk_init(void)
 {
 	int ret = -ENOMEM;
-	void *rp;
 
-	ttyprintk_driver = alloc_tty_driver(1);
-	if (!ttyprintk_driver)
-		return ret;
+	spin_lock_init(&tpk_port.spinlock);
+
+	ttyprintk_driver = tty_alloc_driver(1,
+			TTY_DRIVER_RESET_TERMIOS |
+			TTY_DRIVER_REAL_RAW |
+			TTY_DRIVER_UNNUMBERED_NODE);
+	if (IS_ERR(ttyprintk_driver))
+		return PTR_ERR(ttyprintk_driver);
+
+	tty_port_init(&tpk_port.port);
+	tpk_port.port.ops = &null_ops;
 
 	ttyprintk_driver->driver_name = "ttyprintk";
 	ttyprintk_driver->name = "ttyprintk";
@@ -191,9 +194,8 @@ static int __init ttyprintk_init(void)
 	ttyprintk_driver->type = TTY_DRIVER_TYPE_CONSOLE;
 	ttyprintk_driver->init_termios = tty_std_termios;
 	ttyprintk_driver->init_termios.c_oflag = OPOST | OCRNL | ONOCR | ONLRET;
-	ttyprintk_driver->flags = TTY_DRIVER_RESET_TERMIOS |
-		TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
 	tty_set_operations(ttyprintk_driver, &ttyprintk_ops);
+	tty_port_link_device(&tpk_port.port, ttyprintk_driver, 0);
 
 	ret = tty_register_driver(ttyprintk_driver);
 	if (ret < 0) {
@@ -201,24 +203,22 @@ static int __init ttyprintk_init(void)
 		goto error;
 	}
 
-	/* create our unnumbered device */
-	rp = device_create(tty_class, NULL, MKDEV(TTYAUX_MAJOR, 3), NULL,
-				ttyprintk_driver->name);
-	if (IS_ERR(rp)) {
-		printk(KERN_ERR "Couldn't create ttyprintk device\n");
-		ret = PTR_ERR(rp);
-		goto error;
-	}
-
-	tty_port_init(&tpk_port.port);
-	tpk_port.port.ops = &null_ops;
-	mutex_init(&tpk_port.port_write_mutex);
-
 	return 0;
 
 error:
 	put_tty_driver(ttyprintk_driver);
-	ttyprintk_driver = NULL;
+	tty_port_destroy(&tpk_port.port);
 	return ret;
 }
-module_init(ttyprintk_init);
+
+static void __exit ttyprintk_exit(void)
+{
+	tty_unregister_driver(ttyprintk_driver);
+	put_tty_driver(ttyprintk_driver);
+	tty_port_destroy(&tpk_port.port);
+}
+
+device_initcall(ttyprintk_init);
+module_exit(ttyprintk_exit);
+
+MODULE_LICENSE("GPL");

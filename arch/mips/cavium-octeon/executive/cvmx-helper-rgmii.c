@@ -33,8 +33,6 @@
 
 #include <asm/octeon/cvmx-config.h>
 
-
-#include <asm/octeon/cvmx-mdio.h>
 #include <asm/octeon/cvmx-pko.h>
 #include <asm/octeon/cvmx-helper.h>
 #include <asm/octeon/cvmx-helper-board.h>
@@ -131,7 +129,7 @@ void cvmx_helper_rgmii_internal_loopback(int port)
  * @interface: Interface to setup
  * @port:      Port to setup (0..3)
  * @cpu_clock_hz:
- *                  Chip frequency in Hertz
+ *		    Chip frequency in Hertz
  *
  * Returns Zero on success, negative on failure
  */
@@ -154,7 +152,7 @@ static int __cvmx_helper_errata_asx_pass1(int interface, int port,
 }
 
 /**
- * Configure all of the ASX, GMX, and PKO regsiters required
+ * Configure all of the ASX, GMX, and PKO registers required
  * to get RGMII to function on the supplied interface.
  *
  * @interface: PKO Interface to configure (0 or 1)
@@ -243,8 +241,7 @@ int __cvmx_helper_rgmii_enable(int interface)
 	/* enable the ports now */
 	for (port = 0; port < num_ports; port++) {
 		union cvmx_gmxx_prtx_cfg gmx_cfg;
-		cvmx_helper_link_autoconf(cvmx_helper_get_ipd_port
-					  (interface, port));
+
 		gmx_cfg.u64 =
 		    cvmx_read_csr(CVMX_GMXX_PRTX_CFG(port, interface));
 		gmx_cfg.s.en = 1;
@@ -290,8 +287,7 @@ cvmx_helper_link_info_t __cvmx_helper_rgmii_link_get(int ipd_port)
  * Configure an IPD/PKO port for the specified link state. This
  * function does not influence auto negotiation at the PHY level.
  * The passed link state must always match the link state returned
- * by cvmx_helper_link_get(). It is normally best to use
- * cvmx_helper_link_autoconf() instead.
+ * by cvmx_helper_link_get().
  *
  * @ipd_port:  IPD/PKO port to configure
  * @link_info: The new link state
@@ -409,14 +405,14 @@ int __cvmx_helper_rgmii_link_set(int ipd_port,
 			mode.u64 = cvmx_read_csr(CVMX_GMXX_INF_MODE(interface));
 
 	/*
-	 * Port  .en  .type  .p0mii  Configuration
-	 * ----  ---  -----  ------  -----------------------------------------
-	 *  X      0     X      X    All links are disabled.
-	 *  0      1     X      0    Port 0 is RGMII
-	 *  0      1     X      1    Port 0 is MII
-	 *  1      1     0      X    Ports 1 and 2 are configured as RGMII ports.
-	 *  1      1     1      X    Port 1: GMII/MII; Port 2: disabled. GMII or
-	 *                           MII port is selected by GMX_PRT1_CFG[SPEED].
+	 * Port	 .en  .type  .p0mii  Configuration
+	 * ----	 ---  -----  ------  -----------------------------------------
+	 *  X	   0	 X	X    All links are disabled.
+	 *  0	   1	 X	0    Port 0 is RGMII
+	 *  0	   1	 X	1    Port 0 is MII
+	 *  1	   1	 0	X    Ports 1 and 2 are configured as RGMII ports.
+	 *  1	   1	 1	X    Port 1: GMII/MII; Port 2: disabled. GMII or
+	 *			     MII port is selected by GMX_PRT1_CFG[SPEED].
 	 */
 
 			/* In MII mode, CLK_CNT = 1. */
@@ -464,9 +460,9 @@ int __cvmx_helper_rgmii_link_set(int ipd_port,
  *
  * @ipd_port: IPD/PKO port to loopback.
  * @enable_internal:
- *                 Non zero if you want internal loopback
+ *		   Non zero if you want internal loopback
  * @enable_external:
- *                 Non zero if you want external loopback
+ *		   Non zero if you want external loopback
  *
  * Returns Zero on success, negative on failure.
  */

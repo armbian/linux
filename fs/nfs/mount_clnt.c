@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * In-kernel MOUNT protocol client
  *
@@ -16,9 +17,7 @@
 #include <linux/nfs_fs.h>
 #include "internal.h"
 
-#ifdef NFS_DEBUG
-# define NFSDBG_FACILITY	NFSDBG_MOUNT
-#endif
+#define NFSDBG_FACILITY	NFSDBG_MOUNT
 
 /*
  * Defined by RFC 1094, section A.3; and RFC 1813, section 5.1.4
@@ -139,7 +138,10 @@ struct mnt_fhstatus {
  * nfs_mount - Obtain an NFS file handle for the given host and path
  * @info: pointer to mount request arguments
  *
- * Uses default timeout parameters specified by underlying transport.
+ * Uses default timeout parameters specified by underlying transport. On
+ * successful return, the auth_flavs list and auth_flav_len will be populated
+ * with the list from the server or a faked-up list if the server didn't
+ * provide one.
  */
 int nfs_mount(struct nfs_mount_request *info)
 {
@@ -169,6 +171,9 @@ int nfs_mount(struct nfs_mount_request *info)
 		(info->hostname ? info->hostname : "server"),
 			info->dirpath);
 
+	if (strlen(info->dirpath) > MNTPATHLEN)
+		return -ENAMETOOLONG;
+
 	if (info->noresvport)
 		args.flags |= RPC_CLNT_CREATE_NONPRIVPORT;
 
@@ -192,6 +197,15 @@ int nfs_mount(struct nfs_mount_request *info)
 	dprintk("NFS: MNT request succeeded\n");
 	status = 0;
 
+	/*
+	 * If the server didn't provide a flavor list, allow the
+	 * client to try any flavor.
+	 */
+	if (info->version != NFS_MNT3_VERSION || *info->auth_flav_len == 0) {
+		dprintk("NFS: Faking up auth_flavs list\n");
+		info->auth_flavs[0] = RPC_AUTH_NULL;
+		*info->auth_flav_len = 1;
+	}
 out:
 	return status;
 
@@ -242,6 +256,9 @@ void nfs_umount(const struct nfs_mount_request *info)
 	struct rpc_clnt *clnt;
 	int status;
 
+	if (strlen(info->dirpath) > MNTPATHLEN)
+		return;
+
 	if (info->noresvport)
 		args.flags |= RPC_CLNT_CREATE_NONPRIVPORT;
 
@@ -283,13 +300,12 @@ static void encode_mntdirpath(struct xdr_stream *xdr, const char *pathname)
 	const u32 pathname_len = strlen(pathname);
 	__be32 *p;
 
-	BUG_ON(pathname_len > MNTPATHLEN);
 	p = xdr_reserve_space(xdr, 4 + pathname_len);
 	xdr_encode_opaque(p, pathname, pathname_len);
 }
 
 static void mnt_xdr_enc_dirpath(struct rpc_rqst *req, struct xdr_stream *xdr,
-				const char *dirpath)
+				const void *dirpath)
 {
 	encode_mntdirpath(xdr, dirpath);
 }
@@ -342,8 +358,9 @@ static int decode_fhandle(struct xdr_stream *xdr, struct mountres *res)
 
 static int mnt_xdr_dec_mountres(struct rpc_rqst *req,
 				struct xdr_stream *xdr,
-				struct mountres *res)
+				void *data)
 {
+	struct mountres *res = data;
 	int status;
 
 	status = decode_status(xdr, res);
@@ -434,8 +451,9 @@ static int decode_auth_flavors(struct xdr_stream *xdr, struct mountres *res)
 
 static int mnt_xdr_dec_mountres3(struct rpc_rqst *req,
 				 struct xdr_stream *xdr,
-				 struct mountres *res)
+				 void *data)
 {
+	struct mountres *res = data;
 	int status;
 
 	status = decode_fhs_status(xdr, res);
@@ -449,11 +467,11 @@ static int mnt_xdr_dec_mountres3(struct rpc_rqst *req,
 	return decode_auth_flavors(xdr, res);
 }
 
-static struct rpc_procinfo mnt_procedures[] = {
+static const struct rpc_procinfo mnt_procedures[] = {
 	[MOUNTPROC_MNT] = {
 		.p_proc		= MOUNTPROC_MNT,
-		.p_encode	= (kxdreproc_t)mnt_xdr_enc_dirpath,
-		.p_decode	= (kxdrdproc_t)mnt_xdr_dec_mountres,
+		.p_encode	= mnt_xdr_enc_dirpath,
+		.p_decode	= mnt_xdr_dec_mountres,
 		.p_arglen	= MNT_enc_dirpath_sz,
 		.p_replen	= MNT_dec_mountres_sz,
 		.p_statidx	= MOUNTPROC_MNT,
@@ -461,18 +479,18 @@ static struct rpc_procinfo mnt_procedures[] = {
 	},
 	[MOUNTPROC_UMNT] = {
 		.p_proc		= MOUNTPROC_UMNT,
-		.p_encode	= (kxdreproc_t)mnt_xdr_enc_dirpath,
+		.p_encode	= mnt_xdr_enc_dirpath,
 		.p_arglen	= MNT_enc_dirpath_sz,
 		.p_statidx	= MOUNTPROC_UMNT,
 		.p_name		= "UMOUNT",
 	},
 };
 
-static struct rpc_procinfo mnt3_procedures[] = {
+static const struct rpc_procinfo mnt3_procedures[] = {
 	[MOUNTPROC3_MNT] = {
 		.p_proc		= MOUNTPROC3_MNT,
-		.p_encode	= (kxdreproc_t)mnt_xdr_enc_dirpath,
-		.p_decode	= (kxdrdproc_t)mnt_xdr_dec_mountres3,
+		.p_encode	= mnt_xdr_enc_dirpath,
+		.p_decode	= mnt_xdr_dec_mountres3,
 		.p_arglen	= MNT_enc_dirpath_sz,
 		.p_replen	= MNT_dec_mountres3_sz,
 		.p_statidx	= MOUNTPROC3_MNT,
@@ -480,24 +498,27 @@ static struct rpc_procinfo mnt3_procedures[] = {
 	},
 	[MOUNTPROC3_UMNT] = {
 		.p_proc		= MOUNTPROC3_UMNT,
-		.p_encode	= (kxdreproc_t)mnt_xdr_enc_dirpath,
+		.p_encode	= mnt_xdr_enc_dirpath,
 		.p_arglen	= MNT_enc_dirpath_sz,
 		.p_statidx	= MOUNTPROC3_UMNT,
 		.p_name		= "UMOUNT",
 	},
 };
 
-
+static unsigned int mnt_counts[ARRAY_SIZE(mnt_procedures)];
 static const struct rpc_version mnt_version1 = {
 	.number		= 1,
 	.nrprocs	= ARRAY_SIZE(mnt_procedures),
 	.procs		= mnt_procedures,
+	.counts		= mnt_counts,
 };
 
+static unsigned int mnt3_counts[ARRAY_SIZE(mnt3_procedures)];
 static const struct rpc_version mnt_version3 = {
 	.number		= 3,
 	.nrprocs	= ARRAY_SIZE(mnt3_procedures),
 	.procs		= mnt3_procedures,
+	.counts		= mnt3_counts,
 };
 
 static const struct rpc_version *mnt_version[] = {

@@ -45,6 +45,7 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/sched/task.h>
 #include <linux/err.h>
 #include <linux/irq.h>
 #include <linux/bootmem.h>
@@ -109,12 +110,8 @@ static unsigned int calibration_result;
 /* Function Prototypes                                                       */
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
 
-void smp_prepare_boot_cpu(void);
-void smp_prepare_cpus(unsigned int);
 static void init_ipi_lock(void);
 static void do_boot_cpu(int);
-int __cpu_up(unsigned int);
-void smp_cpus_done(unsigned int);
 
 int start_secondary(void *);
 static void smp_callin(void);
@@ -131,7 +128,7 @@ static void unmap_cpu_to_physid(int, int);
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
 /* Boot up APs Routines : BSP                                                */
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
-void __devinit smp_prepare_boot_cpu(void)
+void smp_prepare_boot_cpu(void)
 {
 	bsp_phys_id = hard_smp_processor_id();
 	physid_set(bsp_phys_id, phys_cpu_present_map);
@@ -347,7 +344,7 @@ static void __init do_boot_cpu(int phys_id)
 	}
 }
 
-int __cpuinit __cpu_up(unsigned int cpu_id)
+int __cpu_up(unsigned int cpu_id, struct task_struct *tidle)
 {
 	int timeout;
 
@@ -380,7 +377,7 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	if (!cpumask_equal(&cpu_callin_map, cpu_online_mask))
 		BUG();
 
-	for (cpu_id = 0 ; cpu_id < num_online_cpus() ; cpu_id++)
+	for_each_online_cpu(cpu_id)
 		show_cpu_info(cpu_id);
 
 	/*
@@ -436,7 +433,7 @@ int __init start_secondary(void *unused)
 	 */
 	local_flush_tlb_all();
 
-	cpu_idle();
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 	return 0;
 }
 

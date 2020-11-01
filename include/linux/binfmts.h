@@ -1,24 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_BINFMTS_H
 #define _LINUX_BINFMTS_H
 
-#include <linux/capability.h>
-
-struct pt_regs;
-
-/*
- * These are the maximum length and maximum number of strings passed to the
- * execve() system call.  MAX_ARG_STRLEN is essentially random but serves to
- * prevent the kernel from being unduly impacted by misaddressed pointers.
- * MAX_ARG_STRINGS is chosen to fit in a signed 32-bit integer.
- */
-#define MAX_ARG_STRLEN (PAGE_SIZE * 32)
-#define MAX_ARG_STRINGS 0x7FFFFFFF
-
-/* sizeof(linux_binprm->buf) */
-#define BINPRM_BUF_SIZE 128
-
-#ifdef __KERNEL__
 #include <linux/sched.h>
+#include <linux/unistd.h>
+#include <asm/exec.h>
+#include <uapi/linux/binfmts.h>
+
+struct filename;
 
 #define CORENAME_MAX_SIZE 128
 
@@ -37,15 +26,29 @@ struct linux_binprm {
 	struct mm_struct *mm;
 	unsigned long p; /* current top of mem */
 	unsigned int
-		cred_prepared:1,/* true if creds already prepared (multiple
-				 * preps happen for interpreters) */
-		cap_effective:1;/* true if has elevated effective capabilities,
-				 * false if not; except for init which inherits
-				 * its parent's caps anyway */
+		/*
+		 * True after the bprm_set_creds hook has been called once
+		 * (multiple calls can be made via prepare_binprm() for
+		 * binfmt_script/misc).
+		 */
+		called_set_creds:1,
+		/*
+		 * True if most recent call to the commoncaps bprm_set_creds
+		 * hook (due to multiple prepare_binprm() calls from the
+		 * binfmt_script/misc handlers) resulted in elevated
+		 * privileges.
+		 */
+		cap_elevated:1,
+		/*
+		 * Set by bprm_set_creds hook to indicate a privilege-gaining
+		 * exec has happened. Used to sanitize execution environment
+		 * and to set AT_SECURE auxv for glibc.
+		 */
+		secureexec:1;
 #ifdef __alpha__
 	unsigned int taso:1;
 #endif
-	unsigned int recursion_depth;
+	unsigned int recursion_depth; /* only for search_binary_handler() */
 	struct file * file;
 	struct cred *cred;	/* new credentials */
 	int unsafe;		/* how unsafe this exec is (mask of LSM_UNSAFE_*) */
@@ -58,8 +61,7 @@ struct linux_binprm {
 	unsigned interp_flags;
 	unsigned interp_data;
 	unsigned long loader, exec;
-	char tcomm[TASK_COMM_LEN];
-};
+} __randomize_layout;
 
 #define BINPRM_FLAGS_ENFORCE_NONDUMP_BIT 0
 #define BINPRM_FLAGS_ENFORCE_NONDUMP (1 << BINPRM_FLAGS_ENFORCE_NONDUMP_BIT)
@@ -68,13 +70,19 @@ struct linux_binprm {
 #define BINPRM_FLAGS_EXECFD_BIT 1
 #define BINPRM_FLAGS_EXECFD (1 << BINPRM_FLAGS_EXECFD_BIT)
 
+/* filename of the binary will be inaccessible after exec */
+#define BINPRM_FLAGS_PATH_INACCESSIBLE_BIT 2
+#define BINPRM_FLAGS_PATH_INACCESSIBLE (1 << BINPRM_FLAGS_PATH_INACCESSIBLE_BIT)
+
 /* Function parameter for binfmt->coredump */
 struct coredump_params {
-	long signr;
+	const siginfo_t *siginfo;
 	struct pt_regs *regs;
 	struct file *file;
 	unsigned long limit;
 	unsigned long mm_flags;
+	loff_t written;
+	loff_t pos;
 };
 
 /*
@@ -84,11 +92,11 @@ struct coredump_params {
 struct linux_binfmt {
 	struct list_head lh;
 	struct module *module;
-	int (*load_binary)(struct linux_binprm *, struct  pt_regs * regs);
+	int (*load_binary)(struct linux_binprm *);
 	int (*load_shlib)(struct file *);
 	int (*core_dump)(struct coredump_params *cprm);
 	unsigned long min_coredump;	/* minimal dump size */
-};
+} __randomize_layout;
 
 extern void __register_binfmt(struct linux_binfmt *fmt, int insert);
 
@@ -107,7 +115,7 @@ extern void unregister_binfmt(struct linux_binfmt *);
 
 extern int prepare_binprm(struct linux_binprm *);
 extern int __must_check remove_arg_zero(struct linux_binprm *);
-extern int search_binary_handler(struct linux_binprm *, struct pt_regs *);
+extern int search_binary_handler(struct linux_binprm *);
 extern int flush_old_exec(struct linux_binprm * bprm);
 extern void setup_new_exec(struct linux_binprm * bprm);
 extern void would_dump(struct linux_binprm *, struct file *);
@@ -122,15 +130,22 @@ extern int suid_dumpable;
 extern int setup_arg_pages(struct linux_binprm * bprm,
 			   unsigned long stack_top,
 			   int executable_stack);
-extern int bprm_mm_init(struct linux_binprm *bprm);
-extern int bprm_change_interp(char *interp, struct linux_binprm *bprm);
+extern int transfer_args_to_stack(struct linux_binprm *bprm,
+				  unsigned long *sp_location);
+extern int bprm_change_interp(const char *interp, struct linux_binprm *bprm);
 extern int copy_strings_kernel(int argc, const char *const *argv,
 			       struct linux_binprm *bprm);
 extern int prepare_bprm_creds(struct linux_binprm *bprm);
 extern void install_exec_creds(struct linux_binprm *bprm);
-extern void do_coredump(long signr, int exit_code, struct pt_regs *regs);
 extern void set_binfmt(struct linux_binfmt *new);
-extern void free_bprm(struct linux_binprm *);
+extern ssize_t read_code(struct file *, unsigned long, loff_t, size_t);
 
-#endif /* __KERNEL__ */
+extern int do_execve(struct filename *,
+		     const char __user * const __user *,
+		     const char __user * const __user *);
+extern int do_execveat(int, struct filename *,
+		       const char __user * const __user *,
+		       const char __user * const __user *,
+		       int);
+
 #endif /* _LINUX_BINFMTS_H */

@@ -1,6 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  include/asm-s390/reset.h
- *
  *    Copyright IBM Corp. 2006
  *    Author(s): Heiko Carstens <heiko.carstens@de.ibm.com>
  */
@@ -17,5 +16,5 @@ struct reset_call {
 
 extern void register_reset_call(struct reset_call *reset);
 extern void unregister_reset_call(struct reset_call *reset);
-extern void s390_reset_system(void (*func)(void *), void *data);
+extern void s390_reset_system(void);
 #endif /* _ASM_S390_RESET_H */

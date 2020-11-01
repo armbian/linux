@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/arm/include/asm/vfpmacros.h
  *
@@ -5,7 +6,7 @@
  */
 #include <asm/hwcap.h>
 
-#include "vfp.h"
+#include <asm/vfp.h>
 
 @ Macros to allow building with old toolkits (with no VFP support)
 	.macro	VFPFMRX, rd, sysreg, cond

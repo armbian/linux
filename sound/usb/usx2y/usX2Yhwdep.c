@@ -31,19 +31,18 @@
 #include "usbusx2y.h"
 #include "usX2Yhwdep.h"
 
-static int snd_us428ctls_vm_fault(struct vm_area_struct *area,
-				  struct vm_fault *vmf)
+static int snd_us428ctls_vm_fault(struct vm_fault *vmf)
 {
 	unsigned long offset;
 	struct page * page;
 	void *vaddr;
 
 	snd_printdd("ENTER, start %lXh, pgoff %ld\n",
-		   area->vm_start,
+		   vmf->vma->vm_start,
 		   vmf->pgoff);
 	
 	offset = vmf->pgoff << PAGE_SHIFT;
-	vaddr = (char*)((struct usX2Ydev *)area->vm_private_data)->us428ctls_sharedmem + offset;
+	vaddr = (char *)((struct usX2Ydev *)vmf->vma->vm_private_data)->us428ctls_sharedmem + offset;
 	page = virt_to_page(vaddr);
 	get_page(page);
 	vmf->page = page;
@@ -82,7 +81,7 @@ static int snd_us428ctls_mmap(struct snd_hwdep * hw, struct file *filp, struct v
 		us428->us428ctls_sharedmem->CtlSnapShotLast = -2;
 	}
 	area->vm_ops = &us428ctls_vm_ops;
-	area->vm_flags |= VM_RESERVED | VM_DONTEXPAND;
+	area->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 	area->vm_private_data = hw->private_data;
 	return 0;
 }
@@ -132,7 +131,7 @@ static int snd_usX2Y_hwdep_dsp_status(struct snd_hwdep *hw,
 	info->num_dsps = 2;		// 0: Prepad Data, 1: FPGA Code
 	if (us428->chip_status & USX2Y_STAT_CHIP_INIT)
 		info->chip_ready = 1;
- 	info->version = USX2Y_DRIVER_VERSION; 
+	info->version = USX2Y_DRIVER_VERSION;
 	return 0;
 }
 
@@ -259,7 +258,7 @@ int usX2Y_hwdep_new(struct snd_card *card, struct usb_device* device)
 	hw->ops.mmap = snd_us428ctls_mmap;
 	hw->ops.poll = snd_us428ctls_poll;
 	hw->exclusive = 1;
-	sprintf(hw->name, "/proc/bus/usb/%03d/%03d", device->bus->busnum, device->devnum);
+	sprintf(hw->name, "/dev/bus/usb/%03d/%03d", device->bus->busnum, device->devnum);
 	return 0;
 }
 

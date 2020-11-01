@@ -1,7 +1,7 @@
 /*
  *  fixup-tb0219.c, The TANBAC TB0219 specific PCI fixups.
  *
- *  Copyright (C) 2003  Megasolution Inc. <matsu@megasolution.jp>
+ *  Copyright (C) 2003	Megasolution Inc. <matsu@megasolution.jp>
  *  Copyright (C) 2004-2005  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -23,7 +23,7 @@
 
 #include <asm/vr41xx/tb0219.h>
 
-int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	int irq = -1;
 

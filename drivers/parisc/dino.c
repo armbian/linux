@@ -154,8 +154,20 @@ struct dino_device
 };
 
 /* Looks nice and keeps the compiler happy */
-#define DINO_DEV(d) ((struct dino_device *) d)
+#define DINO_DEV(d) ({				\
+	void *__pdata = d;			\
+	BUG_ON(!__pdata);			\
+	(struct dino_device *)__pdata; })
 
+
+/* Check if PCI device is behind a Card-mode Dino. */
+static int pci_dev_is_behind_card_dino(struct pci_dev *dev)
+{
+	struct dino_device *dino_dev;
+
+	dino_dev = DINO_DEV(parisc_walk_tree(dev->bus->bridge));
+	return is_card_dino(&dino_dev->hba.dev->id);
+}
 
 /*
  * Dino Configuration Space Accessor Functions
@@ -174,7 +186,7 @@ static int dino_cfg_read(struct pci_bus *bus, unsigned int devfn, int where,
 		int size, u32 *val)
 {
 	struct dino_device *d = DINO_DEV(parisc_walk_tree(bus->bridge));
-	u32 local_bus = (bus->parent == NULL) ? 0 : bus->secondary;
+	u32 local_bus = (bus->parent == NULL) ? 0 : bus->busn_res.start;
 	u32 v = DINO_CFG_TOK(local_bus, devfn, where & ~3);
 	void __iomem *base_addr = d->hba.base_addr;
 	unsigned long flags;
@@ -209,7 +221,7 @@ static int dino_cfg_write(struct pci_bus *bus, unsigned int devfn, int where,
 	int size, u32 val)
 {
 	struct dino_device *d = DINO_DEV(parisc_walk_tree(bus->bridge));
-	u32 local_bus = (bus->parent == NULL) ? 0 : bus->secondary;
+	u32 local_bus = (bus->parent == NULL) ? 0 : bus->busn_res.start;
 	u32 v = DINO_CFG_TOK(local_bus, devfn, where & ~3);
 	void __iomem *base_addr = d->hba.base_addr;
 	unsigned long flags;
@@ -430,7 +442,7 @@ static void dino_choose_irq(struct parisc_device *dev, void *ctrl)
  * Cirrus 6832 Cardbus reports wrong irq on RDI Tadpole PARISC Laptop (deller@gmx.de)
  * (the irqs are off-by-one, not sure yet if this is a cirrus, dino-hardware or dino-driver problem...)
  */
-static void __devinit quirk_cirrus_cardbus(struct pci_dev *dev)
+static void quirk_cirrus_cardbus(struct pci_dev *dev)
 {
 	u8 new_irq = dev->irq - 1;
 	printk(KERN_INFO "PCI: Cirrus Cardbus IRQ fixup for %s, from %d to %d\n",
@@ -439,6 +451,21 @@ static void __devinit quirk_cirrus_cardbus(struct pci_dev *dev)
 }
 DECLARE_PCI_FIXUP_ENABLE(PCI_VENDOR_ID_CIRRUS, PCI_DEVICE_ID_CIRRUS_6832, quirk_cirrus_cardbus );
 
+#ifdef CONFIG_TULIP
+static void pci_fixup_tulip(struct pci_dev *dev)
+{
+	if (!pci_dev_is_behind_card_dino(dev))
+		return;
+	if (!(pci_resource_flags(dev, 1) & IORESOURCE_MEM))
+		return;
+	pr_warn("%s: HP HSC-PCI Cards with card-mode Dino not yet supported.\n",
+		pci_name(dev));
+	/* Disable this card by zeroing the PCI resources */
+	memset(&dev->resource[0], 0, sizeof(dev->resource[0]));
+	memset(&dev->resource[1], 0, sizeof(dev->resource[1]));
+}
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_DEC, PCI_ANY_ID, pci_fixup_tulip);
+#endif /* CONFIG_TULIP */
 
 static void __init
 dino_bios_init(void)
@@ -477,14 +504,12 @@ dino_card_setup(struct pci_bus *bus, void __iomem *base_addr)
 	if (ccio_allocate_resource(dino_dev->hba.dev, res, _8MB,
 				F_EXTEND(0xf0000000UL) | _8MB,
 				F_EXTEND(0xffffffffUL) &~ _8MB, _8MB) < 0) {
-		struct list_head *ln, *tmp_ln;
+		struct pci_dev *dev, *tmp;
 
 		printk(KERN_ERR "Dino: cannot attach bus %s\n",
 		       dev_name(bus->bridge));
 		/* kill the bus, we can't do anything with it */
-		list_for_each_safe(ln, tmp_ln, &bus->devices) {
-			struct pci_dev *dev = pci_dev_b(ln);
-
+		list_for_each_entry_safe(dev, tmp, &bus->devices, bus_list) {
 			list_del(&dev->bus_list);
 		}
 			
@@ -549,12 +574,11 @@ dino_card_fixup(struct pci_dev *dev)
 static void __init
 dino_fixup_bus(struct pci_bus *bus)
 {
-	struct list_head *ln;
         struct pci_dev *dev;
         struct dino_device *dino_dev = DINO_DEV(parisc_walk_tree(bus->bridge));
 
 	DBG(KERN_WARNING "%s(0x%p) bus %d platform_data 0x%p\n",
-	    __func__, bus, bus->secondary,
+	    __func__, bus, bus->busn_res.start,
 	    bus->bridge->platform_data);
 
 	/* Firmware doesn't set up card-mode dino, so we have to */
@@ -583,21 +607,18 @@ dino_fixup_bus(struct pci_bus *bus)
 				
 			}
 					
-			DBG("DEBUG %s assigning %d [0x%lx,0x%lx]\n",
+			DBG("DEBUG %s assigning %d [%pR]\n",
 			    dev_name(&bus->self->dev), i,
-			    bus->self->resource[i].start,
-			    bus->self->resource[i].end);
+			    &bus->self->resource[i]);
 			WARN_ON(pci_assign_resource(bus->self, i));
-			DBG("DEBUG %s after assign %d [0x%lx,0x%lx]\n",
+			DBG("DEBUG %s after assign %d [%pR]\n",
 			    dev_name(&bus->self->dev), i,
-			    bus->self->resource[i].start,
-			    bus->self->resource[i].end);
+			    &bus->self->resource[i]);
 		}
 	}
 
 
-	list_for_each(ln, &bus->devices) {
-		dev = pci_dev_b(ln);
+	list_for_each_entry(dev, &bus->devices, bus_list) {
 		if (is_card_dino(&dino_dev->hba.dev->id))
 			dino_card_fixup(dev);
 
@@ -605,8 +626,10 @@ dino_fixup_bus(struct pci_bus *bus)
 		** P2PB's only have 2 BARs, no IRQs.
 		** I'd like to just ignore them for now.
 		*/
-		if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI)
+		if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI)  {
+			pcibios_init_bridge(dev);
 			continue;
+		}
 
 		/* null out the ROM resource if there is one (we don't
 		 * care about an expansion rom on parisc, since it
@@ -776,8 +799,7 @@ dino_bridge_init(struct dino_device *dino_dev, const char *name)
 		result = ccio_request_resource(dino_dev->hba.dev, &res[i]);
 		if (result < 0) {
 			printk(KERN_ERR "%s: failed to claim PCI Bus address "
-			       "space %d (0x%lx-0x%lx)!\n", name, i,
-			       (unsigned long)res[i].start, (unsigned long)res[i].end);
+			       "space %d (%pR)!\n", name, i, &res[i]);
 			return result;
 		}
 	}
@@ -898,6 +920,7 @@ static int __init dino_probe(struct parisc_device *dev)
 	LIST_HEAD(resources);
 	struct pci_bus *bus;
 	unsigned long hpa = dev->hpa.start;
+	int max;
 
 	name = "Dino";
 	if (is_card_dino(&dev->id)) {
@@ -919,7 +942,7 @@ static int __init dino_probe(struct parisc_device *dev)
 	printk("%s version %s found at 0x%lx\n", name, version, hpa);
 
 	if (!request_mem_region(hpa, PAGE_SIZE, name)) {
-		printk(KERN_ERR "DINO: Hey! Someone took my MMIO space (0x%ld)!\n",
+		printk(KERN_ERR "DINO: Hey! Someone took my MMIO space (0x%lx)!\n",
 			hpa);
 		return 1;
 	}
@@ -957,7 +980,7 @@ static int __init dino_probe(struct parisc_device *dev)
 
 	dino_dev->hba.dev = dev;
 	dino_dev->hba.base_addr = ioremap_nocache(hpa, 4096);
-	dino_dev->hba.lmmio_space_offset = 0;	/* CPU addrs == bus addrs */
+	dino_dev->hba.lmmio_space_offset = PCI_F_EXTEND;
 	spin_lock_init(&dino_dev->dinosaur_pen);
 	dino_dev->hba.iommu = ccio_get_iommu(dev);
 
@@ -983,6 +1006,10 @@ static int __init dino_probe(struct parisc_device *dev)
 	if (dino_dev->hba.gmmio_space.flags)
 		pci_add_resource(&resources, &dino_dev->hba.gmmio_space);
 
+	dino_dev->hba.bus_num.start = dino_current_bus;
+	dino_dev->hba.bus_num.end = 255;
+	dino_dev->hba.bus_num.flags = IORESOURCE_BUS;
+	pci_add_resource(&resources, &dino_dev->hba.bus_num);
 	/*
 	** It's not used to avoid chicken/egg problems
 	** with configuration accessor functions.
@@ -998,12 +1025,13 @@ static int __init dino_probe(struct parisc_device *dev)
 		return 0;
 	}
 
-	bus->subordinate = pci_scan_child_bus(bus);
+	max = pci_scan_child_bus(bus);
+	pci_bus_update_busn_res_end(bus, max);
 
 	/* This code *depends* on scanning being single threaded
 	 * if it isn't, this global bus number count will fail
 	 */
-	dino_current_bus = bus->subordinate + 1;
+	dino_current_bus = max + 1;
 	pci_bus_assign_resources(bus);
 	pci_bus_add_devices(bus);
 	return 0;
@@ -1018,7 +1046,7 @@ static int __init dino_probe(struct parisc_device *dev)
  * and 725 firmware misreport it as 0x08080 for no adequately explained
  * reason.
  */
-static struct parisc_device_id dino_tbl[] = {
+static const struct parisc_device_id dino_tbl[] __initconst = {
 	{ HPHW_A_DMA, HVERSION_REV_ANY_ID, 0x004, 0x0009D },/* Card-mode Dino */
 	{ HPHW_A_DMA, HVERSION_REV_ANY_ID, HVERSION_ANY_ID, 0x08080 }, /* XXX */
 	{ HPHW_BRIDGE, HVERSION_REV_ANY_ID, 0x680, 0xa }, /* Bridge-mode Dino */
@@ -1027,7 +1055,7 @@ static struct parisc_device_id dino_tbl[] = {
 	{ 0, }
 };
 
-static struct parisc_driver dino_driver = {
+static struct parisc_driver dino_driver __refdata = {
 	.name =		"dino",
 	.id_table =	dino_tbl,
 	.probe =	dino_probe,

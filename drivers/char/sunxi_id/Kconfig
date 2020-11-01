@@ -1,9 +1,0 @@
-#
-# sunxi continous physic memory allocator.
-#
-
-config ID
-	bool "sunxi  id "
-	default n
-	help
-	Nothing help.

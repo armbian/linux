@@ -50,8 +50,10 @@ static void __init mpc5200_simple_setup_arch(void)
 
 /* list of the supported boards */
 static const char *board[] __initdata = {
+	"anonymous,a3m071",
 	"anonymous,a4m072",
 	"anon,charon",
+	"ifm,o2d",
 	"intercontrol,digsy-mtc",
 	"manroland,mucmc52",
 	"manroland,uc101",
@@ -68,7 +70,7 @@ static const char *board[] __initdata = {
  */
 static int __init mpc5200_simple_probe(void)
 {
-	return of_flat_dt_match(of_get_flat_dt_root(), board);
+	return of_device_compatible_match(of_root, board);
 }
 
 define_machine(mpc5200_simple_platform) {

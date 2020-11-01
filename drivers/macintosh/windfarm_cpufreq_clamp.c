@@ -63,7 +63,7 @@ static s32 clamp_max(struct wf_control *ct)
 	return 1;
 }
 
-static struct wf_control_ops clamp_ops = {
+static const struct wf_control_ops clamp_ops = {
 	.set_value	= clamp_set,
 	.get_value	= clamp_get,
 	.get_min	= clamp_min,
@@ -74,12 +74,6 @@ static struct wf_control_ops clamp_ops = {
 static int __init wf_cpufreq_clamp_init(void)
 {
 	struct wf_control *clamp;
-
-	/* Don't register on old machines that use therm_pm72 for now */
-	if (of_machine_is_compatible("PowerMac7,2") ||
-	    of_machine_is_compatible("PowerMac7,3") ||
-	    of_machine_is_compatible("RackMac3,1"))
-		return -ENODEV;
 
 	clamp = kmalloc(sizeof(struct wf_control), GFP_KERNEL);
 	if (clamp == NULL)

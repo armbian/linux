@@ -1,11 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifdef __NR_chmod
 __NR_chmod,
 #endif
 __NR_fchmod,
 #ifdef __NR_chown
 __NR_chown,
-__NR_fchown,
 __NR_lchown,
+#endif
+#ifdef __NR_fchown
+__NR_fchown,
 #endif
 __NR_setxattr,
 __NR_lsetxattr,

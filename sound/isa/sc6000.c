@@ -64,17 +64,17 @@ module_param_array(id, charp, NULL, 0444);
 MODULE_PARM_DESC(id, "ID string for sc-6000 based soundcard.");
 module_param_array(enable, bool, NULL, 0444);
 MODULE_PARM_DESC(enable, "Enable sc-6000 based soundcard.");
-module_param_array(port, long, NULL, 0444);
+module_param_hw_array(port, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(port, "Port # for sc-6000 driver.");
-module_param_array(mss_port, long, NULL, 0444);
+module_param_hw_array(mss_port, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(mss_port, "MSS Port # for sc-6000 driver.");
-module_param_array(mpu_port, long, NULL, 0444);
+module_param_hw_array(mpu_port, long, ioport, NULL, 0444);
 MODULE_PARM_DESC(mpu_port, "MPU-401 port # for sc-6000 driver.");
-module_param_array(irq, int, NULL, 0444);
+module_param_hw_array(irq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(irq, "IRQ # for sc-6000 driver.");
-module_param_array(mpu_irq, int, NULL, 0444);
+module_param_hw_array(mpu_irq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(mpu_irq, "MPU-401 IRQ # for sc-6000 driver.");
-module_param_array(dma, int, NULL, 0444);
+module_param_hw_array(dma, int, dma, NULL, 0444);
 MODULE_PARM_DESC(dma, "DMA # for sc-6000 driver.");
 module_param_array(joystick, bool, NULL, 0444);
 MODULE_PARM_DESC(joystick, "Enable gameport.");
@@ -121,7 +121,7 @@ MODULE_PARM_DESC(joystick, "Enable gameport.");
 /*
  * sc6000_irq_to_softcfg - Decode irq number into cfg code.
  */
-static __devinit unsigned char sc6000_irq_to_softcfg(int irq)
+static unsigned char sc6000_irq_to_softcfg(int irq)
 {
 	unsigned char val = 0;
 
@@ -150,7 +150,7 @@ static __devinit unsigned char sc6000_irq_to_softcfg(int irq)
 /*
  * sc6000_dma_to_softcfg - Decode dma number into cfg code.
  */
-static __devinit unsigned char sc6000_dma_to_softcfg(int dma)
+static unsigned char sc6000_dma_to_softcfg(int dma)
 {
 	unsigned char val = 0;
 
@@ -173,7 +173,7 @@ static __devinit unsigned char sc6000_dma_to_softcfg(int dma)
 /*
  * sc6000_mpu_irq_to_softcfg - Decode MPU-401 irq number into cfg code.
  */
-static __devinit unsigned char sc6000_mpu_irq_to_softcfg(int mpu_irq)
+static unsigned char sc6000_mpu_irq_to_softcfg(int mpu_irq)
 {
 	unsigned char val = 0;
 
@@ -242,8 +242,8 @@ static int sc6000_write(char __iomem *vport, int cmd)
 	return -EIO;
 }
 
-static int __devinit sc6000_dsp_get_answer(char __iomem *vport, int command,
-					   char *data, int data_len)
+static int sc6000_dsp_get_answer(char __iomem *vport, int command,
+				 char *data, int data_len)
 {
 	int len = 0;
 
@@ -269,7 +269,7 @@ static int __devinit sc6000_dsp_get_answer(char __iomem *vport, int command,
 	return len ? len : -EIO;
 }
 
-static int __devinit sc6000_dsp_reset(char __iomem *vport)
+static int sc6000_dsp_reset(char __iomem *vport)
 {
 	iowrite8(1, vport + DSP_RESET);
 	udelay(10);
@@ -281,7 +281,7 @@ static int __devinit sc6000_dsp_reset(char __iomem *vport)
 }
 
 /* detection and initialization */
-static int __devinit sc6000_hw_cfg_write(char __iomem *vport, const int *cfg)
+static int sc6000_hw_cfg_write(char __iomem *vport, const int *cfg)
 {
 	if (sc6000_write(vport, COMMAND_6C) < 0) {
 		snd_printk(KERN_WARNING "CMD 0x%x: failed!\n", COMMAND_6C);
@@ -345,8 +345,8 @@ static int sc6000_setup_board(char __iomem *vport, int config)
 	return 0;
 }
 
-static int __devinit sc6000_init_mss(char __iomem *vport, int config,
-				     char __iomem *vmss_port, int mss_config)
+static int sc6000_init_mss(char __iomem *vport, int config,
+			   char __iomem *vmss_port, int mss_config)
 {
 	if (sc6000_write(vport, DSP_INIT_MSS)) {
 		snd_printk(KERN_ERR "sc6000_init_mss [0x%x]: failed!\n",
@@ -364,9 +364,9 @@ static int __devinit sc6000_init_mss(char __iomem *vport, int config,
 	return 0;
 }
 
-static void __devinit sc6000_hw_cfg_encode(char __iomem *vport, int *cfg,
-					   long xport, long xmpu,
-					   long xmss_port, int joystick)
+static void sc6000_hw_cfg_encode(char __iomem *vport, int *cfg,
+				 long xport, long xmpu,
+				 long xmss_port, int joystick)
 {
 	cfg[0] = 0;
 	cfg[1] = 0;
@@ -386,8 +386,8 @@ static void __devinit sc6000_hw_cfg_encode(char __iomem *vport, int *cfg,
 	snd_printd("hw cfg %x, %x\n", cfg[0], cfg[1]);
 }
 
-static int __devinit sc6000_init_board(char __iomem *vport,
-					char __iomem *vmss_port, int dev)
+static int sc6000_init_board(char __iomem *vport,
+			     char __iomem *vmss_port, int dev)
 {
 	char answer[15];
 	char version[2];
@@ -467,7 +467,7 @@ static int __devinit sc6000_init_board(char __iomem *vport,
 	return 0;
 }
 
-static int __devinit snd_sc6000_mixer(struct snd_wss *chip)
+static int snd_sc6000_mixer(struct snd_wss *chip)
 {
 	struct snd_card *card = chip->card;
 	struct snd_ctl_elem_id id1, id2;
@@ -502,7 +502,7 @@ static int __devinit snd_sc6000_mixer(struct snd_wss *chip)
 	return 0;
 }
 
-static int __devinit snd_sc6000_match(struct device *devptr, unsigned int dev)
+static int snd_sc6000_match(struct device *devptr, unsigned int dev)
 {
 	if (!enable[dev])
 		return 0;
@@ -545,7 +545,7 @@ static int __devinit snd_sc6000_match(struct device *devptr, unsigned int dev)
 	return 1;
 }
 
-static int __devinit snd_sc6000_probe(struct device *devptr, unsigned int dev)
+static int snd_sc6000_probe(struct device *devptr, unsigned int dev)
 {
 	static int possible_irqs[] = { 5, 7, 9, 10, 11, -1 };
 	static int possible_dmas[] = { 1, 3, 0, -1 };
@@ -559,8 +559,8 @@ static int __devinit snd_sc6000_probe(struct device *devptr, unsigned int dev)
 	char __iomem *vmss_port;
 
 
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE, sizeof(vport),
-				&card);
+	err = snd_card_new(devptr, index[dev], id[dev], THIS_MODULE,
+			   sizeof(vport), &card);
 	if (err < 0)
 		return err;
 
@@ -625,7 +625,7 @@ static int __devinit snd_sc6000_probe(struct device *devptr, unsigned int dev)
 	if (err < 0)
 		goto err_unmap2;
 
-	err = snd_wss_pcm(chip, 0, NULL);
+	err = snd_wss_pcm(chip, 0);
 	if (err < 0) {
 		snd_printk(KERN_ERR PFX
 			   "error creating new WSS PCM device\n");
@@ -668,8 +668,6 @@ static int __devinit snd_sc6000_probe(struct device *devptr, unsigned int dev)
 	sprintf(card->longname, "Gallant SC-6000 at 0x%lx, irq %d, dma %d",
 		mss_port[dev], xirq, xdma);
 
-	snd_card_set_dev(card, devptr);
-
 	err = snd_card_register(card);
 	if (err < 0)
 		goto err_unmap2;
@@ -687,7 +685,7 @@ err_exit:
 	return err;
 }
 
-static int __devexit snd_sc6000_remove(struct device *devptr, unsigned int dev)
+static int snd_sc6000_remove(struct device *devptr, unsigned int dev)
 {
 	struct snd_card *card = dev_get_drvdata(devptr);
 	char __iomem **vport = card->private_data;
@@ -698,7 +696,6 @@ static int __devexit snd_sc6000_remove(struct device *devptr, unsigned int dev)
 	release_region(port[dev], 0x10);
 	release_region(mss_port[dev], 4);
 
-	dev_set_drvdata(devptr, NULL);
 	snd_card_free(card);
 	return 0;
 }
@@ -706,7 +703,7 @@ static int __devexit snd_sc6000_remove(struct device *devptr, unsigned int dev)
 static struct isa_driver snd_sc6000_driver = {
 	.match		= snd_sc6000_match,
 	.probe		= snd_sc6000_probe,
-	.remove		= __devexit_p(snd_sc6000_remove),
+	.remove		= snd_sc6000_remove,
 	/* FIXME: suspend/resume */
 	.driver		= {
 		.name	= DRV_NAME,
@@ -714,15 +711,4 @@ static struct isa_driver snd_sc6000_driver = {
 };
 
 
-static int __init alsa_card_sc6000_init(void)
-{
-	return isa_register_driver(&snd_sc6000_driver, SNDRV_CARDS);
-}
-
-static void __exit alsa_card_sc6000_exit(void)
-{
-	isa_unregister_driver(&snd_sc6000_driver);
-}
-
-module_init(alsa_card_sc6000_init)
-module_exit(alsa_card_sc6000_exit)
+module_isa_driver(snd_sc6000_driver, SNDRV_CARDS);

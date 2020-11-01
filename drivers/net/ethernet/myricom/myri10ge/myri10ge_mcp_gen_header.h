@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __MYRI10GE_MCP_GEN_HEADER_H__
 #define __MYRI10GE_MCP_GEN_HEADER_H__
 
@@ -27,7 +28,7 @@ struct mcp_gen_header {
 	 *
 	 * Fields below this comment are extensions added in later versions
 	 * of this struct, drivers should compare the header_length against
-	 * offsetof(field) to check wether a given MCP implements them.
+	 * offsetof(field) to check whether a given MCP implements them.
 	 *
 	 * Never remove any field.  Keep everything naturally align.
 	 */

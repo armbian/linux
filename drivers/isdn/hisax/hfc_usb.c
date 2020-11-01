@@ -65,7 +65,7 @@ typedef struct {
 } hfcsusb_vdata;
 
 /* VID/PID device list */
-static struct usb_device_id hfcusb_idtab[] = {
+static const struct usb_device_id hfcusb_idtab[] = {
 	{
 		USB_DEVICE(0x0959, 0x2bd0),
 		.driver_info = (unsigned long) &((hfcsusb_vdata)
@@ -799,7 +799,7 @@ collect_rx_frame(usb_fifo *fifo, __u8 *data, int len, int finish)
 	}
 	if (len) {
 		if (fifo->skbuff->len + len < fifo->max_size) {
-			memcpy(skb_put(fifo->skbuff, len), data, len);
+			skb_put_data(fifo->skbuff, data, len);
 		} else {
 			DBG(HFCUSB_DBG_FIFO_ERR,
 			    "HCF-USB: got frame exceeded fifo->max_size(%d) fifo(%d)",
@@ -927,9 +927,8 @@ start_int_fifo(usb_fifo *fifo)
 	fifo->active = 1;	/* must be marked active */
 	errcode = usb_submit_urb(fifo->urb, GFP_KERNEL);
 	if (errcode) {
-		printk(KERN_ERR
-		       "HFC-S USB: submit URB error(start_int_info): status:%i\n",
-		       errcode);
+		printk(KERN_ERR "HFC-S USB: submit URB error(%s): status:%i\n",
+		       __func__, errcode);
 		fifo->active = 0;
 		fifo->skbuff = NULL;
 	}
@@ -1166,14 +1165,10 @@ hfc_usb_init(hfcusb_data *hfc)
 	hfc->old_led_state = 0;
 
 	/* init the t3 timer */
-	init_timer(&hfc->t3_timer);
-	hfc->t3_timer.data = (long) hfc;
-	hfc->t3_timer.function = (void *) l1_timer_expire_t3;
+	setup_timer(&hfc->t3_timer, (void *)l1_timer_expire_t3, (long)hfc);
 
 	/* init the t4 timer */
-	init_timer(&hfc->t4_timer);
-	hfc->t4_timer.data = (long) hfc;
-	hfc->t4_timer.function = (void *) l1_timer_expire_t4;
+	setup_timer(&hfc->t4_timer, (void *)l1_timer_expire_t4, (long)hfc);
 
 	/* init the background machinery for control requests */
 	hfc->ctrl_read.bRequestType = 0xc0;
@@ -1483,13 +1478,21 @@ hfc_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 				usb_rcvctrlpipe(context->dev, 0);
 			context->ctrl_out_pipe =
 				usb_sndctrlpipe(context->dev, 0);
+
+			driver_info = (hfcsusb_vdata *)
+				      hfcusb_idtab[vend_idx].driver_info;
+
 			context->ctrl_urb = usb_alloc_urb(0, GFP_KERNEL);
 
-			driver_info =
-				(hfcsusb_vdata *) hfcusb_idtab[vend_idx].
-				driver_info;
-			printk(KERN_INFO "HFC-S USB: detected \"%s\"\n",
-			       driver_info->vend_name);
+			if (!context->ctrl_urb) {
+				pr_warn("%s: No memory for control urb\n",
+					driver_info->vend_name);
+				kfree(context);
+				return -ENOMEM;
+			}
+
+			pr_info("HFC-S USB: detected \"%s\"\n",
+				driver_info->vend_name);
 
 			DBG(HFCUSB_DBG_INIT,
 			    "HFC-S USB: Endpoint-Config: %s (if=%d alt=%d), E-Channel(%d)",
@@ -1568,6 +1571,7 @@ static struct usb_driver hfc_drv = {
 	.id_table = hfcusb_idtab,
 	.probe = hfc_usb_probe,
 	.disconnect = hfc_usb_disconnect,
+	.disable_hub_initiated_lpm = 1,
 };
 
 static void __exit

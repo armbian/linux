@@ -1,7 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_FPU_H
 #define __ASM_SH_FPU_H
 
 #ifndef __ASSEMBLY__
+
+#include <asm/ptrace.h>
 
 struct task_struct;
 
@@ -46,7 +49,7 @@ static inline void __unlazy_fpu(struct task_struct *tsk, struct pt_regs *regs)
 		save_fpu(tsk);
 		release_fpu(regs);
 	} else
-		tsk->fpu_counter = 0;
+		tsk->thread.fpu_counter = 0;
 }
 
 static inline void unlazy_fpu(struct task_struct *tsk, struct pt_regs *regs)

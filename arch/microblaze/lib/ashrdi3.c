@@ -1,4 +1,5 @@
-#include <linux/module.h>
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/export.h>
 
 #include "libgcc.h"
 
@@ -27,5 +28,4 @@ long long __ashrdi3(long long u, word_type b)
 
 	return w.ll;
 }
-
 EXPORT_SYMBOL(__ashrdi3);

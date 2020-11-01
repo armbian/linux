@@ -1,6 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _VBINIT_
 #define _VBINIT_
-extern unsigned char XGIInitNew(struct pci_dev *pdev);
-extern struct XGI21_LVDSCapStruct  XGI21_LCDCapList[13];
+unsigned char XGIInitNew(struct pci_dev *pdev);
+void XGIRegInit(struct vb_device_info *XGI_Pr, unsigned long BaseAddr);
 #endif
-

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* NGpage.S: Niagara optimize clear and copy page.
  *
  * Copyright (C) 2006 (davem@davemloft.net)
@@ -59,6 +60,8 @@ NGcopy_user_page:	/* %o0=dest, %o1=src, %o2=vaddr */
 	 restore
 
 	.align		32
+	.globl		NGclear_page
+	.globl		NGclear_user_page
 NGclear_page:		/* %o0=dest */
 NGclear_user_page:	/* %o0=dest, %o1=vaddr */
 	rd		%asi, %g3

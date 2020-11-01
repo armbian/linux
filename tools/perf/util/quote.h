@@ -1,8 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_QUOTE_H
 #define __PERF_QUOTE_H
 
 #include <stddef.h>
-#include <stdio.h>
 
 /* Help to copy the thing properly quoted for the shell safety.
  * any single quote is replaced with '\'', any exclamation point
@@ -24,6 +24,8 @@
  * sq_quote() in a real application.
  */
 
-extern void sq_quote_argv(struct strbuf *, const char **argv, size_t maxlen);
+struct strbuf;
+
+int sq_quote_argv(struct strbuf *, const char **argv, size_t maxlen);
 
 #endif /* __PERF_QUOTE_H */

@@ -19,7 +19,6 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -40,10 +39,10 @@
 #include <linux/skbuff.h>
 #include <linux/phy.h>
 #include <linux/dma-mapping.h>
+#include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/types.h>
 
-#include <linux/delay.h>
 #include <linux/io.h>
 #include <mach/board.h>
 #include <mach/platform.h>
@@ -51,7 +50,6 @@
 
 #define MODNAME "lpc-eth"
 #define DRV_VERSION "1.00"
-#define PHYDEF_ADDR 0x00
 
 #define ENET_MAXF_SIZE 1536
 #define ENET_RX_DESC 48
@@ -340,27 +338,22 @@
  */
 #define LPC_POWERDOWN_MACAHB			(1 << 31)
 
-/* Upon the upcoming introduction of device tree usage in LPC32xx,
- * lpc_phy_interface_mode() and use_iram_for_net() will be extended with a
- * device parameter for access to device tree information at runtime, instead
- * of defining the values at compile time
- */
-static inline phy_interface_t lpc_phy_interface_mode(void)
+static phy_interface_t lpc_phy_interface_mode(struct device *dev)
 {
-#ifdef CONFIG_ARCH_LPC32XX_MII_SUPPORT
-	return PHY_INTERFACE_MODE_MII;
-#else
+	if (dev && dev->of_node) {
+		const char *mode = of_get_property(dev->of_node,
+						   "phy-mode", NULL);
+		if (mode && !strcmp(mode, "mii"))
+			return PHY_INTERFACE_MODE_MII;
+	}
 	return PHY_INTERFACE_MODE_RMII;
-#endif
 }
 
-static inline int use_iram_for_net(void)
+static bool use_iram_for_net(struct device *dev)
 {
-#ifdef CONFIG_ARCH_LPC32XX_IRAM_FOR_NET
-	return 1;
-#else
-	return 0;
-#endif
+	if (dev && dev->of_node)
+		return of_property_read_bool(dev->of_node, "use-iram");
+	return false;
 }
 
 /* Receive Status information word */
@@ -407,9 +400,6 @@ static inline int use_iram_for_net(void)
 #define TXDESC_CONTROL_LAST		(1 << 30)
 #define TXDESC_CONTROL_INT		(1 << 31)
 
-static int lpc_eth_hard_start_xmit(struct sk_buff *skb,
-				   struct net_device *ndev);
-
 /*
  * Structure of a TX/RX descriptors and RX status
  */
@@ -431,11 +421,10 @@ struct netdata_local {
 	spinlock_t		lock;
 	void __iomem		*net_base;
 	u32			msg_enable;
-	struct sk_buff		*skb[ENET_TX_DESC];
+	unsigned int		skblen[ENET_TX_DESC];
 	unsigned int		last_tx_idx;
 	unsigned int		num_used_tx_buffs;
 	struct mii_bus		*mii_bus;
-	struct phy_device	*phy_dev;
 	struct clk		*clk;
 	dma_addr_t		dma_buff_base_p;
 	void			*dma_buff_base_v;
@@ -484,15 +473,6 @@ static void __lpc_get_mac(struct netdata_local *pldat, u8 *mac)
 	tmp = readl(LPC_ENET_SA0(pldat->net_base));
 	mac[4] = tmp & 0xFF;
 	mac[5] = tmp >> 8;
-}
-
-static void __lpc_eth_clock_enable(struct netdata_local *pldat,
-				   bool enable)
-{
-	if (enable)
-		clk_enable(pldat->clk);
-	else
-		clk_disable(pldat->clk);
 }
 
 static void __lpc_params_setup(struct netdata_local *pldat)
@@ -664,7 +644,7 @@ static void __lpc_eth_init(struct netdata_local *pldat)
 	       LPC_ENET_CLRT(pldat->net_base));
 	writel(LPC_IPGR_LOAD_PART2(0x12), LPC_ENET_IPGR(pldat->net_base));
 
-	if (lpc_phy_interface_mode() == PHY_INTERFACE_MODE_MII)
+	if (lpc_phy_interface_mode(&pldat->pdev->dev) == PHY_INTERFACE_MODE_MII)
 		writel(LPC_COMMAND_PASSRUNTFRAME,
 		       LPC_ENET_COMMAND(pldat->net_base));
 	else {
@@ -761,7 +741,7 @@ static int lpc_mdio_reset(struct mii_bus *bus)
 static void lpc_handle_link_change(struct net_device *ndev)
 {
 	struct netdata_local *pldat = netdev_priv(ndev);
-	struct phy_device *phydev = pldat->phy_dev;
+	struct phy_device *phydev = ndev->phydev;
 	unsigned long flags;
 
 	bool status_change = false;
@@ -804,12 +784,13 @@ static int lpc_mii_probe(struct net_device *ndev)
 	}
 
 	/* Attach to the PHY */
-	if (lpc_phy_interface_mode() == PHY_INTERFACE_MODE_MII)
+	if (lpc_phy_interface_mode(&pldat->pdev->dev) == PHY_INTERFACE_MODE_MII)
 		netdev_info(ndev, "using MII interface\n");
 	else
 		netdev_info(ndev, "using RMII interface\n");
-	phydev = phy_connect(ndev, dev_name(&phydev->dev),
-		&lpc_handle_link_change, 0, lpc_phy_interface_mode());
+	phydev = phy_connect(ndev, phydev_name(phydev),
+			     &lpc_handle_link_change,
+			     lpc_phy_interface_mode(&pldat->pdev->dev));
 
 	if (IS_ERR(phydev)) {
 		netdev_err(ndev, "Could not attach to PHY\n");
@@ -824,17 +805,15 @@ static int lpc_mii_probe(struct net_device *ndev)
 	pldat->link = 0;
 	pldat->speed = 0;
 	pldat->duplex = -1;
-	pldat->phy_dev = phydev;
 
-	netdev_info(ndev,
-		"attached PHY driver [%s] (mii_bus:phy_addr=%s, irq=%d)\n",
-		phydev->drv->name, dev_name(&phydev->dev), phydev->irq);
+	phy_attached_info(phydev);
+
 	return 0;
 }
 
 static int lpc_mii_init(struct netdata_local *pldat)
 {
-	int err = -ENXIO, i;
+	int err = -ENXIO;
 
 	pldat->mii_bus = mdiobus_alloc();
 	if (!pldat->mii_bus) {
@@ -843,7 +822,7 @@ static int lpc_mii_init(struct netdata_local *pldat)
 	}
 
 	/* Setup MII mode */
-	if (lpc_phy_interface_mode() == PHY_INTERFACE_MODE_MII)
+	if (lpc_phy_interface_mode(&pldat->pdev->dev) == PHY_INTERFACE_MODE_MII)
 		writel(LPC_COMMAND_PASSRUNTFRAME,
 		       LPC_ENET_COMMAND(pldat->net_base));
 	else {
@@ -861,19 +840,10 @@ static int lpc_mii_init(struct netdata_local *pldat)
 	pldat->mii_bus->priv = pldat;
 	pldat->mii_bus->parent = &pldat->pdev->dev;
 
-	pldat->mii_bus->irq = kmalloc(sizeof(int) * PHY_MAX_ADDR, GFP_KERNEL);
-	if (!pldat->mii_bus->irq) {
-		err = -ENOMEM;
-		goto err_out_1;
-	}
-
-	for (i = 0; i < PHY_MAX_ADDR; i++)
-		pldat->mii_bus->irq[i] = PHY_POLL;
-
 	platform_set_drvdata(pldat->pdev, pldat->mii_bus);
 
 	if (mdiobus_register(pldat->mii_bus))
-		goto err_out_free_mdio_irq;
+		goto err_out_unregister_bus;
 
 	if (lpc_mii_probe(pldat->ndev) != 0)
 		goto err_out_unregister_bus;
@@ -882,9 +852,6 @@ static int lpc_mii_init(struct netdata_local *pldat)
 
 err_out_unregister_bus:
 	mdiobus_unregister(pldat->mii_bus);
-err_out_free_mdio_irq:
-	kfree(pldat->mii_bus->irq);
-err_out_1:
 	mdiobus_free(pldat->mii_bus);
 err_out:
 	return err;
@@ -893,12 +860,11 @@ err_out:
 static void __lpc_handle_xmit(struct net_device *ndev)
 {
 	struct netdata_local *pldat = netdev_priv(ndev);
-	struct sk_buff *skb;
 	u32 txcidx, *ptxstat, txstat;
 
 	txcidx = readl(LPC_ENET_TXCONSUMEINDEX(pldat->net_base));
 	while (pldat->last_tx_idx != txcidx) {
-		skb = pldat->skb[pldat->last_tx_idx];
+		unsigned int skblen = pldat->skblen[pldat->last_tx_idx];
 
 		/* A buffer is available, get buffer status */
 		ptxstat = &pldat->tx_stat_v[pldat->last_tx_idx];
@@ -935,9 +901,8 @@ static void __lpc_handle_xmit(struct net_device *ndev)
 		} else {
 			/* Update stats */
 			ndev->stats.tx_packets++;
-			ndev->stats.tx_bytes += skb->len;
+			ndev->stats.tx_bytes += skblen;
 		}
-		dev_kfree_skb_irq(skb);
 
 		txcidx = readl(LPC_ENET_TXCONSUMEINDEX(pldat->net_base));
 	}
@@ -954,7 +919,6 @@ static int __lpc_handle_recv(struct net_device *ndev, int budget)
 	struct sk_buff *skb;
 	u32 rxconsidx, len, ethst;
 	struct rx_status_t *prxstat;
-	u8 *prdbuf;
 	int rx_done = 0;
 
 	/* Get the current RX buffer indexes */
@@ -990,15 +954,14 @@ static int __lpc_handle_recv(struct net_device *ndev, int budget)
 			ndev->stats.rx_errors++;
 		} else {
 			/* Packet is good */
-			skb = dev_alloc_skb(len + 8);
-			if (!skb)
+			skb = dev_alloc_skb(len);
+			if (!skb) {
 				ndev->stats.rx_dropped++;
-			else {
-				prdbuf = skb_put(skb, len);
-
+			} else {
 				/* Copy packet from buffer */
-				memcpy(prdbuf, pldat->rx_buff_v +
-					rxconsidx * ENET_MAXF_SIZE, len);
+				skb_put_data(skb,
+					     pldat->rx_buff_v + rxconsidx * ENET_MAXF_SIZE,
+					     len);
 
 				/* Pass to upper layer */
 				skb->protocol = eth_type_trans(skb, ndev);
@@ -1034,7 +997,7 @@ static int lpc_eth_poll(struct napi_struct *napi, int budget)
 	rx_done = __lpc_handle_recv(ndev, budget);
 
 	if (rx_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, rx_done);
 		lpc_eth_enable_int(pldat->net_base);
 	}
 
@@ -1073,8 +1036,8 @@ static int lpc_eth_close(struct net_device *ndev)
 	napi_disable(&pldat->napi);
 	netif_stop_queue(ndev);
 
-	if (pldat->phy_dev)
-		phy_stop(pldat->phy_dev);
+	if (ndev->phydev)
+		phy_stop(ndev->phydev);
 
 	spin_lock_irqsave(&pldat->lock, flags);
 	__lpc_eth_reset(pldat);
@@ -1083,7 +1046,7 @@ static int lpc_eth_close(struct net_device *ndev)
 	writel(0, LPC_ENET_MAC2(pldat->net_base));
 	spin_unlock_irqrestore(&pldat->lock, flags);
 
-	__lpc_eth_clock_enable(pldat, false);
+	clk_disable_unprepare(pldat->clk);
 
 	return 0;
 }
@@ -1122,7 +1085,7 @@ static int lpc_eth_hard_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	memcpy(pldat->tx_buff_v + txidx * ENET_MAXF_SIZE, skb->data, len);
 
 	/* Save the buffer and increment the buffer counter */
-	pldat->skb[txidx] = skb;
+	pldat->skblen[txidx] = len;
 	pldat->num_used_tx_buffs++;
 
 	/* Start transmit */
@@ -1137,6 +1100,7 @@ static int lpc_eth_hard_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 
 	spin_unlock_irq(&pldat->lock);
 
+	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
 
@@ -1209,8 +1173,7 @@ static void lpc_eth_set_multicast_list(struct net_device *ndev)
 
 static int lpc_eth_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
 {
-	struct netdata_local *pldat = netdev_priv(ndev);
-	struct phy_device *phydev = pldat->phy_dev;
+	struct phy_device *phydev = ndev->phydev;
 
 	if (!netif_running(ndev))
 		return -EINVAL;
@@ -1224,21 +1187,24 @@ static int lpc_eth_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
 static int lpc_eth_open(struct net_device *ndev)
 {
 	struct netdata_local *pldat = netdev_priv(ndev);
+	int ret;
 
 	if (netif_msg_ifup(pldat))
 		dev_dbg(&pldat->pdev->dev, "enabling %s\n", ndev->name);
 
-	if (!is_valid_ether_addr(ndev->dev_addr))
-		return -EADDRNOTAVAIL;
+	ret = clk_prepare_enable(pldat->clk);
+	if (ret)
+		return ret;
 
-	__lpc_eth_clock_enable(pldat, true);
+	/* Suspended PHY makes LPC ethernet core block, so resume now */
+	phy_resume(ndev->phydev);
 
 	/* Reset and initialize */
 	__lpc_eth_reset(pldat);
 	__lpc_eth_init(pldat);
 
 	/* schedule a link state check */
-	phy_start(pldat->phy_dev);
+	phy_start(ndev->phydev);
 	netif_start_queue(ndev);
 	napi_enable(&pldat->napi);
 
@@ -1251,9 +1217,10 @@ static int lpc_eth_open(struct net_device *ndev)
 static void lpc_eth_ethtool_getdrvinfo(struct net_device *ndev,
 	struct ethtool_drvinfo *info)
 {
-	strcpy(info->driver, MODNAME);
-	strcpy(info->version, DRV_VERSION);
-	strcpy(info->bus_info, dev_name(ndev->dev.parent));
+	strlcpy(info->driver, MODNAME, sizeof(info->driver));
+	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
+	strlcpy(info->bus_info, dev_name(ndev->dev.parent),
+		sizeof(info->bus_info));
 }
 
 static u32 lpc_eth_ethtool_getmsglevel(struct net_device *ndev)
@@ -1270,37 +1237,13 @@ static void lpc_eth_ethtool_setmsglevel(struct net_device *ndev, u32 level)
 	pldat->msg_enable = level;
 }
 
-static int lpc_eth_ethtool_getsettings(struct net_device *ndev,
-	struct ethtool_cmd *cmd)
-{
-	struct netdata_local *pldat = netdev_priv(ndev);
-	struct phy_device *phydev = pldat->phy_dev;
-
-	if (!phydev)
-		return -EOPNOTSUPP;
-
-	return phy_ethtool_gset(phydev, cmd);
-}
-
-static int lpc_eth_ethtool_setsettings(struct net_device *ndev,
-	struct ethtool_cmd *cmd)
-{
-	struct netdata_local *pldat = netdev_priv(ndev);
-	struct phy_device *phydev = pldat->phy_dev;
-
-	if (!phydev)
-		return -EOPNOTSUPP;
-
-	return phy_ethtool_sset(phydev, cmd);
-}
-
 static const struct ethtool_ops lpc_eth_ethtool_ops = {
 	.get_drvinfo	= lpc_eth_ethtool_getdrvinfo,
-	.get_settings	= lpc_eth_ethtool_getsettings,
-	.set_settings	= lpc_eth_ethtool_setsettings,
 	.get_msglevel	= lpc_eth_ethtool_getmsglevel,
 	.set_msglevel	= lpc_eth_ethtool_setmsglevel,
 	.get_link	= ethtool_op_get_link,
+	.get_link_ksettings = phy_ethtool_get_link_ksettings,
+	.set_link_ksettings = phy_ethtool_set_link_ksettings,
 };
 
 static const struct net_device_ops lpc_netdev_ops = {
@@ -1310,24 +1253,32 @@ static const struct net_device_ops lpc_netdev_ops = {
 	.ndo_set_rx_mode	= lpc_eth_set_multicast_list,
 	.ndo_do_ioctl		= lpc_eth_ioctl,
 	.ndo_set_mac_address	= lpc_set_mac_address,
-	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
 };
 
 static int lpc_eth_drv_probe(struct platform_device *pdev)
 {
 	struct resource *res;
-	struct resource *dma_res;
 	struct net_device *ndev;
 	struct netdata_local *pldat;
 	struct phy_device *phydev;
 	dma_addr_t dma_handle;
 	int irq, ret;
+	u32 tmp;
+
+	/* Setup network interface for RMII or MII mode */
+	tmp = __raw_readl(LPC32XX_CLKPWR_MACCLK_CTRL);
+	tmp &= ~LPC32XX_CLKPWR_MACCTRL_PINS_MSK;
+	if (lpc_phy_interface_mode(&pdev->dev) == PHY_INTERFACE_MODE_MII)
+		tmp |= LPC32XX_CLKPWR_MACCTRL_USE_MII_PINS;
+	else
+		tmp |= LPC32XX_CLKPWR_MACCTRL_USE_RMII_PINS;
+	__raw_writel(tmp, LPC32XX_CLKPWR_MACCLK_CTRL);
 
 	/* Get platform resources */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dma_res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	irq = platform_get_irq(pdev, 0);
-	if ((!res) || (!dma_res) || (irq < 0) || (irq >= NR_IRQS)) {
+	if (!res || irq < 0) {
 		dev_err(&pdev->dev, "error getting resources.\n");
 		ret = -ENXIO;
 		goto err_exit;
@@ -1361,10 +1312,12 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 	}
 
 	/* Enable network clock */
-	__lpc_eth_clock_enable(pldat, true);
+	ret = clk_prepare_enable(pldat->clk);
+	if (ret)
+		goto err_out_clk_put;
 
 	/* Map IO space */
-	pldat->net_base = ioremap(res->start, res->end - res->start + 1);
+	pldat->net_base = ioremap(res->start, resource_size(res));
 	if (!pldat->net_base) {
 		dev_err(&pdev->dev, "failed to map registers\n");
 		ret = -ENOMEM;
@@ -1377,9 +1330,6 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 		goto err_out_iounmap;
 	}
 
-	/* Fill in the fields of the device structure with ethernet values. */
-	ether_setup(ndev);
-
 	/* Setup driver functions */
 	ndev->netdev_ops = &lpc_netdev_ops;
 	ndev->ethtool_ops = &lpc_eth_ethtool_ops;
@@ -1390,17 +1340,21 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 		sizeof(struct txrx_desc_t) + sizeof(struct rx_status_t));
 	pldat->dma_buff_base_v = 0;
 
-	if (use_iram_for_net()) {
-		dma_handle = dma_res->start;
+	if (use_iram_for_net(&pldat->pdev->dev)) {
+		dma_handle = LPC32XX_IRAM_BASE;
 		if (pldat->dma_buff_size <= lpc32xx_return_iram_size())
 			pldat->dma_buff_base_v =
-				io_p2v(dma_res->start);
+				io_p2v(LPC32XX_IRAM_BASE);
 		else
 			netdev_err(ndev,
 				"IRAM not big enough for net buffers, using SDRAM instead.\n");
 	}
 
 	if (pldat->dma_buff_base_v == 0) {
+		ret = dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+		if (ret)
+			goto err_out_free_irq;
+
 		pldat->dma_buff_size = PAGE_ALIGN(pldat->dma_buff_size);
 
 		/* Allocate a chunk of memory for the DMA ethernet buffers
@@ -1409,38 +1363,33 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 			dma_alloc_coherent(&pldat->pdev->dev,
 					   pldat->dma_buff_size, &dma_handle,
 					   GFP_KERNEL);
-
 		if (pldat->dma_buff_base_v == NULL) {
-			dev_err(&pdev->dev, "error getting DMA region.\n");
 			ret = -ENOMEM;
 			goto err_out_free_irq;
 		}
 	}
 	pldat->dma_buff_base_p = dma_handle;
 
-	netdev_dbg(ndev, "IO address start     :0x%08x\n",
-			res->start);
-	netdev_dbg(ndev, "IO address size      :%d\n",
-			res->end - res->start + 1);
-	netdev_err(ndev, "IO address (mapped)  :0x%p\n",
+	netdev_dbg(ndev, "IO address space     :%pR\n", res);
+	netdev_dbg(ndev, "IO address size      :%zd\n",
+			(size_t)resource_size(res));
+	netdev_dbg(ndev, "IO address (mapped)  :0x%p\n",
 			pldat->net_base);
 	netdev_dbg(ndev, "IRQ number           :%d\n", ndev->irq);
-	netdev_dbg(ndev, "DMA buffer size      :%d\n", pldat->dma_buff_size);
-	netdev_dbg(ndev, "DMA buffer P address :0x%08x\n",
-			pldat->dma_buff_base_p);
+	netdev_dbg(ndev, "DMA buffer size      :%zd\n", pldat->dma_buff_size);
+	netdev_dbg(ndev, "DMA buffer P address :%pad\n",
+			&pldat->dma_buff_base_p);
 	netdev_dbg(ndev, "DMA buffer V address :0x%p\n",
 			pldat->dma_buff_base_v);
 
 	/* Get MAC address from current HW setting (POR state is all zeros) */
 	__lpc_get_mac(pldat, ndev->dev_addr);
 
-#ifdef CONFIG_OF_NET
 	if (!is_valid_ether_addr(ndev->dev_addr)) {
 		const char *macaddr = of_get_mac_address(pdev->dev.of_node);
 		if (macaddr)
 			memcpy(ndev->dev_addr, macaddr, ETH_ALEN);
 	}
-#endif
 	if (!is_valid_ether_addr(ndev->dev_addr))
 		eth_hw_addr_random(ndev);
 
@@ -1472,13 +1421,14 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 	}
 	platform_set_drvdata(pdev, ndev);
 
-	if (lpc_mii_init(pldat) != 0)
+	ret = lpc_mii_init(pldat);
+	if (ret)
 		goto err_out_unregister_netdev;
 
-	netdev_info(ndev, "LPC mac at 0x%08x irq %d\n",
-	       res->start, ndev->irq);
+	netdev_info(ndev, "LPC mac at 0x%08lx irq %d\n",
+	       (unsigned long)res->start, ndev->irq);
 
-	phydev = pldat->phy_dev;
+	phydev = ndev->phydev;
 
 	device_init_wakeup(&pdev->dev, 1);
 	device_set_wakeup_enable(&pdev->dev, 0);
@@ -1486,10 +1436,9 @@ static int lpc_eth_drv_probe(struct platform_device *pdev)
 	return 0;
 
 err_out_unregister_netdev:
-	platform_set_drvdata(pdev, NULL);
 	unregister_netdev(ndev);
 err_out_dma_unmap:
-	if (!use_iram_for_net() ||
+	if (!use_iram_for_net(&pldat->pdev->dev) ||
 	    pldat->dma_buff_size > lpc32xx_return_iram_size())
 		dma_free_coherent(&pldat->pdev->dev, pldat->dma_buff_size,
 				  pldat->dma_buff_base_v,
@@ -1499,7 +1448,8 @@ err_out_free_irq:
 err_out_iounmap:
 	iounmap(pldat->net_base);
 err_out_disable_clocks:
-	clk_disable(pldat->clk);
+	clk_disable_unprepare(pldat->clk);
+err_out_clk_put:
 	clk_put(pldat->clk);
 err_out_free_dev:
 	free_netdev(ndev);
@@ -1514,9 +1464,8 @@ static int lpc_eth_drv_remove(struct platform_device *pdev)
 	struct netdata_local *pldat = netdev_priv(ndev);
 
 	unregister_netdev(ndev);
-	platform_set_drvdata(pdev, NULL);
 
-	if (!use_iram_for_net() ||
+	if (!use_iram_for_net(&pldat->pdev->dev) ||
 	    pldat->dma_buff_size > lpc32xx_return_iram_size())
 		dma_free_coherent(&pldat->pdev->dev, pldat->dma_buff_size,
 				  pldat->dma_buff_base_v,
@@ -1525,7 +1474,7 @@ static int lpc_eth_drv_remove(struct platform_device *pdev)
 	iounmap(pldat->net_base);
 	mdiobus_unregister(pldat->mii_bus);
 	mdiobus_free(pldat->mii_bus);
-	clk_disable(pldat->clk);
+	clk_disable_unprepare(pldat->clk);
 	clk_put(pldat->clk);
 	free_netdev(ndev);
 
@@ -1546,7 +1495,7 @@ static int lpc_eth_drv_suspend(struct platform_device *pdev,
 		if (netif_running(ndev)) {
 			netif_device_detach(ndev);
 			__lpc_eth_shutdown(pldat);
-			clk_disable(pldat->clk);
+			clk_disable_unprepare(pldat->clk);
 
 			/*
 			 * Reset again now clock is disable to be sure
@@ -1586,15 +1535,24 @@ static int lpc_eth_drv_resume(struct platform_device *pdev)
 }
 #endif
 
+#ifdef CONFIG_OF
+static const struct of_device_id lpc_eth_match[] = {
+	{ .compatible = "nxp,lpc-eth" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, lpc_eth_match);
+#endif
+
 static struct platform_driver lpc_eth_driver = {
 	.probe		= lpc_eth_drv_probe,
-	.remove		= __devexit_p(lpc_eth_drv_remove),
+	.remove		= lpc_eth_drv_remove,
 #ifdef CONFIG_PM
 	.suspend	= lpc_eth_drv_suspend,
 	.resume		= lpc_eth_drv_resume,
 #endif
 	.driver		= {
 		.name	= MODNAME,
+		.of_match_table = of_match_ptr(lpc_eth_match),
 	},
 };
 

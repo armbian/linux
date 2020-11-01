@@ -101,7 +101,7 @@ void pci_puv3_preinit(void)
 	writel(readl(PCIBRI_CMD) | PCIBRI_CMD_IO | PCIBRI_CMD_MEM, PCIBRI_CMD);
 }
 
-static int __init pci_puv3_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+static int pci_puv3_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	if (dev->bus->number == 0) {
 #ifdef CONFIG_ARCH_FPGA /* 4 pci slots */
@@ -154,14 +154,6 @@ void __init puv3_pci_adjust_zones(unsigned long *zone_size,
 	zhole_size[0] = 0;
 }
 
-void __devinit pcibios_update_irq(struct pci_dev *dev, int irq)
-{
-	if (debug_pci)
-		printk(KERN_DEBUG "PCI: Assigning IRQ %02d to %s\n",
-				irq, pci_name(dev));
-	pci_write_config_byte(dev, PCI_INTERRUPT_LINE, irq);
-}
-
 /*
  * If the bus contains any of these devices, then we must not turn on
  * parity checking of any kind.
@@ -175,7 +167,7 @@ static inline int pdev_bad_for_parity(struct pci_dev *dev)
  * pcibios_fixup_bus - Called after each bus is probed,
  * but before its children are examined.
  */
-void __devinit pcibios_fixup_bus(struct pci_bus *bus)
+void pcibios_fixup_bus(struct pci_bus *bus)
 {
 	struct pci_dev *dev;
 	u16 features = PCI_COMMAND_SERR
@@ -258,51 +250,59 @@ void __devinit pcibios_fixup_bus(struct pci_bus *bus)
 	printk(KERN_INFO "PCI: bus%d: Fast back to back transfers %sabled\n",
 		bus->number, (features & PCI_COMMAND_FAST_BACK) ? "en" : "dis");
 }
-#ifdef CONFIG_HOTPLUG
 EXPORT_SYMBOL(pcibios_fixup_bus);
-#endif
+
+static struct resource busn_resource = {
+	.name	= "PCI busn",
+	.start	= 0,
+	.end	= 255,
+	.flags	= IORESOURCE_BUS,
+};
 
 static int __init pci_common_init(void)
 {
 	struct pci_bus *puv3_bus;
+	struct pci_host_bridge *bridge;
+	int ret;
+
+	bridge = pci_alloc_host_bridge(0);
+	if (!bridge)
+		return -ENOMEM;
 
 	pci_puv3_preinit();
 
-	puv3_bus = pci_scan_bus(0, &pci_puv3_ops, NULL);
+	pci_add_resource(&bridge->windows, &ioport_resource);
+	pci_add_resource(&bridge->windows, &iomem_resource);
+	pci_add_resource(&bridge->windows, &busn_resource);
+	bridge->sysdata = NULL;
+	bridge->busnr = 0;
+	bridge->ops = &pci_puv3_ops;
+	bridge->swizzle_irq = pci_common_swizzle;
+	bridge->map_irq = pci_puv3_map_irq;
+
+	/* Scan our single hose.  */
+	ret = pci_scan_root_bus_bridge(bridge);
+	if (ret) {
+		pci_free_host_bridge(bridge);
+		return;
+	}
+
+	puv3_bus = bridge->bus;
 
 	if (!puv3_bus)
 		panic("PCI: unable to scan bus!");
 
-	pci_fixup_irqs(pci_common_swizzle, pci_puv3_map_irq);
-
-	if (!pci_has_flag(PCI_PROBE_ONLY)) {
-		/*
-		 * Size the bridge windows.
-		 */
-		pci_bus_size_bridges(puv3_bus);
-
-		/*
-		 * Assign resources.
-		 */
-		pci_bus_assign_resources(puv3_bus);
-	}
-
-	/*
-	 * Tell drivers about devices found.
-	 */
+	pci_bus_size_bridges(puv3_bus);
+	pci_bus_assign_resources(puv3_bus);
 	pci_bus_add_devices(puv3_bus);
-
 	return 0;
 }
 subsys_initcall(pci_common_init);
 
-char * __devinit pcibios_setup(char *str)
+char * __init pcibios_setup(char *str)
 {
 	if (!strcmp(str, "debug")) {
 		debug_pci = 1;
-		return NULL;
-	} else if (!strcmp(str, "firmware")) {
-		pci_add_flags(PCI_PROBE_ONLY);
 		return NULL;
 	}
 	return str;
@@ -381,28 +381,5 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 		       pci_name(dev), old_cmd, cmd);
 		pci_write_config_word(dev, PCI_COMMAND, cmd);
 	}
-	return 0;
-}
-
-int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
-			enum pci_mmap_state mmap_state, int write_combine)
-{
-	unsigned long phys;
-
-	if (mmap_state == pci_mmap_io)
-		return -EINVAL;
-
-	phys = vma->vm_pgoff;
-
-	/*
-	 * Mark this as IO
-	 */
-	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-
-	if (remap_pfn_range(vma, vma->vm_start, phys,
-			     vma->vm_end - vma->vm_start,
-			     vma->vm_page_prot))
-		return -EAGAIN;
-
 	return 0;
 }

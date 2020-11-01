@@ -13,11 +13,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA.
- *
  * Inspired by the original lirc_it87 and lirc_ite8709 drivers, on top of the
  * skeleton provided by the nuvoton-cir driver.
  *
@@ -55,14 +50,12 @@ MODULE_PARM_DESC(debug, "Enable debugging output");
 /* low limit for RX carrier freq, Hz, 0 for no RX demodulation */
 static int rx_low_carrier_freq;
 module_param(rx_low_carrier_freq, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(rx_low_carrier_freq, "Override low RX carrier frequency, Hz, "
-		 "0 for no RX demodulation");
+MODULE_PARM_DESC(rx_low_carrier_freq, "Override low RX carrier frequency, Hz, 0 for no RX demodulation");
 
 /* high limit for RX carrier freq, Hz, 0 for no RX demodulation */
 static int rx_high_carrier_freq;
 module_param(rx_high_carrier_freq, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(rx_high_carrier_freq, "Override high RX carrier frequency, "
-		 "Hz, 0 for no RX demodulation");
+MODULE_PARM_DESC(rx_high_carrier_freq, "Override high RX carrier frequency, Hz, 0 for no RX demodulation");
 
 /* override tx carrier frequency */
 static int tx_carrier_freq;
@@ -263,6 +256,8 @@ static void ite_set_carrier_params(struct ite_dev *dev)
 
 			if (allowance > ITE_RXDCR_MAX)
 				allowance = ITE_RXDCR_MAX;
+
+			use_demodulator = true;
 		}
 	}
 
@@ -1470,9 +1465,9 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 		return ret;
 
 	/* input device for IR remote (and tx) */
-	rdev = rc_allocate_device();
+	rdev = rc_allocate_device(RC_DRIVER_IR_RAW);
 	if (!rdev)
-		goto failure;
+		goto exit_free_dev_rdev;
 	itdev->rdev = rdev;
 
 	ret = -ENODEV;
@@ -1484,8 +1479,7 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 
 	if (model_number >= 0 && model_number < ARRAY_SIZE(ite_dev_descs)) {
 		model_no = model_number;
-		ite_pr(KERN_NOTICE, "The model has been fixed by a module "
-			"parameter.");
+		ite_pr(KERN_NOTICE, "The model has been fixed by a module parameter.");
 	}
 
 	ite_pr(KERN_NOTICE, "Using model: %s\n", ite_dev_descs[model_no].model);
@@ -1498,12 +1492,12 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 	if (!pnp_port_valid(pdev, io_rsrc_no) ||
 	    pnp_port_len(pdev, io_rsrc_no) != dev_desc->io_region_size) {
 		dev_err(&pdev->dev, "IR PNP Port not valid!\n");
-		goto failure;
+		goto exit_free_dev_rdev;
 	}
 
 	if (!pnp_irq_valid(pdev, 0)) {
 		dev_err(&pdev->dev, "PNP IRQ not valid!\n");
-		goto failure;
+		goto exit_free_dev_rdev;
 	}
 
 	/* store resource values */
@@ -1562,8 +1556,7 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 
 	/* set up ir-core props */
 	rdev->priv = itdev;
-	rdev->driver_type = RC_DRIVER_IR_RAW;
-	rdev->allowed_protos = RC_TYPE_ALL;
+	rdev->allowed_protocols = RC_PROTO_BIT_ALL_IR_DECODER;
 	rdev->open = ite_open;
 	rdev->close = ite_close;
 	rdev->s_idle = ite_s_idle;
@@ -1583,7 +1576,7 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 		rdev->s_tx_duty_cycle = ite_set_tx_duty_cycle;
 	}
 
-	rdev->input_name = dev_desc->model;
+	rdev->device_name = dev_desc->model;
 	rdev->input_id.bustype = BUS_HOST;
 	rdev->input_id.vendor = PCI_VENDOR_ID_ITE;
 	rdev->input_id.product = 0;
@@ -1591,38 +1584,37 @@ static int ite_probe(struct pnp_dev *pdev, const struct pnp_device_id
 	rdev->driver_name = ITE_DRIVER_NAME;
 	rdev->map_name = RC_MAP_RC6_MCE;
 
+	ret = rc_register_device(rdev);
+	if (ret)
+		goto exit_free_dev_rdev;
+
 	ret = -EBUSY;
 	/* now claim resources */
 	if (!request_region(itdev->cir_addr,
 				dev_desc->io_region_size, ITE_DRIVER_NAME))
-		goto failure;
+		goto exit_unregister_device;
 
 	if (request_irq(itdev->cir_irq, ite_cir_isr, IRQF_SHARED,
 			ITE_DRIVER_NAME, (void *)itdev))
-		goto failure;
-
-	ret = rc_register_device(rdev);
-	if (ret)
-		goto failure;
+		goto exit_release_cir_addr;
 
 	ite_pr(KERN_NOTICE, "driver has been successfully loaded\n");
 
 	return 0;
 
-failure:
-	if (itdev->cir_irq)
-		free_irq(itdev->cir_irq, itdev);
-
-	if (itdev->cir_addr)
-		release_region(itdev->cir_addr, itdev->params.io_region_size);
-
+exit_release_cir_addr:
+	release_region(itdev->cir_addr, itdev->params.io_region_size);
+exit_unregister_device:
+	rc_unregister_device(rdev);
+	rdev = NULL;
+exit_free_dev_rdev:
 	rc_free_device(rdev);
 	kfree(itdev);
 
 	return ret;
 }
 
-static void __devexit ite_remove(struct pnp_dev *pdev)
+static void ite_remove(struct pnp_dev *pdev)
 {
 	struct ite_dev *dev = pnp_get_drvdata(pdev);
 	unsigned long flags;
@@ -1667,7 +1659,6 @@ static int ite_suspend(struct pnp_dev *pdev, pm_message_t state)
 
 static int ite_resume(struct pnp_dev *pdev)
 {
-	int ret = 0;
 	struct ite_dev *dev = pnp_get_drvdata(pdev);
 	unsigned long flags;
 
@@ -1682,7 +1673,7 @@ static int ite_resume(struct pnp_dev *pdev)
 
 	spin_unlock_irqrestore(&dev->lock, flags);
 
-	return ret;
+	return 0;
 }
 
 static void ite_shutdown(struct pnp_dev *pdev)
@@ -1704,21 +1695,11 @@ static struct pnp_driver ite_driver = {
 	.name		= ITE_DRIVER_NAME,
 	.id_table	= ite_ids,
 	.probe		= ite_probe,
-	.remove		= __devexit_p(ite_remove),
+	.remove		= ite_remove,
 	.suspend	= ite_suspend,
 	.resume		= ite_resume,
 	.shutdown	= ite_shutdown,
 };
-
-int ite_init(void)
-{
-	return pnp_register_driver(&ite_driver);
-}
-
-void ite_exit(void)
-{
-	pnp_unregister_driver(&ite_driver);
-}
 
 MODULE_DEVICE_TABLE(pnp, ite_ids);
 MODULE_DESCRIPTION("ITE Tech Inc. IT8712F/ITE8512F CIR driver");
@@ -1726,5 +1707,4 @@ MODULE_DESCRIPTION("ITE Tech Inc. IT8712F/ITE8512F CIR driver");
 MODULE_AUTHOR("Juan J. Garcia de Soria <skandalfo@gmail.com>");
 MODULE_LICENSE("GPL");
 
-module_init(ite_init);
-module_exit(ite_exit);
+module_pnp_driver(ite_driver);

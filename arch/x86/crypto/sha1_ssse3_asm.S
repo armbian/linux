@@ -28,6 +28,8 @@
  * (at your option) any later version.
  */
 
+#include <linux/linkage.h>
+
 #define CTX	%rdi	// arg1
 #define BUF	%rsi	// arg2
 #define CNT	%rdx	// arg3
@@ -35,7 +37,7 @@
 #define REG_A	%ecx
 #define REG_B	%esi
 #define REG_C	%edi
-#define REG_D	%ebp
+#define REG_D	%r12d
 #define REG_E	%edx
 
 #define REG_T1	%eax
@@ -69,15 +71,13 @@
  * param: function's name
  */
 .macro SHA1_VECTOR_ASM  name
-	.global	\name
-	.type	\name, @function
-	.align 32
-\name:
-	push	%rbx
-	push	%rbp
-	push	%r12
+	ENTRY(\name)
 
-	mov	%rsp, %r12
+	push	%rbx
+	push	%r12
+	push	%rbp
+	mov	%rsp, %rbp
+
 	sub	$64, %rsp		# allocate workspace
 	and	$~15, %rsp		# align stack
 
@@ -99,14 +99,13 @@
 	xor	%rax, %rax
 	rep stosq
 
-	mov	%r12, %rsp		# deallocate workspace
-
-	pop	%r12
+	mov	%rbp, %rsp		# deallocate workspace
 	pop	%rbp
+	pop	%r12
 	pop	%rbx
 	ret
 
-	.size	\name, .-\name
+	ENDPROC(\name)
 .endm
 
 /*
@@ -468,7 +467,7 @@ W_PRECALC_SSSE3
  */
 SHA1_VECTOR_ASM     sha1_transform_ssse3
 
-#ifdef SHA1_ENABLE_AVX_SUPPORT
+#ifdef CONFIG_AS_AVX
 
 .macro W_PRECALC_AVX
 

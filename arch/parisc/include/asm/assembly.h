@@ -59,14 +59,14 @@
 #define LDCW		ldcw,co
 #define BL		b,l
 # ifdef CONFIG_64BIT
-#  define LEVEL		2.0w
+#  define PA_ASM_LEVEL	2.0w
 # else
-#  define LEVEL		2.0
+#  define PA_ASM_LEVEL	2.0
 # endif
 #else
 #define LDCW		ldcw
 #define BL		bl
-#define LEVEL		1.1
+#define PA_ASM_LEVEL	1.1
 #endif
 
 #ifdef __ASSEMBLY__
@@ -438,7 +438,6 @@
 	SAVE_SP  (%sr4, PT_SR4 (\regs))
 	SAVE_SP  (%sr5, PT_SR5 (\regs))
 	SAVE_SP  (%sr6, PT_SR6 (\regs))
-	SAVE_SP  (%sr7, PT_SR7 (\regs))
 
 	SAVE_CR  (%cr17, PT_IASQ0(\regs))
 	mtctl	 %r0,	%cr17
@@ -515,6 +514,18 @@
 	nop	/* 6 */
 	nop	/* 7 */
 	.endm
+
+	/*
+	 * ASM_EXCEPTIONTABLE_ENTRY
+	 *
+	 * Creates an exception table entry.
+	 * Do not convert to a assembler macro. This won't work.
+	 */
+#define ASM_EXCEPTIONTABLE_ENTRY(fault_addr, except_addr)	\
+	.section __ex_table,"aw"			!	\
+	.word (fault_addr - .), (except_addr - .)	!	\
+	.previous
+
 
 #endif /* __ASSEMBLY__ */
 #endif

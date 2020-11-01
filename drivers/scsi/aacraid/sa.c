@@ -6,7 +6,8 @@
  * Adaptec aacraid device driver for Linux.
  *
  * Copyright (c) 2000-2010 Adaptec, Inc.
- *               2010 PMC-Sierra, Inc. (aacraid@pmc-sierra.com)
+ *               2010-2015 PMC-Sierra, Inc. (aacraid@pmc-sierra.com)
+ *		 2016-2017 Microsemi Corp. (aacraid@microsemi.com)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -245,19 +246,19 @@ static void aac_sa_interrupt_adapter (struct aac_dev *dev)
 
 static void aac_sa_start_adapter(struct aac_dev *dev)
 {
-	struct aac_init *init;
+	union aac_init *init;
 	/*
 	 * Fill in the remaining pieces of the init.
 	 */
 	init = dev->init;
-	init->HostElapsedSeconds = cpu_to_le32(get_seconds());
+	init->r7.host_elapsed_seconds = cpu_to_le32(get_seconds());
 	/* We can only use a 32 bit address here */
 	sa_sync_cmd(dev, INIT_STRUCT_BASE_ADDRESS, 
 			(u32)(ulong)dev->init_pa, 0, 0, 0, 0, 0,
 			NULL, NULL, NULL, NULL, NULL);
 }
 
-static int aac_sa_restart_adapter(struct aac_dev *dev, int bled)
+static int aac_sa_restart_adapter(struct aac_dev *dev, int bled, u8 reset_type)
 {
 	return -EINVAL;
 }
@@ -305,7 +306,7 @@ static int aac_sa_ioremap(struct aac_dev * dev, u32 size)
 		iounmap(dev->regs.sa);
 		return 0;
 	}
-	dev->base = dev->regs.sa = ioremap(dev->scsi_host_ptr->base, size);
+	dev->base = dev->regs.sa = ioremap(dev->base_start, size);
 	return (dev->base == NULL) ? -1 : 0;
 }
 
@@ -372,6 +373,7 @@ int aac_sa_init(struct aac_dev *dev)
 	dev->a_ops.adapter_sync_cmd = sa_sync_cmd;
 	dev->a_ops.adapter_check_health = aac_sa_check_health;
 	dev->a_ops.adapter_restart = aac_sa_restart_adapter;
+	dev->a_ops.adapter_start = aac_sa_start_adapter;
 	dev->a_ops.adapter_intr = aac_sa_intr;
 	dev->a_ops.adapter_deliver = aac_rx_deliver_producer;
 	dev->a_ops.adapter_ioremap = aac_sa_ioremap;
@@ -387,13 +389,12 @@ int aac_sa_init(struct aac_dev *dev)
 		goto error_irq;
 	dev->sync_mode = 0;	/* sync. mode not supported */
 	if (request_irq(dev->pdev->irq, dev->a_ops.adapter_intr,
-			IRQF_SHARED|IRQF_DISABLED,
-			"aacraid", (void *)dev ) < 0) {
+			IRQF_SHARED, "aacraid", (void *)dev) < 0) {
 		printk(KERN_WARNING "%s%d: Interrupt unavailable.\n",
 			name, instance);
 		goto error_iounmap;
 	}
-	dev->dbg_base = dev->scsi_host_ptr->base;
+	dev->dbg_base = dev->base_start;
 	dev->dbg_base_mapped = dev->base;
 	dev->dbg_size = dev->base_size;
 

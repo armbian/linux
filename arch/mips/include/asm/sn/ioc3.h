@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 1999, 2000 Ralf Baechle
  * Copyright (C) 1999, 2000 Silicon Graphics, Inc.
@@ -62,8 +63,8 @@ struct ioc3_sioregs {
 
 	volatile u8		fill3[0x170 - 0x169 - 1];
 
-	struct ioc3_uartregs    uartb;	/* 0x20170  */
-	struct ioc3_uartregs    uarta;	/* 0x20178  */
+	struct ioc3_uartregs	uartb;	/* 0x20170  */
+	struct ioc3_uartregs	uarta;	/* 0x20178  */
 };
 
 /* Register layout of IOC3 in configuration space.  */
@@ -106,7 +107,7 @@ struct ioc3 {
 	volatile u32	ppbr_l_b;	/* 0x00094  */
 	volatile u32	ppcr_b;		/* 0x00098  */
 
-	/* Keyboard and Mouse Registers  */
+	/* Keyboard and Mouse Registers	 */
 	volatile u32	km_csr;		/* 0x0009c  */
 	volatile u32	k_rd;		/* 0x000a0  */
 	volatile u32	m_rd;		/* 0x000a4  */
@@ -208,7 +209,7 @@ struct ioc3_erxbuf {
 /*
  * Ethernet TX Descriptor
  */
-#define ETXD_DATALEN    104
+#define ETXD_DATALEN	104
 struct ioc3_etxd {
 	u32	cmd;				/* command field */
 	u32	bufcnt;				/* buffer counts field */
@@ -355,7 +356,7 @@ struct ioc3_etxd {
 #define SSCR_PAUSE_STATE 0x40000000	/* sets when PAUSE takes effect */
 #define SSCR_RESET	0x80000000	/* reset DMA channels */
 
-/* all producer/comsumer pointers are the same bitfield */
+/* all producer/consumer pointers are the same bitfield */
 #define PROD_CONS_PTR_4K 0x00000ff8	/* for 4K buffers */
 #define PROD_CONS_PTR_1K 0x000003f8	/* for 1K buffers */
 #define PROD_CONS_PTR_OFF 3

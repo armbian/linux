@@ -31,10 +31,14 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/ioport.h>
+#include <linux/platform_device.h>
+#include <linux/usb/isp116x.h>
 #include <linux/vt_kern.h>
 #include <linux/module.h>
 
 #include <asm/bootinfo.h>
+#include <asm/bootinfo-atari.h>
+#include <asm/byteorder.h>
 #include <asm/setup.h>
 #include <asm/atarihw.h>
 #include <asm/atariints.h>
@@ -74,7 +78,7 @@ static void atari_heartbeat(int on);
 
 /* atari specific timer functions (in time.c) */
 extern void atari_sched_init(irq_handler_t);
-extern unsigned long atari_gettimeoffset (void);
+extern u32 atari_gettimeoffset(void);
 extern int atari_mste_hwclk (int, struct rtc_time *);
 extern int atari_tt_hwclk (int, struct rtc_time *);
 extern int atari_mste_set_clock_mmss (unsigned long);
@@ -127,14 +131,14 @@ static int __init scc_test(volatile char *ctla)
 int __init atari_parse_bootinfo(const struct bi_record *record)
 {
 	int unknown = 0;
-	const u_long *data = record->data;
+	const void *data = record->data;
 
-	switch (record->tag) {
+	switch (be16_to_cpu(record->tag)) {
 	case BI_ATARI_MCH_COOKIE:
-		atari_mch_cookie = *data;
+		atari_mch_cookie = be32_to_cpup(data);
 		break;
 	case BI_ATARI_MCH_TYPE:
-		atari_mch_type = *data;
+		atari_mch_type = be32_to_cpup(data);
 		break;
 	default:
 		unknown = 1;
@@ -204,10 +208,10 @@ void __init config_atari(void)
 	mach_init_IRQ        = atari_init_IRQ;
 	mach_get_model	 = atari_get_model;
 	mach_get_hardware_list = atari_get_hardware_list;
-	mach_gettimeoffset   = atari_gettimeoffset;
+	arch_gettimeoffset   = atari_gettimeoffset;
 	mach_reset           = atari_reset;
 	mach_max_dma_address = 0xffffff;
-#if defined(CONFIG_INPUT_M68K_BEEP) || defined(CONFIG_INPUT_M68K_BEEP_MODULE)
+#if IS_ENABLED(CONFIG_INPUT_M68K_BEEP)
 	mach_beep          = atari_mksound;
 #endif
 #ifdef CONFIG_HEARTBEAT
@@ -230,44 +234,44 @@ void __init config_atari(void)
 	 * Determine hardware present
 	 */
 
-	printk("Atari hardware found: ");
+	pr_info("Atari hardware found:");
 	if (MACH_IS_MEDUSA) {
 		/* There's no Atari video hardware on the Medusa, but all the
 		 * addresses below generate a DTACK so no bus error occurs! */
 	} else if (hwreg_present(f030_xreg)) {
 		ATARIHW_SET(VIDEL_SHIFTER);
-		printk("VIDEL ");
+		pr_cont(" VIDEL");
 		/* This is a temporary hack: If there is Falcon video
 		 * hardware, we assume that the ST-DMA serves SCSI instead of
 		 * ACSI. In the future, there should be a better method for
 		 * this...
 		 */
 		ATARIHW_SET(ST_SCSI);
-		printk("STDMA-SCSI ");
+		pr_cont(" STDMA-SCSI");
 	} else if (hwreg_present(tt_palette)) {
 		ATARIHW_SET(TT_SHIFTER);
-		printk("TT_SHIFTER ");
+		pr_cont(" TT_SHIFTER");
 	} else if (hwreg_present(&shifter.bas_hi)) {
 		if (hwreg_present(&shifter.bas_lo) &&
 		    (shifter.bas_lo = 0x0aau, shifter.bas_lo == 0x0aau)) {
 			ATARIHW_SET(EXTD_SHIFTER);
-			printk("EXTD_SHIFTER ");
+			pr_cont(" EXTD_SHIFTER");
 		} else {
 			ATARIHW_SET(STND_SHIFTER);
-			printk("STND_SHIFTER ");
+			pr_cont(" STND_SHIFTER");
 		}
 	}
 	if (hwreg_present(&st_mfp.par_dt_reg)) {
 		ATARIHW_SET(ST_MFP);
-		printk("ST_MFP ");
+		pr_cont(" ST_MFP");
 	}
 	if (hwreg_present(&tt_mfp.par_dt_reg)) {
 		ATARIHW_SET(TT_MFP);
-		printk("TT_MFP ");
+		pr_cont(" TT_MFP");
 	}
 	if (hwreg_present(&tt_scsi_dma.dma_addr_hi)) {
 		ATARIHW_SET(SCSI_DMA);
-		printk("TT_SCSI_DMA ");
+		pr_cont(" TT_SCSI_DMA");
 	}
 	/*
 	 * The ST-DMA address registers aren't readable
@@ -280,27 +284,27 @@ void __init config_atari(void)
 	     (st_dma.dma_vhi = 0xaa) && (st_dma.dma_hi = 0x55) &&
 	     st_dma.dma_vhi == 0xaa && st_dma.dma_hi == 0x55)) {
 		ATARIHW_SET(EXTD_DMA);
-		printk("EXTD_DMA ");
+		pr_cont(" EXTD_DMA");
 	}
 	if (hwreg_present(&tt_scsi.scsi_data)) {
 		ATARIHW_SET(TT_SCSI);
-		printk("TT_SCSI ");
+		pr_cont(" TT_SCSI");
 	}
 	if (hwreg_present(&sound_ym.rd_data_reg_sel)) {
 		ATARIHW_SET(YM_2149);
-		printk("YM2149 ");
+		pr_cont(" YM2149");
 	}
 	if (!MACH_IS_MEDUSA && hwreg_present(&tt_dmasnd.ctrl)) {
 		ATARIHW_SET(PCM_8BIT);
-		printk("PCM ");
+		pr_cont(" PCM");
 	}
 	if (hwreg_present(&falcon_codec.unused5)) {
 		ATARIHW_SET(CODEC);
-		printk("CODEC ");
+		pr_cont(" CODEC");
 	}
 	if (hwreg_present(&dsp56k_host_interface.icr)) {
 		ATARIHW_SET(DSP56K);
-		printk("DSP56K ");
+		pr_cont(" DSP56K");
 	}
 	if (hwreg_present(&tt_scc_dma.dma_ctrl) &&
 #if 0
@@ -312,33 +316,33 @@ void __init config_atari(void)
 #endif
 	    ) {
 		ATARIHW_SET(SCC_DMA);
-		printk("SCC_DMA ");
+		pr_cont(" SCC_DMA");
 	}
 	if (scc_test(&atari_scc.cha_a_ctrl)) {
 		ATARIHW_SET(SCC);
-		printk("SCC ");
+		pr_cont(" SCC");
 	}
 	if (scc_test(&st_escc.cha_b_ctrl)) {
 		ATARIHW_SET(ST_ESCC);
-		printk("ST_ESCC ");
+		pr_cont(" ST_ESCC");
 	}
 	if (hwreg_present(&tt_scu.sys_mask)) {
 		ATARIHW_SET(SCU);
 		/* Assume a VME bus if there's a SCU */
 		ATARIHW_SET(VME);
-		printk("VME SCU ");
+		pr_cont(" VME SCU");
 	}
 	if (hwreg_present((void *)(0xffff9210))) {
 		ATARIHW_SET(ANALOG_JOY);
-		printk("ANALOG_JOY ");
+		pr_cont(" ANALOG_JOY");
 	}
 	if (hwreg_present(blitter.halftone)) {
 		ATARIHW_SET(BLITTER);
-		printk("BLITTER ");
+		pr_cont(" BLITTER");
 	}
 	if (hwreg_present((void *)0xfff00039)) {
 		ATARIHW_SET(IDE);
-		printk("IDE ");
+		pr_cont(" IDE");
 	}
 #if 1 /* This maybe wrong */
 	if (!MACH_IS_MEDUSA && hwreg_present(&tt_microwire.data) &&
@@ -351,31 +355,31 @@ void __init config_atari(void)
 		ATARIHW_SET(MICROWIRE);
 		while (tt_microwire.mask != 0x7ff)
 			;
-		printk("MICROWIRE ");
+		pr_cont(" MICROWIRE");
 	}
 #endif
 	if (hwreg_present(&tt_rtc.regsel)) {
 		ATARIHW_SET(TT_CLK);
-		printk("TT_CLK ");
+		pr_cont(" TT_CLK");
 		mach_hwclk = atari_tt_hwclk;
 		mach_set_clock_mmss = atari_tt_set_clock_mmss;
 	}
 	if (hwreg_present(&mste_rtc.sec_ones)) {
 		ATARIHW_SET(MSTE_CLK);
-		printk("MSTE_CLK ");
+		pr_cont(" MSTE_CLK");
 		mach_hwclk = atari_mste_hwclk;
 		mach_set_clock_mmss = atari_mste_set_clock_mmss;
 	}
 	if (!MACH_IS_MEDUSA && hwreg_present(&dma_wd.fdc_speed) &&
 	    hwreg_write(&dma_wd.fdc_speed, 0)) {
 		ATARIHW_SET(FDCSPEED);
-		printk("FDC_SPEED ");
+		pr_cont(" FDC_SPEED");
 	}
 	if (!ATARIHW_PRESENT(ST_SCSI)) {
 		ATARIHW_SET(ACSI);
-		printk("ACSI ");
+		pr_cont(" ACSI");
 	}
-	printk("\n");
+	pr_cont("\n");
 
 	if (CPU_IS_040_OR_060)
 		/* Now it seems to be safe to turn of the tt0 transparent
@@ -625,7 +629,7 @@ static void atari_get_hardware_list(struct seq_file *m)
 	if (ATARIHW_PRESENT(name))			\
 		seq_printf(m, "\t%s\n", str)
 
-	seq_printf(m, "Detected hardware:\n");
+	seq_puts(m, "Detected hardware:\n");
 	ATARIHW_ANNOUNCE(STND_SHIFTER, "ST Shifter");
 	ATARIHW_ANNOUNCE(EXTD_SHIFTER, "STe Shifter");
 	ATARIHW_ANNOUNCE(TT_SHIFTER, "TT Shifter");
@@ -655,3 +659,267 @@ static void atari_get_hardware_list(struct seq_file *m)
 	ATARIHW_ANNOUNCE(VME, "VME Bus");
 	ATARIHW_ANNOUNCE(DSP56K, "DSP56001 processor");
 }
+
+/*
+ * MSch: initial platform device support for Atari,
+ * required for EtherNAT/EtherNEC/NetUSBee drivers
+ */
+
+#if defined(CONFIG_ATARI_ETHERNAT) || defined(CONFIG_ATARI_ETHERNEC)
+static void isp1160_delay(struct device *dev, int delay)
+{
+	ndelay(delay);
+}
+#endif
+
+#ifdef CONFIG_ATARI_ETHERNAT
+/*
+ * EtherNAT: SMC91C111 Ethernet chipset, handled by smc91x driver
+ */
+
+#define ATARI_ETHERNAT_IRQ		140
+
+static struct resource smc91x_resources[] = {
+	[0] = {
+		.name	= "smc91x-regs",
+		.start	= ATARI_ETHERNAT_PHYS_ADDR,
+		.end	= ATARI_ETHERNAT_PHYS_ADDR + 0xfffff,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.name	= "smc91x-irq",
+		.start	= ATARI_ETHERNAT_IRQ,
+		.end	= ATARI_ETHERNAT_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device smc91x_device = {
+	.name		= "smc91x",
+	.id		= -1,
+	.num_resources	= ARRAY_SIZE(smc91x_resources),
+	.resource	= smc91x_resources,
+};
+
+/*
+ * ISP 1160 - using the isp116x-hcd module
+ */
+
+#define ATARI_USB_PHYS_ADDR	0x80000012
+#define ATARI_USB_IRQ		139
+
+static struct resource isp1160_resources[] = {
+	[0] = {
+		.name	= "isp1160-data",
+		.start	= ATARI_USB_PHYS_ADDR,
+		.end	= ATARI_USB_PHYS_ADDR + 0x1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.name	= "isp1160-regs",
+		.start	= ATARI_USB_PHYS_ADDR + 0x4,
+		.end	= ATARI_USB_PHYS_ADDR + 0x5,
+		.flags	= IORESOURCE_MEM,
+	},
+	[2] = {
+		.name	= "isp1160-irq",
+		.start	= ATARI_USB_IRQ,
+		.end	= ATARI_USB_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+/* (DataBusWidth16|AnalogOCEnable|DREQOutputPolarity|DownstreamPort15KRSel ) */
+static struct isp116x_platform_data isp1160_platform_data = {
+	/* Enable internal resistors on downstream ports */
+	.sel15Kres		= 1,
+	/* On-chip overcurrent protection */
+	.oc_enable		= 1,
+	/* INT output polarity */
+	.int_act_high		= 1,
+	/* INT edge or level triggered */
+	.int_edge_triggered	= 0,
+
+	/* WAKEUP pin connected - NOT SUPPORTED  */
+	/* .remote_wakeup_connected = 0, */
+	/* Wakeup by devices on usb bus enabled */
+	.remote_wakeup_enable	= 0,
+	.delay			= isp1160_delay,
+};
+
+static struct platform_device isp1160_device = {
+	.name		= "isp116x-hcd",
+	.id		= 0,
+	.num_resources	= ARRAY_SIZE(isp1160_resources),
+	.resource	= isp1160_resources,
+	.dev			= {
+		.platform_data	= &isp1160_platform_data,
+	},
+};
+
+static struct platform_device *atari_ethernat_devices[] __initdata = {
+	&smc91x_device,
+	&isp1160_device
+};
+#endif /* CONFIG_ATARI_ETHERNAT */
+
+#ifdef CONFIG_ATARI_ETHERNEC
+/*
+ * EtherNEC: RTL8019 (NE2000 compatible) Ethernet chipset,
+ * handled by ne.c driver
+ */
+
+#define ATARI_ETHERNEC_PHYS_ADDR	0xfffa0000
+#define ATARI_ETHERNEC_BASE		0x300
+#define ATARI_ETHERNEC_IRQ		IRQ_MFP_TIMER1
+
+static struct resource rtl8019_resources[] = {
+	[0] = {
+		.name	= "rtl8019-regs",
+		.start	= ATARI_ETHERNEC_BASE,
+		.end	= ATARI_ETHERNEC_BASE + 0x20 - 1,
+		.flags	= IORESOURCE_IO,
+	},
+	[1] = {
+		.name	= "rtl8019-irq",
+		.start	= ATARI_ETHERNEC_IRQ,
+		.end	= ATARI_ETHERNEC_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device rtl8019_device = {
+	.name		= "ne",
+	.id		= -1,
+	.num_resources	= ARRAY_SIZE(rtl8019_resources),
+	.resource	= rtl8019_resources,
+};
+
+/*
+ * NetUSBee: ISP1160 USB host adapter via ROM-port adapter
+ */
+
+#define ATARI_NETUSBEE_PHYS_ADDR	0xfffa8000
+#define ATARI_NETUSBEE_BASE		0x340
+#define ATARI_NETUSBEE_IRQ		IRQ_MFP_TIMER2
+
+static struct resource netusbee_resources[] = {
+	[0] = {
+		.name	= "isp1160-data",
+		.start	= ATARI_NETUSBEE_BASE,
+		.end	= ATARI_NETUSBEE_BASE + 0x1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.name	= "isp1160-regs",
+		.start	= ATARI_NETUSBEE_BASE + 0x20,
+		.end	= ATARI_NETUSBEE_BASE + 0x21,
+		.flags	= IORESOURCE_MEM,
+	},
+	[2] = {
+		.name	= "isp1160-irq",
+		.start	= ATARI_NETUSBEE_IRQ,
+		.end	= ATARI_NETUSBEE_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+/* (DataBusWidth16|AnalogOCEnable|DREQOutputPolarity|DownstreamPort15KRSel ) */
+static struct isp116x_platform_data netusbee_platform_data = {
+	/* Enable internal resistors on downstream ports */
+	.sel15Kres		= 1,
+	/* On-chip overcurrent protection */
+	.oc_enable		= 1,
+	/* INT output polarity */
+	.int_act_high		= 1,
+	/* INT edge or level triggered */
+	.int_edge_triggered	= 0,
+
+	/* WAKEUP pin connected - NOT SUPPORTED  */
+	/* .remote_wakeup_connected = 0, */
+	/* Wakeup by devices on usb bus enabled */
+	.remote_wakeup_enable	= 0,
+	.delay			= isp1160_delay,
+};
+
+static struct platform_device netusbee_device = {
+	.name		= "isp116x-hcd",
+	.id		= 1,
+	.num_resources	= ARRAY_SIZE(netusbee_resources),
+	.resource	= netusbee_resources,
+	.dev			= {
+		.platform_data	= &netusbee_platform_data,
+	},
+};
+
+static struct platform_device *atari_netusbee_devices[] __initdata = {
+	&rtl8019_device,
+	&netusbee_device
+};
+#endif /* CONFIG_ATARI_ETHERNEC */
+
+#if IS_ENABLED(CONFIG_ATARI_SCSI)
+static const struct resource atari_scsi_st_rsrc[] __initconst = {
+	{
+		.flags = IORESOURCE_IRQ,
+		.start = IRQ_MFP_FSCSI,
+		.end   = IRQ_MFP_FSCSI,
+	},
+};
+
+static const struct resource atari_scsi_tt_rsrc[] __initconst = {
+	{
+		.flags = IORESOURCE_IRQ,
+		.start = IRQ_TT_MFP_SCSI,
+		.end   = IRQ_TT_MFP_SCSI,
+	},
+};
+#endif
+
+int __init atari_platform_init(void)
+{
+	int rv = 0;
+
+	if (!MACH_IS_ATARI)
+		return -ENODEV;
+
+#ifdef CONFIG_ATARI_ETHERNAT
+	{
+		unsigned char *enatc_virt;
+		enatc_virt = (unsigned char *)ioremap((ATARI_ETHERNAT_PHYS_ADDR+0x23), 0xf);
+		if (hwreg_present(enatc_virt)) {
+			rv = platform_add_devices(atari_ethernat_devices,
+						ARRAY_SIZE(atari_ethernat_devices));
+		}
+		iounmap(enatc_virt);
+	}
+#endif
+
+#ifdef CONFIG_ATARI_ETHERNEC
+	{
+		int error;
+		unsigned char *enec_virt;
+		enec_virt = (unsigned char *)ioremap((ATARI_ETHERNEC_PHYS_ADDR), 0xf);
+		if (hwreg_present(enec_virt)) {
+			error = platform_add_devices(atari_netusbee_devices,
+						ARRAY_SIZE(atari_netusbee_devices));
+			if (error && !rv)
+				rv = error;
+		}
+		iounmap(enec_virt);
+	}
+#endif
+
+#if IS_ENABLED(CONFIG_ATARI_SCSI)
+	if (ATARIHW_PRESENT(ST_SCSI))
+		platform_device_register_simple("atari_scsi", -1,
+			atari_scsi_st_rsrc, ARRAY_SIZE(atari_scsi_st_rsrc));
+	else if (ATARIHW_PRESENT(TT_SCSI))
+		platform_device_register_simple("atari_scsi", -1,
+			atari_scsi_tt_rsrc, ARRAY_SIZE(atari_scsi_tt_rsrc));
+#endif
+
+	return rv;
+}
+
+arch_initcall(atari_platform_init);

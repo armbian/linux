@@ -41,12 +41,6 @@ static int next_event(unsigned long delta,
 	return 0;
 }
 
-static void set_clock_mode(enum clock_event_mode mode,
-			   struct clock_event_device *evt)
-{
-	/* Nothing to do ...  */
-}
-
 static DEFINE_PER_CPU(struct clock_event_device, mn10300_clockevent_device);
 static DEFINE_PER_CPU(struct irqaction, timer_irq);
 
@@ -68,6 +62,16 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id)
 
 static void event_handler(struct clock_event_device *dev)
 {
+}
+
+static inline void setup_jiffies_interrupt(int irq,
+					   struct irqaction *action)
+{
+	u16 tmp;
+	setup_irq(irq, action);
+	set_intr_level(irq, NUM2GxICR_LEVEL(CONFIG_TIMER_IRQ_LEVEL));
+	GxICR(irq) |= GxICR_ENABLE | GxICR_DETECT | GxICR_REQUEST;
+	tmp = GxICR(irq);
 }
 
 int __init init_clockevents(void)
@@ -94,16 +98,17 @@ int __init init_clockevents(void)
 
 	/* Calculate the min / max delta */
 	cd->max_delta_ns	= clockevent_delta2ns(TMJCBR_MAX, cd);
+	cd->max_delta_ticks	= TMJCBR_MAX;
 	cd->min_delta_ns	= clockevent_delta2ns(100, cd);
+	cd->min_delta_ticks	= 100;
 
 	cd->rating		= 200;
 	cd->cpumask		= cpumask_of(smp_processor_id());
-	cd->set_mode		= set_clock_mode;
 	cd->event_handler	= event_handler;
 	cd->set_next_event	= next_event;
 
 	iact = &per_cpu(timer_irq, cpu);
-	iact->flags = IRQF_DISABLED | IRQF_SHARED | IRQF_TIMER;
+	iact->flags = IRQF_SHARED | IRQF_TIMER;
 	iact->handler = timer_interrupt;
 
 	clockevents_register_device(cd);
@@ -113,7 +118,7 @@ int __init init_clockevents(void)
 	{
 		struct irq_data *data;
 		data = irq_get_irq_data(cd->irq);
-		cpumask_copy(data->affinity, cpumask_of(cpu));
+		cpumask_copy(irq_data_get_affinity_mask(data), cpumask_of(cpu));
 		iact->flags |= IRQF_NOBALANCING;
 	}
 #endif

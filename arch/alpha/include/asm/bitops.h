@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ALPHA_BITOPS_H
 #define _ALPHA_BITOPS_H
 
@@ -52,9 +53,6 @@ __set_bit(unsigned long nr, volatile void * addr)
 
 	*m |= 1 << (nr & 31);
 }
-
-#define smp_mb__before_clear_bit()	smp_mb()
-#define smp_mb__after_clear_bit()	smp_mb()
 
 static inline void
 clear_bit(unsigned long nr, volatile void * addr)

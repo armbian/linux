@@ -933,18 +933,6 @@ void SMC37c669_display_device_info(
  *
  *--
  */
-#if 0
-/* $INCLUDE_OPTIONS$ */
-#include    "cp$inc:platform_io.h"
-/* $INCLUDE_OPTIONS_END$ */
-#include    "cp$src:common.h"
-#include    "cp$inc:prototypes.h"
-#include    "cp$src:kernel_def.h"
-#include    "cp$src:msg_def.h"
-#include    "cp$src:smcc669_def.h"
-/* Platform-specific includes */
-#include    "cp$src:platform.h"
-#endif
 
 #ifndef TRUE
 #define TRUE 1
@@ -2019,11 +2007,8 @@ static void __init SMC37c669_config_mode(
 static unsigned char __init SMC37c669_read_config( 
     unsigned char index )
 {
-    unsigned char data;
-
-    wb( &SMC37c669->index_port, index );
-    data = rb( &SMC37c669->data_port );
-    return data;
+	wb(&SMC37c669->index_port, index);
+	return rb(&SMC37c669->data_port);
 }
 
 /*

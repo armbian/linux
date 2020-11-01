@@ -14,10 +14,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #ifndef _FM_DRV_H
@@ -30,6 +26,7 @@
 #include <linux/timer.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-common.h>
+#include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
 
 #define FM_DRV_VERSION            "0.1.1"
@@ -60,7 +57,7 @@
 #define fmdbg(format, ...) \
 	printk(KERN_DEBUG "fmdrv: " format, ## __VA_ARGS__)
 #else /* DEBUG */
-#define fmdbg(format, ...)
+#define fmdbg(format, ...) do {} while(0)
 #endif
 enum {
 	FM_MODE_OFF,
@@ -202,13 +199,14 @@ struct fmtx_data {
 /* FM driver operation structure */
 struct fmdev {
 	struct video_device *radio_dev;	/* V4L2 video device pointer */
+	struct v4l2_device v4l2_dev;	/* V4L2 top level struct */
 	struct snd_card *card;	/* Card which holds FM mixer controls */
 	u16 asci_id;
 	spinlock_t rds_buff_lock; /* To protect access to RDS buffer */
 	spinlock_t resp_skb_lock; /* To protect access to received SKB */
 
 	long flag;		/*  FM driver state machine info */
-	u8 streg_cbdata; /* status of ST registration */
+	int streg_cbdata; /* status of ST registration */
 
 	struct sk_buff_head rx_q;	/* RX queue */
 	struct tasklet_struct rx_task;	/* RX Tasklet */

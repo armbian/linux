@@ -143,7 +143,7 @@ struct platform_device iop3xx_dma_0_channel = {
 	.resource = iop3xx_dma_0_resources,
 	.dev = {
 		.dma_mask = &iop3xx_adma_dmamask,
-		.coherent_dma_mask = DMA_BIT_MASK(64),
+		.coherent_dma_mask = DMA_BIT_MASK(32),
 		.platform_data = (void *) &iop3xx_dma_0_data,
 	},
 };
@@ -155,7 +155,7 @@ struct platform_device iop3xx_dma_1_channel = {
 	.resource = iop3xx_dma_1_resources,
 	.dev = {
 		.dma_mask = &iop3xx_adma_dmamask,
-		.coherent_dma_mask = DMA_BIT_MASK(64),
+		.coherent_dma_mask = DMA_BIT_MASK(32),
 		.platform_data = (void *) &iop3xx_dma_1_data,
 	},
 };
@@ -167,7 +167,7 @@ struct platform_device iop3xx_aau_channel = {
 	.resource = iop3xx_aau_resources,
 	.dev = {
 		.dma_mask = &iop3xx_adma_dmamask,
-		.coherent_dma_mask = DMA_BIT_MASK(64),
+		.coherent_dma_mask = DMA_BIT_MASK(32),
 		.platform_data = (void *) &iop3xx_aau_data,
 	},
 };
@@ -192,12 +192,10 @@ static int __init iop3xx_adma_cap_init(void)
 
 	#ifdef CONFIG_ARCH_IOP32X /* the 32x AAU does not perform zero sum */
 	dma_cap_set(DMA_XOR, iop3xx_aau_data.cap_mask);
-	dma_cap_set(DMA_MEMSET, iop3xx_aau_data.cap_mask);
 	dma_cap_set(DMA_INTERRUPT, iop3xx_aau_data.cap_mask);
 	#else
 	dma_cap_set(DMA_XOR, iop3xx_aau_data.cap_mask);
 	dma_cap_set(DMA_XOR_VAL, iop3xx_aau_data.cap_mask);
-	dma_cap_set(DMA_MEMSET, iop3xx_aau_data.cap_mask);
 	dma_cap_set(DMA_INTERRUPT, iop3xx_aau_data.cap_mask);
 	#endif
 

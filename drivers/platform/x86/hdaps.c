@@ -2,7 +2,7 @@
  * hdaps.c - driver for IBM's Hard Drive Active Protection System
  *
  * Copyright (C) 2005 Robert Love <rml@novell.com>
- * Copyright (C) 2005 Jesper Juhl <jesper.juhl@gmail.com>
+ * Copyright (C) 2005 Jesper Juhl <jj@chaosbits.net>
  *
  * The HardDisk Active Protection System (hdaps) is present in IBM ThinkPads
  * starting with the R40, T41, and X40.  It provides a basic two-axis
@@ -305,17 +305,20 @@ static int hdaps_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int hdaps_resume(struct platform_device *dev)
+#ifdef CONFIG_PM_SLEEP
+static int hdaps_resume(struct device *dev)
 {
 	return hdaps_device_init();
 }
+#endif
+
+static SIMPLE_DEV_PM_OPS(hdaps_pm, NULL, hdaps_resume);
 
 static struct platform_driver hdaps_driver = {
 	.probe = hdaps_probe,
-	.resume = hdaps_resume,
 	.driver	= {
 		.name = "hdaps",
-		.owner = THIS_MODULE,
+		.pm = &hdaps_pm,
 	},
 };
 
@@ -511,7 +514,7 @@ static int __init hdaps_dmi_match_invert(const struct dmi_system_id *id)
    "ThinkPad T42p", so the order of the entries matters.
    If your ThinkPad is not recognized, please update to latest
    BIOS. This is especially the case for some R52 ThinkPads. */
-static struct dmi_system_id __initdata hdaps_whitelist[] = {
+static const struct dmi_system_id hdaps_whitelist[] __initconst = {
 	HDAPS_DMI_MATCH_INVERT("IBM", "ThinkPad R50p", HDAPS_BOTH_AXES),
 	HDAPS_DMI_MATCH_NORMAL("IBM", "ThinkPad R50"),
 	HDAPS_DMI_MATCH_NORMAL("IBM", "ThinkPad R51"),

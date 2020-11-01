@@ -16,8 +16,7 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-/**
- * Supports:
+/* Supports:
  * KS8851 16bit MLL chip from Micrel Inc.
  */
 
@@ -35,7 +34,10 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <asm/io.h>
+#include <linux/ks8851_mll.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_net.h>
 
 #define	DRV_NAME	"ks8851_mll"
 
@@ -465,8 +467,7 @@ static int msg_enable;
 #define BE1             0x2000      /* Byte Enable 1 */
 #define BE0             0x1000      /* Byte Enable 0 */
 
-/**
- * register read/write calls.
+/* register read/write calls.
  *
  * All these calls issue transactions to access the chip's registers. They
  * all require that the necessary lock is held to prevent accesses when the
@@ -474,21 +475,47 @@ static int msg_enable;
  */
 
 /**
- * ks_rdreg8 - read 8 bit register from device
+ * ks_check_endian - Check whether endianness of the bus is correct
  * @ks	  : The chip information
- * @offset: The register address
  *
- * Read a 8bit register from the chip, returning the result
+ * The KS8851-16MLL EESK pin allows selecting the endianness of the 16bit
+ * bus. To maintain optimum performance, the bus endianness should be set
+ * such that it matches the endianness of the CPU.
  */
-static u8 ks_rdreg8(struct ks_net *ks, int offset)
+
+static int ks_check_endian(struct ks_net *ks)
 {
-	u16 data;
-	u8 shift_bit = offset & 0x03;
-	u8 shift_data = (offset & 1) << 3;
-	ks->cmd_reg_cache = (u16) offset | (u16)(BE0 << shift_bit);
-	iowrite16(ks->cmd_reg_cache, ks->hw_addr_cmd);
-	data  = ioread16(ks->hw_addr);
-	return (u8)(data >> shift_data);
+	u16 cider;
+
+	/*
+	 * Read CIDER register first, however read it the "wrong" way around.
+	 * If the endian strap on the KS8851-16MLL in incorrect and the chip
+	 * is operating in different endianness than the CPU, then the meaning
+	 * of BE[3:0] byte-enable bits is also swapped such that:
+	 *    BE[3,2,1,0] becomes BE[1,0,3,2]
+	 *
+	 * Luckily for us, the byte-enable bits are the top four MSbits of
+	 * the address register and the CIDER register is at offset 0xc0.
+	 * Hence, by reading address 0xc0c0, which is not impacted by endian
+	 * swapping, we assert either BE[3:2] or BE[1:0] while reading the
+	 * CIDER register.
+	 *
+	 * If the bus configuration is correct, reading 0xc0c0 asserts
+	 * BE[3:2] and this read returns 0x0000, because to read register
+	 * with bottom two LSbits of address set to 0, BE[1:0] must be
+	 * asserted.
+	 *
+	 * If the bus configuration is NOT correct, reading 0xc0c0 asserts
+	 * BE[1:0] and this read returns non-zero 0x8872 value.
+	 */
+	iowrite16(BE3 | BE2 | KS_CIDER, ks->hw_addr_cmd);
+	cider = ioread16(ks->hw_addr);
+	if (!cider)
+		return 0;
+
+	netdev_err(ks->netdev, "incorrect EESK endian strap setting\n");
+
+	return -EINVAL;
 }
 
 /**
@@ -504,22 +531,6 @@ static u16 ks_rdreg16(struct ks_net *ks, int offset)
 	ks->cmd_reg_cache = (u16)offset | ((BE1 | BE0) << (offset & 0x02));
 	iowrite16(ks->cmd_reg_cache, ks->hw_addr_cmd);
 	return ioread16(ks->hw_addr);
-}
-
-/**
- * ks_wrreg8 - write 8bit register value to chip
- * @ks: The chip information
- * @offset: The register address
- * @value: The value to write
- *
- */
-static void ks_wrreg8(struct ks_net *ks, int offset, u8 value)
-{
-	u8  shift_bit = (offset & 0x03);
-	u16 value_write = (u16)(value << ((offset & 1) << 3));
-	ks->cmd_reg_cache = (u16)offset | (BE0 << shift_bit);
-	iowrite16(ks->cmd_reg_cache, ks->hw_addr_cmd);
-	iowrite16(value_write, ks->hw_addr);
 }
 
 /**
@@ -641,8 +652,7 @@ static void ks_read_config(struct ks_net *ks)
 	u16 reg_data = 0;
 
 	/* Regardless of bus width, 8 bit read should always work.*/
-	reg_data = ks_rdreg8(ks, KS_CCR) & 0x00FF;
-	reg_data |= ks_rdreg8(ks, KS_CCR+1) << 8;
+	reg_data = ks_rdreg16(ks, KS_CCR);
 
 	/* addr/data bus are multiplexed */
 	ks->sharedbus = (reg_data & CCR_SHARED) == CCR_SHARED;
@@ -687,7 +697,7 @@ static void ks_soft_reset(struct ks_net *ks, unsigned op)
 }
 
 
-void ks_enable_qmu(struct ks_net *ks)
+static void ks_enable_qmu(struct ks_net *ks)
 {
 	u16 w;
 
@@ -746,7 +756,7 @@ static inline void ks_read_qmu(struct ks_net *ks, u16 *buf, u32 len)
 
 	/* 1. set sudo DMA mode */
 	ks_wrreg16(ks, KS_RXFDPR, RXFDPR_RXFPAI);
-	ks_wrreg8(ks, KS_RXQCR, (ks->rc_rxqcr | RXQCR_SDA) & 0xff);
+	ks_wrreg16(ks, KS_RXQCR, ks->rc_rxqcr | RXQCR_SDA);
 
 	/* 2. read prepend data */
 	/**
@@ -763,7 +773,7 @@ static inline void ks_read_qmu(struct ks_net *ks, u16 *buf, u32 len)
 	ks_inblk(ks, buf, ALIGN(len, 4));
 
 	/* 4. reset sudo DMA Mode */
-	ks_wrreg8(ks, KS_RXQCR, ks->rc_rxqcr);
+	ks_wrreg16(ks, KS_RXQCR, ks->rc_rxqcr);
 }
 
 /**
@@ -794,20 +804,35 @@ static void ks_rcv(struct ks_net *ks, struct net_device *netdev)
 
 	frame_hdr = ks->frame_head_info;
 	while (ks->frame_cnt--) {
+		if (unlikely(!(frame_hdr->sts & RXFSHR_RXFV) ||
+			     frame_hdr->len >= RX_BUF_SIZE ||
+			     frame_hdr->len <= 0)) {
+
+			/* discard an invalid packet */
+			ks_wrreg16(ks, KS_RXQCR, (ks->rc_rxqcr | RXQCR_RRXEF));
+			netdev->stats.rx_dropped++;
+			if (!(frame_hdr->sts & RXFSHR_RXFV))
+				netdev->stats.rx_frame_errors++;
+			else
+				netdev->stats.rx_length_errors++;
+			frame_hdr++;
+			continue;
+		}
+
 		skb = netdev_alloc_skb(netdev, frame_hdr->len + 16);
-		if (likely(skb && (frame_hdr->sts & RXFSHR_RXFV) &&
-			(frame_hdr->len < RX_BUF_SIZE) && frame_hdr->len)) {
+		if (likely(skb)) {
 			skb_reserve(skb, 2);
 			/* read data block including CRC 4 bytes */
 			ks_read_qmu(ks, (u16 *)skb->data, frame_hdr->len);
-			skb_put(skb, frame_hdr->len);
+			skb_put(skb, frame_hdr->len - 4);
 			skb->protocol = eth_type_trans(skb, netdev);
 			netif_rx(skb);
+			/* exclude CRC size */
+			netdev->stats.rx_bytes += frame_hdr->len - 4;
+			netdev->stats.rx_packets++;
 		} else {
-			pr_err("%s: err:skb alloc\n", __func__);
 			ks_wrreg16(ks, KS_RXQCR, (ks->rc_rxqcr | RXQCR_RRXEF));
-			if (skb)
-				dev_kfree_skb_irq(skb);
+			netdev->stats.rx_dropped++;
 		}
 		frame_hdr++;
 	}
@@ -850,14 +875,17 @@ static irqreturn_t ks_irq(int irq, void *pw)
 {
 	struct net_device *netdev = pw;
 	struct ks_net *ks = netdev_priv(netdev);
+	unsigned long flags;
 	u16 status;
 
+	spin_lock_irqsave(&ks->statelock, flags);
 	/*this should be the first in IRQ handler */
 	ks_save_cmd_reg(ks);
 
 	status = ks_rdreg16(ks, KS_ISR);
 	if (unlikely(!status)) {
 		ks_restore_cmd_reg(ks);
+		spin_unlock_irqrestore(&ks->statelock, flags);
 		return IRQ_NONE;
 	}
 
@@ -879,8 +907,11 @@ static irqreturn_t ks_irq(int irq, void *pw)
 		ks_wrreg16(ks, KS_PMECR, pmecr | PMECR_WKEVT_LINK);
 	}
 
+	if (unlikely(status & IRQ_RXOI))
+		ks->netdev->stats.rx_over_errors++;
 	/* this should be the last in IRQ handler*/
 	ks_restore_cmd_reg(ks);
+	spin_unlock_irqrestore(&ks->statelock, flags);
 	return IRQ_HANDLED;
 }
 
@@ -897,7 +928,7 @@ static int ks_net_open(struct net_device *netdev)
 	struct ks_net *ks = netdev_priv(netdev);
 	int err;
 
-#define	KS_INT_FLAGS	(IRQF_DISABLED|IRQF_TRIGGER_LOW)
+#define	KS_INT_FLAGS	IRQF_TRIGGER_LOW
 	/* lock the card, even if we may not actually do anything
 	 * else at the moment.
 	 */
@@ -950,6 +981,7 @@ static int ks_net_stop(struct net_device *netdev)
 
 	/* shutdown RX/TX QMU */
 	ks_disable_qmu(ks);
+	ks_disable_int(ks);
 
 	/* set powermode to soft power down to save power */
 	ks_set_powermode(ks, PMECR_PM_SOFTDOWN);
@@ -979,13 +1011,13 @@ static void ks_write_qmu(struct ks_net *ks, u8 *pdata, u16 len)
 	ks->txh.txw[1] = cpu_to_le16(len);
 
 	/* 1. set sudo-DMA mode */
-	ks_wrreg8(ks, KS_RXQCR, (ks->rc_rxqcr | RXQCR_SDA) & 0xff);
+	ks_wrreg16(ks, KS_RXQCR, ks->rc_rxqcr | RXQCR_SDA);
 	/* 2. write status/lenth info */
 	ks_outblk(ks, ks->txh.txw, 4);
 	/* 3. write pkt data */
 	ks_outblk(ks, (u16 *)pdata, ALIGN(len, 4));
 	/* 4. reset sudo-DMA mode */
-	ks_wrreg8(ks, KS_RXQCR, ks->rc_rxqcr);
+	ks_wrreg16(ks, KS_RXQCR, ks->rc_rxqcr);
 	/* 5. Enqueue Tx(move the pkt from TX buffer into TXQ) */
 	ks_wrreg16(ks, KS_TXQCR, TXQCR_METFE);
 	/* 6. wait until TXQCR_METFE is auto-cleared */
@@ -1002,14 +1034,13 @@ static void ks_write_qmu(struct ks_net *ks, u8 *pdata, u16 len)
  * spin_lock_irqsave is required because tx and rx should be mutual exclusive.
  * So while tx is in-progress, prevent IRQ interrupt from happenning.
  */
-static int ks_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+static netdev_tx_t ks_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
-	int retv = NETDEV_TX_OK;
+	netdev_tx_t retv = NETDEV_TX_OK;
 	struct ks_net *ks = netdev_priv(netdev);
+	unsigned long flags;
 
-	disable_irq(netdev->irq);
-	ks_disable_int(ks);
-	spin_lock(&ks->statelock);
+	spin_lock_irqsave(&ks->statelock, flags);
 
 	/* Extra space are required:
 	*  4 byte for alignment, 4 for status/length, 4 for CRC
@@ -1017,12 +1048,13 @@ static int ks_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	if (likely(ks_tx_fifo_space(ks) >= skb->len + 12)) {
 		ks_write_qmu(ks, skb->data, skb->len);
+		/* add tx statistics */
+		netdev->stats.tx_bytes += skb->len;
+		netdev->stats.tx_packets++;
 		dev_kfree_skb(skb);
 	} else
 		retv = NETDEV_TX_BUSY;
-	spin_unlock(&ks->statelock);
-	ks_enable_int(ks);
-	enable_irq(netdev->irq);
+	spin_unlock_irqrestore(&ks->statelock, flags);
 	return retv;
 }
 
@@ -1103,7 +1135,7 @@ static void ks_set_grpaddr(struct ks_net *ks)
 	}
 }  /* ks_set_grpaddr */
 
-/*
+/**
 * ks_clear_mcast - clear multicast information
 *
 * @ks : The chip information
@@ -1227,7 +1259,7 @@ static void ks_set_mac(struct ks_net *ks, u8 *data)
 	w = ((u & 0xFF) << 8) | ((u >> 8) & 0xFF);
 	ks_wrreg16(ks, KS_MARL, w);
 
-	memcpy(ks->mac_addr, data, 6);
+	memcpy(ks->mac_addr, data, ETH_ALEN);
 
 	if (ks->enabled)
 		ks_start_rx(ks);
@@ -1239,7 +1271,6 @@ static int ks_set_mac_address(struct net_device *netdev, void *paddr)
 	struct sockaddr *addr = paddr;
 	u8 *da;
 
-	netdev->addr_assign_type &= ~NET_ADDR_RANDOM;
 	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
 
 	da = (u8 *)netdev->dev_addr;
@@ -1265,7 +1296,6 @@ static const struct net_device_ops ks_netdev_ops = {
 	.ndo_start_xmit		= ks_start_xmit,
 	.ndo_set_mac_address	= ks_set_mac_address,
 	.ndo_set_rx_mode	= ks_set_rx_mode,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 };
 
@@ -1292,16 +1322,21 @@ static void ks_set_msglevel(struct net_device *netdev, u32 to)
 	ks->msg_enable = to;
 }
 
-static int ks_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+static int ks_get_link_ksettings(struct net_device *netdev,
+				 struct ethtool_link_ksettings *cmd)
 {
 	struct ks_net *ks = netdev_priv(netdev);
-	return mii_ethtool_gset(&ks->mii, cmd);
+
+	mii_ethtool_get_link_ksettings(&ks->mii, cmd);
+
+	return 0;
 }
 
-static int ks_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
+static int ks_set_link_ksettings(struct net_device *netdev,
+				 const struct ethtool_link_ksettings *cmd)
 {
 	struct ks_net *ks = netdev_priv(netdev);
-	return mii_ethtool_sset(&ks->mii, cmd);
+	return mii_ethtool_set_link_ksettings(&ks->mii, cmd);
 }
 
 static u32 ks_get_link(struct net_device *netdev)
@@ -1320,10 +1355,10 @@ static const struct ethtool_ops ks_ethtool_ops = {
 	.get_drvinfo	= ks_get_drvinfo,
 	.get_msglevel	= ks_get_msglevel,
 	.set_msglevel	= ks_set_msglevel,
-	.get_settings	= ks_get_settings,
-	.set_settings	= ks_set_settings,
 	.get_link	= ks_get_link,
 	.nway_reset	= ks_nway_reset,
+	.get_link_ksettings = ks_get_link_ksettings,
+	.set_link_ksettings = ks_set_link_ksettings,
 };
 
 /* MII interface controls */
@@ -1499,7 +1534,8 @@ static int ks_hw_init(struct ks_net *ks)
 	ks->all_mcast = 0;
 	ks->mcast_lst_size = 0;
 
-	ks->frame_head_info = kmalloc(MHEADER_SIZE, GFP_KERNEL);
+	ks->frame_head_info = devm_kmalloc(&ks->pdev->dev, MHEADER_SIZE,
+					   GFP_KERNEL);
 	if (!ks->frame_head_info)
 		return false;
 
@@ -1507,46 +1543,55 @@ static int ks_hw_init(struct ks_net *ks)
 	return true;
 }
 
+#if defined(CONFIG_OF)
+static const struct of_device_id ks8851_ml_dt_ids[] = {
+	{ .compatible = "micrel,ks8851-mll" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, ks8851_ml_dt_ids);
+#endif
 
-static int __devinit ks8851_probe(struct platform_device *pdev)
+static int ks8851_probe(struct platform_device *pdev)
 {
-	int err = -ENOMEM;
+	int err;
 	struct resource *io_d, *io_c;
 	struct net_device *netdev;
 	struct ks_net *ks;
 	u16 id, data;
-
-	io_d = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	io_c = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-
-	if (!request_mem_region(io_d->start, resource_size(io_d), DRV_NAME))
-		goto err_mem_region;
-
-	if (!request_mem_region(io_c->start, resource_size(io_c), DRV_NAME))
-		goto err_mem_region1;
+	const char *mac;
 
 	netdev = alloc_etherdev(sizeof(struct ks_net));
 	if (!netdev)
-		goto err_alloc_etherdev;
+		return -ENOMEM;
 
 	SET_NETDEV_DEV(netdev, &pdev->dev);
 
 	ks = netdev_priv(netdev);
 	ks->netdev = netdev;
-	ks->hw_addr = ioremap(io_d->start, resource_size(io_d));
 
-	if (!ks->hw_addr)
-		goto err_ioremap;
+	io_d = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ks->hw_addr = devm_ioremap_resource(&pdev->dev, io_d);
+	if (IS_ERR(ks->hw_addr)) {
+		err = PTR_ERR(ks->hw_addr);
+		goto err_free;
+	}
 
-	ks->hw_addr_cmd = ioremap(io_c->start, resource_size(io_c));
-	if (!ks->hw_addr_cmd)
-		goto err_ioremap1;
+	io_c = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	ks->hw_addr_cmd = devm_ioremap_resource(&pdev->dev, io_c);
+	if (IS_ERR(ks->hw_addr_cmd)) {
+		err = PTR_ERR(ks->hw_addr_cmd);
+		goto err_free;
+	}
+
+	err = ks_check_endian(ks);
+	if (err)
+		goto err_free;
 
 	netdev->irq = platform_get_irq(pdev, 0);
 
 	if ((int)netdev->irq < 0) {
 		err = netdev->irq;
-		goto err_get_irq;
+		goto err_free;
 	}
 
 	ks->pdev = pdev;
@@ -1576,18 +1621,18 @@ static int __devinit ks8851_probe(struct platform_device *pdev)
 	if ((ks_rdreg16(ks, KS_CIDER) & ~CIDER_REV_MASK) != CIDER_ID) {
 		netdev_err(netdev, "failed to read device ID\n");
 		err = -ENODEV;
-		goto err_register;
+		goto err_free;
 	}
 
 	if (ks_read_selftest(ks)) {
 		netdev_err(netdev, "failed to read device ID\n");
 		err = -ENODEV;
-		goto err_register;
+		goto err_free;
 	}
 
 	err = register_netdev(netdev);
 	if (err)
-		goto err_register;
+		goto err_free;
 
 	platform_set_drvdata(pdev, netdev);
 
@@ -1596,17 +1641,35 @@ static int __devinit ks8851_probe(struct platform_device *pdev)
 	ks_disable_qmu(ks);
 	ks_setup(ks);
 	ks_setup_int(ks);
-	memcpy(netdev->dev_addr, ks->mac_addr, 6);
 
 	data = ks_rdreg16(ks, KS_OBCR);
 	ks_wrreg16(ks, KS_OBCR, data | OBCR_ODS_16MA);
 
-	/**
-	 * If you want to use the default MAC addr,
-	 * comment out the 2 functions below.
-	 */
+	/* overwriting the default MAC address */
+	if (pdev->dev.of_node) {
+		mac = of_get_mac_address(pdev->dev.of_node);
+		if (mac)
+			memcpy(ks->mac_addr, mac, ETH_ALEN);
+	} else {
+		struct ks8851_mll_platform_data *pdata;
 
-	random_ether_addr(netdev->dev_addr);
+		pdata = dev_get_platdata(&pdev->dev);
+		if (!pdata) {
+			netdev_err(netdev, "No platform data\n");
+			err = -ENODEV;
+			goto err_pdata;
+		}
+		memcpy(ks->mac_addr, pdata->mac_addr, ETH_ALEN);
+	}
+	if (!is_valid_ether_addr(ks->mac_addr)) {
+		/* Use random MAC address if none passed */
+		eth_random_addr(ks->mac_addr);
+		netdev_info(netdev, "Using random mac address\n");
+	}
+	netdev_info(netdev, "Mac address is: %pM\n", ks->mac_addr);
+
+	memcpy(netdev->dev_addr, ks->mac_addr, ETH_ALEN);
+
 	ks_set_mac(ks, netdev->dev_addr);
 
 	id = ks_rdreg16(ks, KS_CIDER);
@@ -1615,33 +1678,19 @@ static int __devinit ks8851_probe(struct platform_device *pdev)
 		    (id >> 8) & 0xff, (id >> 4) & 0xf, (id >> 1) & 0x7);
 	return 0;
 
-err_register:
-err_get_irq:
-	iounmap(ks->hw_addr_cmd);
-err_ioremap1:
-	iounmap(ks->hw_addr);
-err_ioremap:
+err_pdata:
+	unregister_netdev(netdev);
+err_free:
 	free_netdev(netdev);
-err_alloc_etherdev:
-	release_mem_region(io_c->start, resource_size(io_c));
-err_mem_region1:
-	release_mem_region(io_d->start, resource_size(io_d));
-err_mem_region:
 	return err;
 }
 
-static int __devexit ks8851_remove(struct platform_device *pdev)
+static int ks8851_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev = platform_get_drvdata(pdev);
-	struct ks_net *ks = netdev_priv(netdev);
-	struct resource *iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 
-	kfree(ks->frame_head_info);
 	unregister_netdev(netdev);
-	iounmap(ks->hw_addr);
 	free_netdev(netdev);
-	release_mem_region(iomem->start, resource_size(iomem));
-	platform_set_drvdata(pdev, NULL);
 	return 0;
 
 }
@@ -1649,10 +1698,10 @@ static int __devexit ks8851_remove(struct platform_device *pdev)
 static struct platform_driver ks8851_platform_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
+		.of_match_table	= of_match_ptr(ks8851_ml_dt_ids),
 	},
 	.probe = ks8851_probe,
-	.remove = __devexit_p(ks8851_remove),
+	.remove = ks8851_remove,
 };
 
 module_platform_driver(ks8851_platform_driver);

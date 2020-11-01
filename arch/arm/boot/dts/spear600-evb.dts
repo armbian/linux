@@ -22,26 +22,91 @@
 		device_type = "memory";
 		reg = <0 0x10000000>;
 	};
+};
 
-	ahb {
-		gmac: ethernet@e0800000 {
-			phy-mode = "gmii";
-			status = "okay";
-		};
+&clcd {
+	status = "okay";
+};
 
-		apb {
-			serial@d0000000 {
-				status = "okay";
+&dmac {
+	status = "okay";
+};
+
+&ehci_usb0 {
+	status = "okay";
+};
+
+&ehci_usb1 {
+	status = "okay";
+};
+
+&gmac {
+	phy-mode = "gmii";
+	status = "okay";
+};
+
+&ohci_usb0 {
+	status = "okay";
+};
+
+&ohci_usb1 {
+	status = "okay";
+};
+
+&smi {
+	status = "okay";
+	clock-rate = <50000000>;
+
+	flash@f8000000 {
+		reg = <0xf8000000 0x800000>;
+		st,smi-fast-mode;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "xloader";
+				reg = <0x0 0x10000>;
 			};
-
-			serial@d0080000 {
-				status = "okay";
+			partition@10000 {
+				label = "u-boot";
+				reg = <0x10000 0x50000>;
 			};
-
-			i2c@d0200000 {
-				clock-frequency = <400000>;
-				status = "okay";
+			partition@60000 {
+				label = "environment";
+				reg = <0x60000 0x10000>;
+			};
+			partition@70000 {
+				label = "dtb";
+				reg = <0x70000 0x10000>;
+			};
+			partition@80000 {
+				label = "linux";
+				reg = <0x80000 0x310000>;
+			};
+			partition@390000 {
+				label = "rootfs";
+				reg = <0x390000 0x0>;
 			};
 		};
 	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&uart1 {
+	status = "okay";
+};
+
+&rtc {
+	status = "okay";
+};
+
+&i2c {
+	clock-frequency = <400000>;
+	status = "okay";
 };

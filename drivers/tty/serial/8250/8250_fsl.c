@@ -28,8 +28,7 @@ int fsl8250_handle_irq(struct uart_port *port)
 	unsigned char lsr, orig_lsr;
 	unsigned long flags;
 	unsigned int iir;
-	struct uart_8250_port *up =
-		container_of(port, struct uart_8250_port, port);
+	struct uart_8250_port *up = up_to_u8250p(port);
 
 	spin_lock_irqsave(&up->port.lock, flags);
 
@@ -49,8 +48,29 @@ int fsl8250_handle_irq(struct uart_port *port)
 
 	lsr = orig_lsr = up->port.serial_in(&up->port, UART_LSR);
 
-	if (lsr & (UART_LSR_DR | UART_LSR_BI))
+	/* Process incoming characters first */
+	if ((lsr & (UART_LSR_DR | UART_LSR_BI)) &&
+	    (up->ier & (UART_IER_RLSI | UART_IER_RDI))) {
 		lsr = serial8250_rx_chars(up, lsr);
+	}
+
+	/* Stop processing interrupts on input overrun */
+	if ((orig_lsr & UART_LSR_OE) && (up->overrun_backoff_time_ms > 0)) {
+		unsigned long delay;
+
+		up->ier = port->serial_in(port, UART_IER);
+		if (up->ier & (UART_IER_RLSI | UART_IER_RDI)) {
+			port->ops->stop_rx(port);
+		} else {
+			/* Keep restarting the timer until
+			 * the input overrun subsides.
+			 */
+			cancel_delayed_work(&up->overrun_backoff);
+		}
+
+		delay = msecs_to_jiffies(up->overrun_backoff_time_ms);
+		schedule_delayed_work(&up->overrun_backoff, delay);
+	}
 
 	serial8250_modem_status(up);
 
@@ -61,3 +81,4 @@ int fsl8250_handle_irq(struct uart_port *port)
 	spin_unlock_irqrestore(&up->port.lock, flags);
 	return 1;
 }
+EXPORT_SYMBOL_GPL(fsl8250_handle_irq);

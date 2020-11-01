@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_I2C_ALGO_PCA_H
 #define _LINUX_I2C_ALGO_PCA_H
 
@@ -62,6 +63,7 @@ struct i2c_algo_pca_data {
 	 * 330000, 288000, 217000, 146000, 88000, 59000, 44000, 36000
 	 * For PCA9665, use the frequency you want here. */
 	unsigned int			i2c_clock;
+	unsigned int			chip;
 };
 
 int i2c_pca_add_bus(struct i2c_adapter *);

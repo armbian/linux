@@ -42,12 +42,6 @@ struct posix_clock;
  * @clock_gettime:  Read the current time
  * @clock_getres:   Get the clock resolution
  * @clock_settime:  Set the current time value
- * @timer_create:   Create a new timer
- * @timer_delete:   Remove a previously created timer
- * @timer_gettime:  Get remaining time and interval of a timer
- * @timer_settime: Set a timer's initial expiration and interval
- * @fasync:         Optional character device fasync method
- * @mmap:           Optional character device mmap method
  * @open:           Optional character device open method
  * @release:        Optional character device release method
  * @ioctl:          Optional character device ioctl method
@@ -59,34 +53,18 @@ struct posix_clock_operations {
 
 	int  (*clock_adjtime)(struct posix_clock *pc, struct timex *tx);
 
-	int  (*clock_gettime)(struct posix_clock *pc, struct timespec *ts);
+	int  (*clock_gettime)(struct posix_clock *pc, struct timespec64 *ts);
 
-	int  (*clock_getres) (struct posix_clock *pc, struct timespec *ts);
+	int  (*clock_getres) (struct posix_clock *pc, struct timespec64 *ts);
 
 	int  (*clock_settime)(struct posix_clock *pc,
-			      const struct timespec *ts);
+			      const struct timespec64 *ts);
 
-	int  (*timer_create) (struct posix_clock *pc, struct k_itimer *kit);
-
-	int  (*timer_delete) (struct posix_clock *pc, struct k_itimer *kit);
-
-	void (*timer_gettime)(struct posix_clock *pc,
-			      struct k_itimer *kit, struct itimerspec *tsp);
-
-	int  (*timer_settime)(struct posix_clock *pc,
-			      struct k_itimer *kit, int flags,
-			      struct itimerspec *tsp, struct itimerspec *old);
 	/*
 	 * Optional character device methods:
 	 */
-	int     (*fasync)  (struct posix_clock *pc,
-			    int fd, struct file *file, int on);
-
 	long    (*ioctl)   (struct posix_clock *pc,
 			    unsigned int cmd, unsigned long arg);
-
-	int     (*mmap)    (struct posix_clock *pc,
-			    struct vm_area_struct *vma);
 
 	int     (*open)    (struct posix_clock *pc, fmode_t f_mode);
 
@@ -104,29 +82,32 @@ struct posix_clock_operations {
  *
  * @ops:     Functional interface to the clock
  * @cdev:    Character device instance for this clock
- * @kref:    Reference count.
+ * @dev:     Pointer to the clock's device.
  * @rwsem:   Protects the 'zombie' field from concurrent access.
  * @zombie:  If 'zombie' is true, then the hardware has disappeared.
- * @release: A function to free the structure when the reference count reaches
- *           zero. May be NULL if structure is statically allocated.
  *
  * Drivers should embed their struct posix_clock within a private
  * structure, obtaining a reference to it during callbacks using
  * container_of().
+ *
+ * Drivers should supply an initialized but not exposed struct device
+ * to posix_clock_register(). It is used to manage lifetime of the
+ * driver's private structure. It's 'release' field should be set to
+ * a release function for this private structure.
  */
 struct posix_clock {
 	struct posix_clock_operations ops;
 	struct cdev cdev;
-	struct kref kref;
+	struct device *dev;
 	struct rw_semaphore rwsem;
 	bool zombie;
-	void (*release)(struct posix_clock *clk);
 };
 
 /**
  * posix_clock_register() - register a new clock
- * @clk:   Pointer to the clock. Caller must provide 'ops' and 'release'
- * @devid: Allocated device id
+ * @clk:   Pointer to the clock. Caller must provide 'ops' field
+ * @dev:   Pointer to the initialized device. Caller must provide
+ *         'release' field
  *
  * A clock driver calls this function to register itself with the
  * clock device subsystem. If 'clk' points to dynamically allocated
@@ -135,7 +116,7 @@ struct posix_clock {
  *
  * Returns zero on success, non-zero otherwise.
  */
-int posix_clock_register(struct posix_clock *clk, dev_t devid);
+int posix_clock_register(struct posix_clock *clk, struct device *dev);
 
 /**
  * posix_clock_unregister() - unregister a clock

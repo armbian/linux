@@ -70,7 +70,7 @@ static ssize_t mv64x60_hs_reg_write(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static struct bin_attribute mv64x60_hs_reg_attr = { /* Hotswap register */
+static const struct bin_attribute mv64x60_hs_reg_attr = { /* Hotswap register */
 	.attr = {
 		.name = "hs_reg",
 		.mode = S_IRUGO | S_IWUSR,
@@ -104,7 +104,7 @@ subsys_initcall(mv64x60_sysfs_init);
 
 #endif /* CONFIG_SYSFS */
 
-static void __init mv64x60_pci_fixup_early(struct pci_dev *dev)
+static void mv64x60_pci_fixup_early(struct pci_dev *dev)
 {
 	/*
 	 * Set the host bridge hdr_type to an invalid value so that
@@ -136,8 +136,8 @@ static int __init mv64x60_add_bridge(struct device_node *dev)
 	/* Get bus range if any */
 	bus_range = of_get_property(dev, "bus-range", &len);
 	if (bus_range == NULL || len < 2 * sizeof(int))
-		printk(KERN_WARNING "Can't get bus-range for %s, assume"
-		       " bus 0\n", dev->full_name);
+		printk(KERN_WARNING "Can't get bus-range for %pOF, assume"
+		       " bus 0\n", dev);
 
 	hose = pcibios_alloc_controller(dev);
 	if (!hose)

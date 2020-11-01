@@ -19,7 +19,6 @@
 #include <linux/bootmem.h>
 #include <linux/init.h>
 #include <linux/mm.h>
-#include <linux/module.h>
 #include <linux/pfn.h>
 #include <linux/proc_fs.h>
 #include <linux/string.h>
@@ -30,7 +29,6 @@
 #include <asm/sections.h>
 
 #include <asm/mach-ar7/ar7.h>
-#include <asm/mips-boards/prom.h>
 
 static int __init memsize(void)
 {

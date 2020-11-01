@@ -109,19 +109,19 @@ enum rtl8712_h2c_cmd {
 	GEN_CMD_CODE(_DisconnectCtrlEx), /*61*/
 
 	/* To do, modify these h2c cmd, add or delete */
-	GEN_CMD_CODE(_GetH2cLbk) ,
+	GEN_CMD_CODE(_GetH2cLbk),
 
 	/* WPS extra IE */
-	GEN_CMD_CODE(_SetProbeReqExtraIE) ,
-	GEN_CMD_CODE(_SetAssocReqExtraIE) ,
-	GEN_CMD_CODE(_SetProbeRspExtraIE) ,
-	GEN_CMD_CODE(_SetAssocRspExtraIE) ,
+	GEN_CMD_CODE(_SetProbeReqExtraIE),
+	GEN_CMD_CODE(_SetAssocReqExtraIE),
+	GEN_CMD_CODE(_SetProbeRspExtraIE),
+	GEN_CMD_CODE(_SetAssocRspExtraIE),
 
 	/* the following is driver will do */
-	GEN_CMD_CODE(_GetCurDataRate) ,
+	GEN_CMD_CODE(_GetCurDataRate),
 
 	GEN_CMD_CODE(_GetTxRetrycnt),  /* to record times that Tx retry to
-					* transmmit packet after association
+					* transmit packet after association
 					*/
 	GEN_CMD_CODE(_GetRxRetrycnt),  /* to record total number of the
 					* received frame with ReTry bit set in
@@ -152,7 +152,7 @@ enum rtl8712_h2c_cmd {
 static struct _cmd_callback	cmd_callback[] = {
 	{GEN_CMD_CODE(_Read_MACREG), NULL}, /*0*/
 	{GEN_CMD_CODE(_Write_MACREG), NULL},
-	{GEN_CMD_CODE(_Read_BBREG), &r8712_getbbrfreg_cmdrsp_callback},
+	{GEN_CMD_CODE(_Read_BBREG), NULL},
 	{GEN_CMD_CODE(_Write_BBREG), NULL},
 	{GEN_CMD_CODE(_Read_RFREG), &r8712_getbbrfreg_cmdrsp_callback},
 	{GEN_CMD_CODE(_Write_RFREG), NULL}, /*5*/

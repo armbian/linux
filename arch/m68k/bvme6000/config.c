@@ -28,31 +28,27 @@
 #include <linux/bcd.h>
 
 #include <asm/bootinfo.h>
+#include <asm/bootinfo-vme.h>
+#include <asm/byteorder.h>
 #include <asm/pgtable.h>
 #include <asm/setup.h>
 #include <asm/irq.h>
 #include <asm/traps.h>
-#include <asm/rtc.h>
 #include <asm/machdep.h>
 #include <asm/bvme6000hw.h>
 
 static void bvme6000_get_model(char *model);
 extern void bvme6000_sched_init(irq_handler_t handler);
-extern unsigned long bvme6000_gettimeoffset (void);
+extern u32 bvme6000_gettimeoffset(void);
 extern int bvme6000_hwclk (int, struct rtc_time *);
 extern int bvme6000_set_clock_mmss (unsigned long);
 extern void bvme6000_reset (void);
 void bvme6000_set_vectors (void);
 
-/* Save tick handler routine pointer, will point to xtime_update() in
- * kernel/timer/timekeeping.c, called via bvme6000_process_int() */
 
-static irq_handler_t tick_handler;
-
-
-int bvme6000_parse_bootinfo(const struct bi_record *bi)
+int __init bvme6000_parse_bootinfo(const struct bi_record *bi)
 {
-	if (bi->tag == BI_VME_TYPE)
+	if (be16_to_cpu(bi->tag) == BI_VME_TYPE)
 		return 0;
 	else
 		return 1;
@@ -62,8 +58,8 @@ void bvme6000_reset(void)
 {
 	volatile PitRegsPtr pit = (PitRegsPtr)BVME_PIT_BASE;
 
-	printk ("\r\n\nCalled bvme6000_reset\r\n"
-			"\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r");
+	pr_info("\r\n\nCalled bvme6000_reset\r\n"
+		"\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r\r");
 	/* The string of returns is to delay the reset until the whole
 	 * message is output. */
 	/* Enable the watchdog, via PIT port C bit 4 */
@@ -110,14 +106,14 @@ void __init config_bvme6000(void)
     mach_max_dma_address = 0xffffffff;
     mach_sched_init      = bvme6000_sched_init;
     mach_init_IRQ        = bvme6000_init_IRQ;
-    mach_gettimeoffset   = bvme6000_gettimeoffset;
+    arch_gettimeoffset   = bvme6000_gettimeoffset;
     mach_hwclk           = bvme6000_hwclk;
     mach_set_clock_mmss	 = bvme6000_set_clock_mmss;
     mach_reset		 = bvme6000_reset;
     mach_get_model       = bvme6000_get_model;
 
-    printk ("Board is %sconfigured as a System Controller\n",
-		*config_reg_ptr & BVME_CONFIG_SW1 ? "" : "not ");
+    pr_info("Board is %sconfigured as a System Controller\n",
+	    *config_reg_ptr & BVME_CONFIG_SW1 ? "" : "not ");
 
     /* Now do the PIT configuration */
 
@@ -158,12 +154,18 @@ irqreturn_t bvme6000_abort_int (int irq, void *dev_id)
 
 static irqreturn_t bvme6000_timer_int (int irq, void *dev_id)
 {
+    irq_handler_t timer_routine = dev_id;
+    unsigned long flags;
     volatile RtcPtr_t rtc = (RtcPtr_t)BVME_RTC_BASE;
-    unsigned char msr = rtc->msr & 0xc0;
+    unsigned char msr;
 
+    local_irq_save(flags);
+    msr = rtc->msr & 0xc0;
     rtc->msr = msr | 0x20;		/* Ack the interrupt */
+    timer_routine(0, NULL);
+    local_irq_restore(flags);
 
-    return tick_handler(irq, dev_id);
+    return IRQ_HANDLED;
 }
 
 /*
@@ -182,9 +184,8 @@ void bvme6000_sched_init (irq_handler_t timer_routine)
 
     rtc->msr = 0;	/* Ensure timer registers accessible */
 
-    tick_handler = timer_routine;
-    if (request_irq(BVME_IRQ_RTC, bvme6000_timer_int, 0,
-				"timer", bvme6000_timer_int))
+    if (request_irq(BVME_IRQ_RTC, bvme6000_timer_int, 0, "timer",
+                    timer_routine))
 	panic ("Couldn't register timer int");
 
     rtc->t1cr_omr = 0x04;	/* Mode 2, ext clk */
@@ -216,13 +217,13 @@ void bvme6000_sched_init (irq_handler_t timer_routine)
  * results...
  */
 
-unsigned long bvme6000_gettimeoffset (void)
+u32 bvme6000_gettimeoffset(void)
 {
     volatile RtcPtr_t rtc = (RtcPtr_t)BVME_RTC_BASE;
     volatile PitRegsPtr pit = (PitRegsPtr)BVME_PIT_BASE;
     unsigned char msr = rtc->msr & 0xc0;
     unsigned char t1int, t1op;
-    unsigned long v = 800000, ov;
+    u32 v = 800000, ov;
 
     rtc->msr = 0;	/* Ensure timer registers accessible */
 
@@ -246,7 +247,7 @@ unsigned long bvme6000_gettimeoffset (void)
 	v += 10000;			/* Int pending, + 10ms */
     rtc->msr = msr;
 
-    return v;
+    return v * 1000;
 }
 
 /*

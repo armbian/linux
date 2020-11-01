@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # m32r/Makefile
 #
@@ -31,7 +32,7 @@ KBUILD_AFLAGS += $(aflags-y)
 
 CHECKFLAGS	+= -D__m32r__ -D__BIG_ENDIAN__=1
 
-head-y	:= arch/m32r/kernel/head.o arch/m32r/kernel/init_task.o
+head-y	:= arch/m32r/kernel/head.o
 
 LIBGCC	:= $(shell $(CC) $(KBUILD_CFLAGS) -print-libgcc-file-name)
 

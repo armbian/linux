@@ -78,14 +78,9 @@ static void serial21285_stop_rx(struct uart_port *port)
 	}
 }
 
-static void serial21285_enable_ms(struct uart_port *port)
-{
-}
-
 static irqreturn_t serial21285_rx_chars(int irq, void *dev_id)
 {
 	struct uart_port *port = dev_id;
-	struct tty_struct *tty = port->state->port.tty;
 	unsigned int status, ch, flag, rxs, max_count = 256;
 
 	status = *CSR_UARTFLG;
@@ -115,7 +110,7 @@ static irqreturn_t serial21285_rx_chars(int irq, void *dev_id)
 
 		status = *CSR_UARTFLG;
 	}
-	tty_flip_buffer_push(tty);
+	tty_flip_buffer_push(&port->state->port);
 
 	return IRQ_HANDLED;
 }
@@ -339,14 +334,13 @@ static int serial21285_verify_port(struct uart_port *port, struct serial_struct 
 	return ret;
 }
 
-static struct uart_ops serial21285_ops = {
+static const struct uart_ops serial21285_ops = {
 	.tx_empty	= serial21285_tx_empty,
 	.get_mctrl	= serial21285_get_mctrl,
 	.set_mctrl	= serial21285_set_mctrl,
 	.stop_tx	= serial21285_stop_tx,
 	.start_tx	= serial21285_start_tx,
 	.stop_rx	= serial21285_stop_rx,
-	.enable_ms	= serial21285_enable_ms,
 	.break_ctl	= serial21285_break_ctl,
 	.startup	= serial21285_startup,
 	.shutdown	= serial21285_shutdown,

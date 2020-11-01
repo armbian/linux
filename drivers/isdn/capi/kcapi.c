@@ -18,7 +18,7 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/proc_fs.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/seq_file.h>
 #include <linux/skbuff.h>
 #include <linux/workqueue.h>
@@ -28,7 +28,7 @@
 #include <linux/moduleparam.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/isdn/capicmd.h>
 #include <linux/isdn/capiutil.h>
 #ifdef AVMB1_COMPAT
@@ -55,7 +55,7 @@ struct capictr_event {
 
 /* ------------------------------------------------------------- */
 
-static struct capi_version driver_version = {2, 0, 1, 1 << 4};
+static const struct capi_version driver_version = {2, 0, 1, 1 << 4};
 static char driver_serial[CAPI_SERIAL_LEN] = "0004711";
 static char capi_manufakturer[64] = "AVM Berlin";
 
@@ -93,7 +93,7 @@ capi_ctr_put(struct capi_ctr *ctr)
 
 static inline struct capi_ctr *get_capi_ctr_by_nr(u16 contr)
 {
-	if (contr - 1 >= CAPI_MAXCONTR)
+	if (contr < 1 || contr - 1 >= CAPI_MAXCONTR)
 		return NULL;
 
 	return capi_controller[contr - 1];
@@ -103,7 +103,7 @@ static inline struct capi20_appl *__get_capi_appl_by_nr(u16 applid)
 {
 	lockdep_assert_held(&capi_controller_lock);
 
-	if (applid - 1 >= CAPI_MAXAPPL)
+	if (applid < 1 || applid - 1 >= CAPI_MAXAPPL)
 		return NULL;
 
 	return capi_applications[applid - 1];
@@ -111,7 +111,7 @@ static inline struct capi20_appl *__get_capi_appl_by_nr(u16 applid)
 
 static inline struct capi20_appl *get_capi_appl_by_nr(u16 applid)
 {
-	if (applid - 1 >= CAPI_MAXAPPL)
+	if (applid < 1 || applid - 1 >= CAPI_MAXAPPL)
 		return NULL;
 
 	return rcu_dereference(capi_applications[applid - 1]);
@@ -851,7 +851,7 @@ u16 capi20_get_manufacturer(u32 contr, u8 *buf)
 	u16 ret;
 
 	if (contr == 0) {
-		strlcpy(buf, capi_manufakturer, CAPI_MANUFACTURER_LEN);
+		strncpy(buf, capi_manufakturer, CAPI_MANUFACTURER_LEN);
 		return CAPI_NOERROR;
 	}
 
@@ -859,7 +859,7 @@ u16 capi20_get_manufacturer(u32 contr, u8 *buf)
 
 	ctr = get_capi_ctr_by_nr(contr);
 	if (ctr && ctr->state == CAPI_CTR_RUNNING) {
-		strlcpy(buf, ctr->manu, CAPI_MANUFACTURER_LEN);
+		strncpy(buf, ctr->manu, CAPI_MANUFACTURER_LEN);
 		ret = CAPI_NOERROR;
 	} else
 		ret = CAPI_REGNOTINSTALLED;
@@ -1032,6 +1032,7 @@ static int old_capi_manufacturer(unsigned int cmd, void __user *data)
 						     sizeof(avmb1_carddef))))
 				return -EFAULT;
 			cdef.cardtype = AVM_CARDTYPE_B1;
+			cdef.cardnr = 0;
 		} else {
 			if ((retval = copy_from_user(&cdef, data,
 						     sizeof(avmb1_extcarddef))))
@@ -1184,7 +1185,7 @@ static int old_capi_manufacturer(unsigned int cmd, void __user *data)
  * Return value: CAPI result code
  */
 
-int capi20_manufacturer(unsigned int cmd, void __user *data)
+int capi20_manufacturer(unsigned long cmd, void __user *data)
 {
 	struct capi_ctr *ctr;
 	int retval;
@@ -1259,7 +1260,7 @@ int capi20_manufacturer(unsigned int cmd, void __user *data)
 	}
 
 	default:
-		printk(KERN_ERR "kcapi: manufacturer command %d unknown.\n",
+		printk(KERN_ERR "kcapi: manufacturer command %lu unknown.\n",
 		       cmd);
 		break;
 

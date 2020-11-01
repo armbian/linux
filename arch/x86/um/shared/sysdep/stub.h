@@ -1,8 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <asm/unistd.h>
 #include <sys/mman.h>
 #include <signal.h>
-#include "as-layout.h"
-#include "stub-data.h"
+#include <as-layout.h>
+#include <stub-data.h>
 
 #ifdef __i386__
 #include "stub_32.h"

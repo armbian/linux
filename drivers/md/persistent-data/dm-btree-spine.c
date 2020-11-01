@@ -45,8 +45,8 @@ static int node_check(struct dm_block_validator *v,
 	uint32_t flags;
 
 	if (dm_block_location(b) != le64_to_cpu(h->blocknr)) {
-		DMERR("node_check failed blocknr %llu wanted %llu",
-		      le64_to_cpu(h->blocknr), dm_block_location(b));
+		DMERR_LIMIT("node_check failed: blocknr %llu != wanted %llu",
+			    le64_to_cpu(h->blocknr), dm_block_location(b));
 		return -ENOTBLK;
 	}
 
@@ -54,8 +54,8 @@ static int node_check(struct dm_block_validator *v,
 					       block_size - sizeof(__le32),
 					       BTREE_CSUM_XOR));
 	if (csum_disk != h->csum) {
-		DMERR("node_check failed csum %u wanted %u",
-		      le32_to_cpu(csum_disk), le32_to_cpu(h->csum));
+		DMERR_LIMIT("node_check failed: csum %u != wanted %u",
+			    le32_to_cpu(csum_disk), le32_to_cpu(h->csum));
 		return -EILSEQ;
 	}
 
@@ -63,12 +63,12 @@ static int node_check(struct dm_block_validator *v,
 
 	if (sizeof(struct node_header) +
 	    (sizeof(__le64) + value_size) * le32_to_cpu(h->max_entries) > block_size) {
-		DMERR("node_check failed: max_entries too large");
+		DMERR_LIMIT("node_check failed: max_entries too large");
 		return -EILSEQ;
 	}
 
 	if (le32_to_cpu(h->nr_entries) > le32_to_cpu(h->max_entries)) {
-		DMERR("node_check failed, too many entries");
+		DMERR_LIMIT("node_check failed: too many entries");
 		return -EILSEQ;
 	}
 
@@ -77,7 +77,7 @@ static int node_check(struct dm_block_validator *v,
 	 */
 	flags = le32_to_cpu(h->flags);
 	if (!(flags & INTERNAL_NODE) && !(flags & LEAF_NODE)) {
-		DMERR("node_check failed, node is neither INTERNAL or LEAF");
+		DMERR_LIMIT("node_check failed: node is neither INTERNAL or LEAF");
 		return -EILSEQ;
 	}
 
@@ -92,7 +92,7 @@ struct dm_block_validator btree_node_validator = {
 
 /*----------------------------------------------------------------*/
 
-static int bn_read_lock(struct dm_btree_info *info, dm_block_t b,
+int bn_read_lock(struct dm_btree_info *info, dm_block_t b,
 		 struct dm_block **result)
 {
 	return dm_tm_read_lock(info->tm, b, &btree_node_validator, result);
@@ -117,9 +117,9 @@ int new_block(struct dm_btree_info *info, struct dm_block **result)
 	return dm_tm_new_block(info->tm, &btree_node_validator, result);
 }
 
-int unlock_block(struct dm_btree_info *info, struct dm_block *b)
+void unlock_block(struct dm_btree_info *info, struct dm_block *b)
 {
-	return dm_tm_unlock(info->tm, b);
+	dm_tm_unlock(info->tm, b);
 }
 
 /*----------------------------------------------------------------*/
@@ -137,9 +137,7 @@ int exit_ro_spine(struct ro_spine *s)
 	int r = 0, i;
 
 	for (i = 0; i < s->count; i++) {
-		int r2 = unlock_block(s->info, s->nodes[i]);
-		if (r2 < 0)
-			r = r2;
+		unlock_block(s->info, s->nodes[i]);
 	}
 
 	return r;
@@ -150,9 +148,7 @@ int ro_step(struct ro_spine *s, dm_block_t new_child)
 	int r;
 
 	if (s->count == 2) {
-		r = unlock_block(s->info, s->nodes[0]);
-		if (r < 0)
-			return r;
+		unlock_block(s->info, s->nodes[0]);
 		s->nodes[0] = s->nodes[1];
 		s->count--;
 	}
@@ -162,6 +158,13 @@ int ro_step(struct ro_spine *s, dm_block_t new_child)
 		s->count++;
 
 	return r;
+}
+
+void ro_pop(struct ro_spine *s)
+{
+	BUG_ON(!s->count);
+	--s->count;
+	unlock_block(s->info, s->nodes[s->count]);
 }
 
 struct btree_node *ro_node(struct ro_spine *s)
@@ -187,9 +190,7 @@ int exit_shadow_spine(struct shadow_spine *s)
 	int r = 0, i;
 
 	for (i = 0; i < s->count; i++) {
-		int r2 = unlock_block(s->info, s->nodes[i]);
-		if (r2 < 0)
-			r = r2;
+		unlock_block(s->info, s->nodes[i]);
 	}
 
 	return r;
@@ -201,9 +202,7 @@ int shadow_step(struct shadow_spine *s, dm_block_t b,
 	int r;
 
 	if (s->count == 2) {
-		r = unlock_block(s->info, s->nodes[0]);
-		if (r < 0)
-			return r;
+		unlock_block(s->info, s->nodes[0]);
 		s->nodes[0] = s->nodes[1];
 		s->count--;
 	}
@@ -243,7 +242,7 @@ int shadow_root(struct shadow_spine *s)
 	return s->root;
 }
 
-static void le64_inc(void *context, void *value_le)
+static void le64_inc(void *context, const void *value_le)
 {
 	struct dm_transaction_manager *tm = context;
 	__le64 v_le;
@@ -252,7 +251,7 @@ static void le64_inc(void *context, void *value_le)
 	dm_tm_inc(tm, le64_to_cpu(v_le));
 }
 
-static void le64_dec(void *context, void *value_le)
+static void le64_dec(void *context, const void *value_le)
 {
 	struct dm_transaction_manager *tm = context;
 	__le64 v_le;
@@ -261,7 +260,7 @@ static void le64_dec(void *context, void *value_le)
 	dm_tm_dec(tm, le64_to_cpu(v_le));
 }
 
-static int le64_equal(void *context, void *value1_le, void *value2_le)
+static int le64_equal(void *context, const void *value1_le, const void *value2_le)
 {
 	__le64 v1_le, v2_le;
 

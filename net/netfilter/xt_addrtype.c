@@ -22,6 +22,7 @@
 #include <net/ip6_fib.h>
 #endif
 
+#include <linux/netfilter_ipv6.h>
 #include <linux/netfilter/xt_addrtype.h>
 #include <linux/netfilter/x_tables.h>
 
@@ -33,12 +34,12 @@ MODULE_ALIAS("ip6t_addrtype");
 
 #if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
 static u32 match_lookup_rt6(struct net *net, const struct net_device *dev,
-			    const struct in6_addr *addr)
+			    const struct in6_addr *addr, u16 mask)
 {
 	const struct nf_afinfo *afinfo;
 	struct flowi6 flow;
 	struct rt6_info *rt;
-	u32 ret;
+	u32 ret = 0;
 	int route_err;
 
 	memset(&flow, 0, sizeof(flow));
@@ -46,30 +47,31 @@ static u32 match_lookup_rt6(struct net *net, const struct net_device *dev,
 	if (dev)
 		flow.flowi6_oif = dev->ifindex;
 
-	rcu_read_lock();
-
 	afinfo = nf_get_afinfo(NFPROTO_IPV6);
-	if (afinfo != NULL)
-		route_err = afinfo->route(net, (struct dst_entry **)&rt,
-					flowi6_to_flowi(&flow), !!dev);
-	else
-		route_err = 1;
+	if (afinfo != NULL) {
+		const struct nf_ipv6_ops *v6ops;
 
-	rcu_read_unlock();
+		if (dev && (mask & XT_ADDRTYPE_LOCAL)) {
+			v6ops = nf_get_ipv6_ops();
+			if (v6ops && v6ops->chk_addr(net, addr, dev, true))
+				ret = XT_ADDRTYPE_LOCAL;
+		}
+		route_err = afinfo->route(net, (struct dst_entry **)&rt,
+					  flowi6_to_flowi(&flow), false);
+	} else {
+		route_err = 1;
+	}
 
 	if (route_err)
 		return XT_ADDRTYPE_UNREACHABLE;
 
 	if (rt->rt6i_flags & RTF_REJECT)
 		ret = XT_ADDRTYPE_UNREACHABLE;
-	else
-		ret = 0;
 
-	if (rt->rt6i_flags & RTF_LOCAL)
+	if (dev == NULL && rt->rt6i_flags & RTF_LOCAL)
 		ret |= XT_ADDRTYPE_LOCAL;
-	if (rt->rt6i_flags & RTF_ANYCAST)
+	if (ipv6_anycast_destination((struct dst_entry *)rt, addr))
 		ret |= XT_ADDRTYPE_ANYCAST;
-
 
 	dst_release(&rt->dst);
 	return ret;
@@ -90,7 +92,7 @@ static bool match_type6(struct net *net, const struct net_device *dev,
 
 	if ((XT_ADDRTYPE_LOCAL | XT_ADDRTYPE_ANYCAST |
 	     XT_ADDRTYPE_UNREACHABLE) & mask)
-		return !!(mask & match_lookup_rt6(net, dev, addr));
+		return !!(mask & match_lookup_rt6(net, dev, addr, mask));
 	return true;
 }
 
@@ -120,7 +122,7 @@ static inline bool match_type(struct net *net, const struct net_device *dev,
 static bool
 addrtype_mt_v0(const struct sk_buff *skb, struct xt_action_param *par)
 {
-	struct net *net = dev_net(par->in ? par->in : par->out);
+	struct net *net = xt_net(par);
 	const struct xt_addrtype_info *info = par->matchinfo;
 	const struct iphdr *iph = ip_hdr(skb);
 	bool ret = true;
@@ -138,19 +140,19 @@ addrtype_mt_v0(const struct sk_buff *skb, struct xt_action_param *par)
 static bool
 addrtype_mt_v1(const struct sk_buff *skb, struct xt_action_param *par)
 {
-	struct net *net = dev_net(par->in ? par->in : par->out);
+	struct net *net = xt_net(par);
 	const struct xt_addrtype_info_v1 *info = par->matchinfo;
 	const struct iphdr *iph;
 	const struct net_device *dev = NULL;
 	bool ret = true;
 
 	if (info->flags & XT_ADDRTYPE_LIMIT_IFACE_IN)
-		dev = par->in;
+		dev = xt_in(par);
 	else if (info->flags & XT_ADDRTYPE_LIMIT_IFACE_OUT)
-		dev = par->out;
+		dev = xt_out(par);
 
 #if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
-	if (par->family == NFPROTO_IPV6)
+	if (xt_family(par) == NFPROTO_IPV6)
 		return addrtype_mt6(net, dev, skb, info);
 #endif
 	iph = ip_hdr(skb);
@@ -197,7 +199,7 @@ static int addrtype_mt_checkentry_v1(const struct xt_mtchk_param *par)
 			return -EINVAL;
 		}
 		if ((info->source | info->dest) >= XT_ADDRTYPE_PROHIBIT) {
-			pr_err("ipv6 PROHIBT (THROW, NAT ..) matching not supported\n");
+			pr_err("ipv6 PROHIBIT (THROW, NAT ..) matching not supported\n");
 			return -EINVAL;
 		}
 		if ((info->source | info->dest) & XT_ADDRTYPE_BROADCAST) {

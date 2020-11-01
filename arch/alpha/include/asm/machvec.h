@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ALPHA_MACHVEC_H
 #define __ALPHA_MACHVEC_H 1
 
@@ -33,6 +34,7 @@ struct alpha_machine_vector
 
 	int nr_irqs;
 	int rtc_port;
+	int rtc_boot_cpu_only;
 	unsigned int max_asn;
 	unsigned long max_isa_dma_address;
 	unsigned long irq_probe_mask;
@@ -95,9 +97,6 @@ struct alpha_machine_vector
 
 	struct _alpha_agp_info *(*agp_info)(void);
 
-	unsigned int (*rtc_get_time)(struct rtc_time *);
-	int (*rtc_set_time)(struct rtc_time *);
-
 	const char *vector_name;
 
 	/* NUMA information */
@@ -126,13 +125,19 @@ extern struct alpha_machine_vector alpha_mv;
 
 #ifdef CONFIG_ALPHA_GENERIC
 extern int alpha_using_srm;
+extern int alpha_using_qemu;
 #else
-#ifdef CONFIG_ALPHA_SRM
-#define alpha_using_srm 1
-#else
-#define alpha_using_srm 0
-#endif
+# ifdef CONFIG_ALPHA_SRM
+#  define alpha_using_srm 1
+# else
+#  define alpha_using_srm 0
+# endif
+# ifdef CONFIG_ALPHA_QEMU
+#  define alpha_using_qemu 1
+# else
+#  define alpha_using_qemu 0
+# endif
 #endif /* GENERIC */
 
-#endif
+#endif /* __KERNEL__ */
 #endif /* __ALPHA_MACHVEC_H */

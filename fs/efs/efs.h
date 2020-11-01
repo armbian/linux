@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 1999 Al Smith
  *
@@ -7,8 +8,14 @@
 #ifndef _EFS_EFS_H_
 #define _EFS_EFS_H_
 
+#ifdef pr_fmt
+#undef pr_fmt
+#endif
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/fs.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #define EFS_VERSION "1.0a"
 
@@ -129,7 +136,7 @@ extern struct inode *efs_iget(struct super_block *, unsigned long);
 extern efs_block_t efs_map_block(struct inode *, efs_block_t);
 extern int efs_get_block(struct inode *, sector_t, struct buffer_head *, int);
 
-extern struct dentry *efs_lookup(struct inode *, struct dentry *, struct nameidata *);
+extern struct dentry *efs_lookup(struct inode *, struct dentry *, unsigned int);
 extern struct dentry *efs_fh_to_dentry(struct super_block *sb, struct fid *fid,
 		int fh_len, int fh_type);
 extern struct dentry *efs_fh_to_parent(struct super_block *sb, struct fid *fid,

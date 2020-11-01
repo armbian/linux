@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * kernel/power/autosleep.c
  *
@@ -32,7 +33,8 @@ static void try_to_suspend(struct work_struct *work)
 
 	mutex_lock(&autosleep_lock);
 
-	if (!pm_save_wakeup_count(initial_count)) {
+	if (!pm_save_wakeup_count(initial_count) ||
+		system_state != SYSTEM_RUNNING) {
 		mutex_unlock(&autosleep_lock);
 		goto out;
 	}
@@ -66,7 +68,7 @@ static DECLARE_WORK(suspend_work, try_to_suspend);
 
 void queue_up_suspend_work(void)
 {
-	if (!work_pending(&suspend_work) && autosleep_state > PM_SUSPEND_ON)
+	if (autosleep_state > PM_SUSPEND_ON)
 		queue_work(autosleep_wq, &suspend_work);
 }
 

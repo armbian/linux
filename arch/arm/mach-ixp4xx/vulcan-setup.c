@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/arm/mach-ixp4xx/vulcan-setup.c
  *
@@ -163,6 +164,7 @@ static struct platform_device vulcan_max6369 = {
 
 static struct w1_gpio_platform_data vulcan_w1_gpio_pdata = {
 	.pin			= 14,
+	.ext_pullup_enable_pin	= -EINVAL,
 };
 
 static struct platform_device vulcan_w1_gpio = {
@@ -239,7 +241,7 @@ MACHINE_START(ARCOM_VULCAN, "Arcom/Eurotech Vulcan")
 	.map_io		= ixp4xx_map_io,
 	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.timer		= &ixp4xx_timer,
+	.init_time	= ixp4xx_timer_init,
 	.atag_offset	= 0x100,
 	.init_machine	= vulcan_init,
 #if defined(CONFIG_PCI)

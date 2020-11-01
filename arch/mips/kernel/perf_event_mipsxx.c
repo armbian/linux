@@ -28,6 +28,8 @@
 #include <asm/time.h> /* For perf_irq */
 
 #define MIPS_MAX_HWEVENTS 4
+#define MIPS_TCS_PER_COUNTER 2
+#define MIPS_CPUID_TO_COUNTER_MASK (MIPS_TCS_PER_COUNTER - 1)
 
 struct cpu_hw_events {
 	/* Array of events on this cpu. */
@@ -78,7 +80,6 @@ struct mips_perf_event {
 static struct mips_perf_event raw_event;
 static DEFINE_MUTEX(raw_event_mutex);
 
-#define UNSUPPORTED_PERF_EVENT_ID 0xffffffff
 #define C(x) PERF_COUNT_HW_CACHE_##x
 
 struct mips_pmu {
@@ -100,52 +101,48 @@ struct mips_pmu {
 
 static struct mips_pmu mipspmu;
 
-#define M_CONFIG1_PC	(1 << 4)
+#define M_PERFCTL_EVENT(event)		(((event) << MIPS_PERFCTRL_EVENT_S) & \
+					 MIPS_PERFCTRL_EVENT)
+#define M_PERFCTL_VPEID(vpe)		((vpe)	  << MIPS_PERFCTRL_VPEID_S)
 
-#define M_PERFCTL_EXL			(1      <<  0)
-#define M_PERFCTL_KERNEL		(1      <<  1)
-#define M_PERFCTL_SUPERVISOR		(1      <<  2)
-#define M_PERFCTL_USER			(1      <<  3)
-#define M_PERFCTL_INTERRUPT_ENABLE	(1      <<  4)
-#define M_PERFCTL_EVENT(event)		(((event) & 0x3ff)  << 5)
-#define M_PERFCTL_VPEID(vpe)		((vpe)    << 16)
-#define M_PERFCTL_MT_EN(filter)		((filter) << 20)
-#define    M_TC_EN_ALL			M_PERFCTL_MT_EN(0)
-#define    M_TC_EN_VPE			M_PERFCTL_MT_EN(1)
-#define    M_TC_EN_TC			M_PERFCTL_MT_EN(2)
-#define M_PERFCTL_TCID(tcid)		((tcid)   << 22)
-#define M_PERFCTL_WIDE			(1      << 30)
-#define M_PERFCTL_MORE			(1      << 31)
+#ifdef CONFIG_CPU_BMIPS5000
+#define M_PERFCTL_MT_EN(filter)		0
+#else /* !CONFIG_CPU_BMIPS5000 */
+#define M_PERFCTL_MT_EN(filter)		(filter)
+#endif /* CONFIG_CPU_BMIPS5000 */
 
-#define M_PERFCTL_COUNT_EVENT_WHENEVER	(M_PERFCTL_EXL |		\
-					M_PERFCTL_KERNEL |		\
-					M_PERFCTL_USER |		\
-					M_PERFCTL_SUPERVISOR |		\
-					M_PERFCTL_INTERRUPT_ENABLE)
+#define	   M_TC_EN_ALL			M_PERFCTL_MT_EN(MIPS_PERFCTRL_MT_EN_ALL)
+#define	   M_TC_EN_VPE			M_PERFCTL_MT_EN(MIPS_PERFCTRL_MT_EN_VPE)
+#define	   M_TC_EN_TC			M_PERFCTL_MT_EN(MIPS_PERFCTRL_MT_EN_TC)
+
+#define M_PERFCTL_COUNT_EVENT_WHENEVER	(MIPS_PERFCTRL_EXL |		\
+					 MIPS_PERFCTRL_K |		\
+					 MIPS_PERFCTRL_U |		\
+					 MIPS_PERFCTRL_S |		\
+					 MIPS_PERFCTRL_IE)
 
 #ifdef CONFIG_MIPS_MT_SMP
 #define M_PERFCTL_CONFIG_MASK		0x3fff801f
 #else
 #define M_PERFCTL_CONFIG_MASK		0x1f
 #endif
-#define M_PERFCTL_EVENT_MASK		0xfe0
 
 
-#ifdef CONFIG_MIPS_MT_SMP
+#ifdef CONFIG_MIPS_PERF_SHARED_TC_COUNTERS
 static int cpu_has_mipsmt_pertccounters;
 
 static DEFINE_RWLOCK(pmuint_rwlock);
 
+#if defined(CONFIG_CPU_BMIPS5000)
+#define vpe_id()	(cpu_has_mipsmt_pertccounters ? \
+			 0 : (smp_processor_id() & MIPS_CPUID_TO_COUNTER_MASK))
+#else
 /*
  * FIXME: For VSMP, vpe_id() is redefined for Perf-events, because
  * cpu_data[cpuid].vpe_id reports 0 for _both_ CPUs.
  */
-#if defined(CONFIG_HW_PERF_EVENTS)
 #define vpe_id()	(cpu_has_mipsmt_pertccounters ? \
-			0 : smp_processor_id())
-#else
-#define vpe_id()	(cpu_has_mipsmt_pertccounters ? \
-			0 : cpu_data[smp_processor_id()].vpe_id)
+			 0 : smp_processor_id())
 #endif
 
 /* Copied from op_model_mipsxx.c */
@@ -162,10 +159,10 @@ static unsigned int counters_total_to_per_cpu(unsigned int counters)
 	return counters >> vpe_shift();
 }
 
-#else /* !CONFIG_MIPS_MT_SMP */
+#else /* !CONFIG_MIPS_PERF_SHARED_TC_COUNTERS */
 #define vpe_id()	0
 
-#endif /* CONFIG_MIPS_MT_SMP */
+#endif /* CONFIG_MIPS_PERF_SHARED_TC_COUNTERS */
 
 static void resume_local_counters(void);
 static void pause_local_counters(void);
@@ -332,14 +329,19 @@ static int mipsxx_pmu_alloc_counter(struct cpu_hw_events *cpuc,
 
 static void mipsxx_pmu_enable_event(struct hw_perf_event *evt, int idx)
 {
-	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 
 	WARN_ON(idx < 0 || idx >= mipspmu.num_counters);
 
 	cpuc->saved_ctrl[idx] = M_PERFCTL_EVENT(evt->event_base & 0xff) |
 		(evt->config_base & M_PERFCTL_CONFIG_MASK) |
 		/* Make sure interrupt enabled. */
-		M_PERFCTL_INTERRUPT_ENABLE;
+		MIPS_PERFCTRL_IE;
+	if (IS_ENABLED(CONFIG_CPU_BMIPS5000))
+		/* enable the counter for the calling thread */
+		cpuc->saved_ctrl[idx] |=
+			(1 << (12 + vpe_id())) | BRCM_PERFCTRL_TC;
+
 	/*
 	 * We do not actually let the counter run. Leave it until start().
 	 */
@@ -347,7 +349,7 @@ static void mipsxx_pmu_enable_event(struct hw_perf_event *evt, int idx)
 
 static void mipsxx_pmu_disable_event(int idx)
 {
-	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	unsigned long flags;
 
 	WARN_ON(idx < 0 || idx >= mipspmu.num_counters);
@@ -447,7 +449,7 @@ static void mipspmu_stop(struct perf_event *event, int flags)
 
 static int mipspmu_add(struct perf_event *event, int flags)
 {
-	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct hw_perf_event *hwc = &event->hw;
 	int idx;
 	int err = 0;
@@ -483,7 +485,7 @@ out:
 
 static void mipspmu_del(struct perf_event *event, int flags)
 {
-	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct hw_perf_event *hwc = &event->hw;
 	int idx = hwc->idx;
 
@@ -509,7 +511,7 @@ static void mipspmu_read(struct perf_event *event)
 
 static void mipspmu_enable(struct pmu *pmu)
 {
-#ifdef CONFIG_MIPS_MT_SMP
+#ifdef CONFIG_MIPS_PERF_SHARED_TC_COUNTERS
 	write_unlock(&pmuint_rwlock);
 #endif
 	resume_local_counters();
@@ -517,7 +519,7 @@ static void mipspmu_enable(struct pmu *pmu)
 
 /*
  * MIPS performance counters can be per-TC. The control registers can
- * not be directly accessed accross CPUs. Hence if we want to do global
+ * not be directly accessed across CPUs. Hence if we want to do global
  * control, we need cross CPU calls. on_each_cpu() can help us, but we
  * can not make sure this function is called with interrupts enabled. So
  * here we pause local counters and then grab a rwlock and leave the
@@ -529,7 +531,7 @@ static void mipspmu_enable(struct pmu *pmu)
 static void mipspmu_disable(struct pmu *pmu)
 {
 	pause_local_counters();
-#ifdef CONFIG_MIPS_MT_SMP
+#ifdef CONFIG_MIPS_PERF_SHARED_TC_COUNTERS
 	write_lock(&pmuint_rwlock);
 #endif
 }
@@ -545,11 +547,13 @@ static int mipspmu_get_irq(void)
 	if (mipspmu.irq >= 0) {
 		/* Request my own irq handler. */
 		err = request_irq(mipspmu.irq, mipsxx_pmu_handle_irq,
-			IRQF_PERCPU | IRQF_NOBALANCING,
-			"mips_perf_pmu", NULL);
+				  IRQF_PERCPU | IRQF_NOBALANCING |
+				  IRQF_NO_THREAD | IRQF_NO_SUSPEND |
+				  IRQF_SHARED,
+				  "mips_perf_pmu", &mipspmu);
 		if (err) {
-			pr_warning("Unable to request IRQ%d for MIPS "
-			   "performance counters!\n", mipspmu.irq);
+			pr_warn("Unable to request IRQ%d for MIPS performance counters!\n",
+				mipspmu.irq);
 		}
 	} else if (cp0_perfcount_irq < 0) {
 		/*
@@ -559,8 +563,7 @@ static int mipspmu_get_irq(void)
 		perf_irq = mipsxx_pmu_handle_shared_irq;
 		err = 0;
 	} else {
-		pr_warning("The platform hasn't properly defined its "
-			"interrupt controller.\n");
+		pr_warn("The platform hasn't properly defined its interrupt controller\n");
 		err = -ENOENT;
 	}
 
@@ -570,7 +573,7 @@ static int mipspmu_get_irq(void)
 static void mipspmu_free_irq(void)
 {
 	if (mipspmu.irq >= 0)
-		free_irq(mipspmu.irq, NULL);
+		free_irq(mipspmu.irq, &mipspmu);
 	else if (cp0_perfcount_irq < 0)
 		perf_irq = save_perf_irq;
 }
@@ -615,8 +618,7 @@ static int mipspmu_event_init(struct perf_event *event)
 		return -ENOENT;
 	}
 
-	if (event->cpu >= nr_cpumask_bits ||
-	    (event->cpu >= 0 && !cpu_online(event->cpu)))
+	if (event->cpu >= 0 && !cpu_online(event->cpu))
 		return -ENODEV;
 
 	if (!atomic_inc_not_zero(&active_events)) {
@@ -664,13 +666,10 @@ static unsigned int mipspmu_perf_event_encode(const struct mips_perf_event *pev)
 
 static const struct mips_perf_event *mipspmu_map_general_event(int idx)
 {
-	const struct mips_perf_event *pev;
 
-	pev = ((*mipspmu.general_event_map)[idx].event_id ==
-		UNSUPPORTED_PERF_EVENT_ID ? ERR_PTR(-EOPNOTSUPP) :
-		&(*mipspmu.general_event_map)[idx]);
-
-	return pev;
+	if ((*mipspmu.general_event_map)[idx].cntr_mask == 0)
+		return ERR_PTR(-EOPNOTSUPP);
+	return &(*mipspmu.general_event_map)[idx];
 }
 
 static const struct mips_perf_event *mipspmu_map_cache_event(u64 config)
@@ -695,7 +694,7 @@ static const struct mips_perf_event *mipspmu_map_cache_event(u64 config)
 					[cache_op]
 					[cache_result]);
 
-	if (pev->event_id == UNSUPPORTED_PERF_EVENT_ID)
+	if (pev->cntr_mask == 0)
 		return ERR_PTR(-EOPNOTSUPP);
 
 	return pev;
@@ -743,13 +742,13 @@ static void handle_associated_event(struct cpu_hw_events *cpuc,
 
 static int __n_counters(void)
 {
-	if (!(read_c0_config1() & M_CONFIG1_PC))
+	if (!cpu_has_perf)
 		return 0;
-	if (!(read_c0_perfctrl0() & M_PERFCTL_MORE))
+	if (!(read_c0_perfctrl0() & MIPS_PERFCTRL_M))
 		return 1;
-	if (!(read_c0_perfctrl1() & M_PERFCTL_MORE))
+	if (!(read_c0_perfctrl1() & MIPS_PERFCTRL_M))
 		return 2;
-	if (!(read_c0_perfctrl2() & M_PERFCTL_MORE))
+	if (!(read_c0_perfctrl2() & MIPS_PERFCTRL_M))
 		return 3;
 
 	return 4;
@@ -766,6 +765,7 @@ static int n_counters(void)
 
 	case CPU_R12000:
 	case CPU_R14000:
+	case CPU_R16000:
 		counters = 4;
 		break;
 
@@ -795,41 +795,68 @@ static void reset_counters(void *arg)
 	}
 }
 
-/* 24K/34K/1004K cores can share the same event map. */
+/* 24K/34K/1004K/interAptiv/loongson1 cores share the same event map. */
 static const struct mips_perf_event mipsxxcore_event_map
 				[PERF_COUNT_HW_MAX] = {
 	[PERF_COUNT_HW_CPU_CYCLES] = { 0x00, CNTR_EVEN | CNTR_ODD, P },
 	[PERF_COUNT_HW_INSTRUCTIONS] = { 0x01, CNTR_EVEN | CNTR_ODD, T },
-	[PERF_COUNT_HW_CACHE_REFERENCES] = { UNSUPPORTED_PERF_EVENT_ID },
-	[PERF_COUNT_HW_CACHE_MISSES] = { UNSUPPORTED_PERF_EVENT_ID },
 	[PERF_COUNT_HW_BRANCH_INSTRUCTIONS] = { 0x02, CNTR_EVEN, T },
 	[PERF_COUNT_HW_BRANCH_MISSES] = { 0x02, CNTR_ODD, T },
-	[PERF_COUNT_HW_BUS_CYCLES] = { UNSUPPORTED_PERF_EVENT_ID },
 };
 
-/* 74K core has different branch event code. */
-static const struct mips_perf_event mipsxx74Kcore_event_map
+/* 74K/proAptiv core has different branch event code. */
+static const struct mips_perf_event mipsxxcore_event_map2
 				[PERF_COUNT_HW_MAX] = {
 	[PERF_COUNT_HW_CPU_CYCLES] = { 0x00, CNTR_EVEN | CNTR_ODD, P },
 	[PERF_COUNT_HW_INSTRUCTIONS] = { 0x01, CNTR_EVEN | CNTR_ODD, T },
-	[PERF_COUNT_HW_CACHE_REFERENCES] = { UNSUPPORTED_PERF_EVENT_ID },
-	[PERF_COUNT_HW_CACHE_MISSES] = { UNSUPPORTED_PERF_EVENT_ID },
 	[PERF_COUNT_HW_BRANCH_INSTRUCTIONS] = { 0x27, CNTR_EVEN, T },
 	[PERF_COUNT_HW_BRANCH_MISSES] = { 0x27, CNTR_ODD, T },
-	[PERF_COUNT_HW_BUS_CYCLES] = { UNSUPPORTED_PERF_EVENT_ID },
+};
+
+static const struct mips_perf_event i6x00_event_map[PERF_COUNT_HW_MAX] = {
+	[PERF_COUNT_HW_CPU_CYCLES]          = { 0x00, CNTR_EVEN | CNTR_ODD },
+	[PERF_COUNT_HW_INSTRUCTIONS]        = { 0x01, CNTR_EVEN | CNTR_ODD },
+	/* These only count dcache, not icache */
+	[PERF_COUNT_HW_CACHE_REFERENCES]    = { 0x45, CNTR_EVEN | CNTR_ODD },
+	[PERF_COUNT_HW_CACHE_MISSES]        = { 0x48, CNTR_EVEN | CNTR_ODD },
+	[PERF_COUNT_HW_BRANCH_INSTRUCTIONS] = { 0x15, CNTR_EVEN | CNTR_ODD },
+	[PERF_COUNT_HW_BRANCH_MISSES]       = { 0x16, CNTR_EVEN | CNTR_ODD },
+};
+
+static const struct mips_perf_event loongson3_event_map[PERF_COUNT_HW_MAX] = {
+	[PERF_COUNT_HW_CPU_CYCLES] = { 0x00, CNTR_EVEN },
+	[PERF_COUNT_HW_INSTRUCTIONS] = { 0x00, CNTR_ODD },
+	[PERF_COUNT_HW_BRANCH_INSTRUCTIONS] = { 0x01, CNTR_EVEN },
+	[PERF_COUNT_HW_BRANCH_MISSES] = { 0x01, CNTR_ODD },
 };
 
 static const struct mips_perf_event octeon_event_map[PERF_COUNT_HW_MAX] = {
 	[PERF_COUNT_HW_CPU_CYCLES] = { 0x01, CNTR_ALL },
 	[PERF_COUNT_HW_INSTRUCTIONS] = { 0x03, CNTR_ALL },
 	[PERF_COUNT_HW_CACHE_REFERENCES] = { 0x2b, CNTR_ALL },
-	[PERF_COUNT_HW_CACHE_MISSES] = { 0x2e, CNTR_ALL  },
+	[PERF_COUNT_HW_CACHE_MISSES] = { 0x2e, CNTR_ALL	 },
 	[PERF_COUNT_HW_BRANCH_INSTRUCTIONS] = { 0x08, CNTR_ALL },
 	[PERF_COUNT_HW_BRANCH_MISSES] = { 0x09, CNTR_ALL },
 	[PERF_COUNT_HW_BUS_CYCLES] = { 0x25, CNTR_ALL },
 };
 
-/* 24K/34K/1004K cores can share the same cache event map. */
+static const struct mips_perf_event bmips5000_event_map
+				[PERF_COUNT_HW_MAX] = {
+	[PERF_COUNT_HW_CPU_CYCLES] = { 0x00, CNTR_EVEN | CNTR_ODD, T },
+	[PERF_COUNT_HW_INSTRUCTIONS] = { 0x01, CNTR_EVEN | CNTR_ODD, T },
+	[PERF_COUNT_HW_BRANCH_MISSES] = { 0x02, CNTR_ODD, T },
+};
+
+static const struct mips_perf_event xlp_event_map[PERF_COUNT_HW_MAX] = {
+	[PERF_COUNT_HW_CPU_CYCLES] = { 0x01, CNTR_ALL },
+	[PERF_COUNT_HW_INSTRUCTIONS] = { 0x18, CNTR_ALL }, /* PAPI_TOT_INS */
+	[PERF_COUNT_HW_CACHE_REFERENCES] = { 0x04, CNTR_ALL }, /* PAPI_L1_ICA */
+	[PERF_COUNT_HW_CACHE_MISSES] = { 0x07, CNTR_ALL }, /* PAPI_L1_ICM */
+	[PERF_COUNT_HW_BRANCH_INSTRUCTIONS] = { 0x1b, CNTR_ALL }, /* PAPI_BR_CN */
+	[PERF_COUNT_HW_BRANCH_MISSES] = { 0x1c, CNTR_ALL }, /* PAPI_BR_MSP */
+};
+
+/* 24K/34K/1004K/interAptiv/loongson1 cores share the same cache event map. */
 static const struct mips_perf_event mipsxxcore_cache_map
 				[PERF_COUNT_HW_CACHE_MAX]
 				[PERF_COUNT_HW_CACHE_OP_MAX]
@@ -849,10 +876,6 @@ static const struct mips_perf_event mipsxxcore_cache_map
 		[C(RESULT_ACCESS)]	= { 0x0a, CNTR_EVEN, T },
 		[C(RESULT_MISS)]	= { 0x0b, CNTR_EVEN | CNTR_ODD, T },
 	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
 },
 [C(L1I)] = {
 	[C(OP_READ)] = {
@@ -869,7 +892,6 @@ static const struct mips_perf_event mipsxxcore_cache_map
 		 * Note that MIPS has only "hit" events countable for
 		 * the prefetch operation.
 		 */
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 	},
 },
 [C(LL)] = {
@@ -881,10 +903,6 @@ static const struct mips_perf_event mipsxxcore_cache_map
 		[C(RESULT_ACCESS)]	= { 0x15, CNTR_ODD, P },
 		[C(RESULT_MISS)]	= { 0x16, CNTR_EVEN, P },
 	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
 },
 [C(DTLB)] = {
 	[C(OP_READ)] = {
@@ -895,10 +913,6 @@ static const struct mips_perf_event mipsxxcore_cache_map
 		[C(RESULT_ACCESS)]	= { 0x06, CNTR_EVEN, T },
 		[C(RESULT_MISS)]	= { 0x06, CNTR_ODD, T },
 	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
 },
 [C(ITLB)] = {
 	[C(OP_READ)] = {
@@ -908,10 +922,6 @@ static const struct mips_perf_event mipsxxcore_cache_map
 	[C(OP_WRITE)] = {
 		[C(RESULT_ACCESS)]	= { 0x05, CNTR_EVEN, T },
 		[C(RESULT_MISS)]	= { 0x05, CNTR_ODD, T },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 	},
 },
 [C(BPU)] = {
@@ -924,29 +934,11 @@ static const struct mips_perf_event mipsxxcore_cache_map
 		[C(RESULT_ACCESS)]	= { 0x02, CNTR_EVEN, T },
 		[C(RESULT_MISS)]	= { 0x02, CNTR_ODD, T },
 	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-},
-[C(NODE)] = {
-	[C(OP_READ)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_WRITE)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
 },
 };
 
-/* 74K core has completely different cache event map. */
-static const struct mips_perf_event mipsxx74Kcore_cache_map
+/* 74K/proAptiv core has completely different cache event map. */
+static const struct mips_perf_event mipsxxcore_cache_map2
 				[PERF_COUNT_HW_CACHE_MAX]
 				[PERF_COUNT_HW_CACHE_OP_MAX]
 				[PERF_COUNT_HW_CACHE_RESULT_MAX] = {
@@ -965,10 +957,6 @@ static const struct mips_perf_event mipsxx74Kcore_cache_map
 		[C(RESULT_ACCESS)]	= { 0x17, CNTR_ODD, T },
 		[C(RESULT_MISS)]	= { 0x18, CNTR_ODD, T },
 	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
 },
 [C(L1I)] = {
 	[C(OP_READ)] = {
@@ -985,38 +973,23 @@ static const struct mips_perf_event mipsxx74Kcore_cache_map
 		 * Note that MIPS has only "hit" events countable for
 		 * the prefetch operation.
 		 */
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 	},
 },
 [C(LL)] = {
 	[C(OP_READ)] = {
 		[C(RESULT_ACCESS)]	= { 0x1c, CNTR_ODD, P },
-		[C(RESULT_MISS)]	= { 0x1d, CNTR_EVEN | CNTR_ODD, P },
+		[C(RESULT_MISS)]	= { 0x1d, CNTR_EVEN, P },
 	},
 	[C(OP_WRITE)] = {
 		[C(RESULT_ACCESS)]	= { 0x1c, CNTR_ODD, P },
-		[C(RESULT_MISS)]	= { 0x1d, CNTR_EVEN | CNTR_ODD, P },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
+		[C(RESULT_MISS)]	= { 0x1d, CNTR_EVEN, P },
 	},
 },
-[C(DTLB)] = {
-	/* 74K core does not have specific DTLB events. */
-	[C(OP_READ)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_WRITE)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-},
+/*
+ * 74K core does not have specific DTLB events. proAptiv core has
+ * "speculative" DTLB events which are numbered 0x63 (even/odd) and
+ * not included here. One can use raw events if really needed.
+ */
 [C(ITLB)] = {
 	[C(OP_READ)] = {
 		[C(RESULT_ACCESS)]	= { 0x04, CNTR_EVEN, T },
@@ -1025,10 +998,6 @@ static const struct mips_perf_event mipsxx74Kcore_cache_map
 	[C(OP_WRITE)] = {
 		[C(RESULT_ACCESS)]	= { 0x04, CNTR_EVEN, T },
 		[C(RESULT_MISS)]	= { 0x04, CNTR_ODD, T },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 	},
 },
 [C(BPU)] = {
@@ -1041,23 +1010,159 @@ static const struct mips_perf_event mipsxx74Kcore_cache_map
 		[C(RESULT_ACCESS)]	= { 0x27, CNTR_EVEN, T },
 		[C(RESULT_MISS)]	= { 0x27, CNTR_ODD, T },
 	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
 },
-[C(NODE)] = {
+};
+
+static const struct mips_perf_event i6x00_cache_map
+				[PERF_COUNT_HW_CACHE_MAX]
+				[PERF_COUNT_HW_CACHE_OP_MAX]
+				[PERF_COUNT_HW_CACHE_RESULT_MAX] = {
+[C(L1D)] = {
 	[C(OP_READ)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
+		[C(RESULT_ACCESS)]	= { 0x46, CNTR_EVEN | CNTR_ODD },
+		[C(RESULT_MISS)]	= { 0x49, CNTR_EVEN | CNTR_ODD },
 	},
 	[C(OP_WRITE)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
+		[C(RESULT_ACCESS)]	= { 0x47, CNTR_EVEN | CNTR_ODD },
+		[C(RESULT_MISS)]	= { 0x4a, CNTR_EVEN | CNTR_ODD },
+	},
+},
+[C(L1I)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 0x84, CNTR_EVEN | CNTR_ODD },
+		[C(RESULT_MISS)]	= { 0x85, CNTR_EVEN | CNTR_ODD },
+	},
+},
+[C(DTLB)] = {
+	/* Can't distinguish read & write */
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 0x40, CNTR_EVEN | CNTR_ODD },
+		[C(RESULT_MISS)]	= { 0x41, CNTR_EVEN | CNTR_ODD },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_ACCESS)]	= { 0x40, CNTR_EVEN | CNTR_ODD },
+		[C(RESULT_MISS)]	= { 0x41, CNTR_EVEN | CNTR_ODD },
+	},
+},
+[C(BPU)] = {
+	/* Conditional branches / mispredicted */
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 0x15, CNTR_EVEN | CNTR_ODD },
+		[C(RESULT_MISS)]	= { 0x16, CNTR_EVEN | CNTR_ODD },
+	},
+},
+};
+
+static const struct mips_perf_event loongson3_cache_map
+				[PERF_COUNT_HW_CACHE_MAX]
+				[PERF_COUNT_HW_CACHE_OP_MAX]
+				[PERF_COUNT_HW_CACHE_RESULT_MAX] = {
+[C(L1D)] = {
+	/*
+	 * Like some other architectures (e.g. ARM), the performance
+	 * counters don't differentiate between read and write
+	 * accesses/misses, so this isn't strictly correct, but it's the
+	 * best we can do. Writes and reads get combined.
+	 */
+	[C(OP_READ)] = {
+		[C(RESULT_MISS)]        = { 0x04, CNTR_ODD },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_MISS)]        = { 0x04, CNTR_ODD },
+	},
+},
+[C(L1I)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_MISS)]        = { 0x04, CNTR_EVEN },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_MISS)]        = { 0x04, CNTR_EVEN },
+	},
+},
+[C(DTLB)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_MISS)]        = { 0x09, CNTR_ODD },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_MISS)]        = { 0x09, CNTR_ODD },
+	},
+},
+[C(ITLB)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_MISS)]        = { 0x0c, CNTR_ODD },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_MISS)]        = { 0x0c, CNTR_ODD },
+	},
+},
+[C(BPU)] = {
+	/* Using the same code for *HW_BRANCH* */
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]      = { 0x02, CNTR_EVEN },
+		[C(RESULT_MISS)]        = { 0x02, CNTR_ODD },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_ACCESS)]      = { 0x02, CNTR_EVEN },
+		[C(RESULT_MISS)]        = { 0x02, CNTR_ODD },
+	},
+},
+};
+
+/* BMIPS5000 */
+static const struct mips_perf_event bmips5000_cache_map
+				[PERF_COUNT_HW_CACHE_MAX]
+				[PERF_COUNT_HW_CACHE_OP_MAX]
+				[PERF_COUNT_HW_CACHE_RESULT_MAX] = {
+[C(L1D)] = {
+	/*
+	 * Like some other architectures (e.g. ARM), the performance
+	 * counters don't differentiate between read and write
+	 * accesses/misses, so this isn't strictly correct, but it's the
+	 * best we can do. Writes and reads get combined.
+	 */
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 12, CNTR_EVEN, T },
+		[C(RESULT_MISS)]	= { 12, CNTR_ODD, T },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_ACCESS)]	= { 12, CNTR_EVEN, T },
+		[C(RESULT_MISS)]	= { 12, CNTR_ODD, T },
+	},
+},
+[C(L1I)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 10, CNTR_EVEN, T },
+		[C(RESULT_MISS)]	= { 10, CNTR_ODD, T },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_ACCESS)]	= { 10, CNTR_EVEN, T },
+		[C(RESULT_MISS)]	= { 10, CNTR_ODD, T },
 	},
 	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
+		[C(RESULT_ACCESS)]	= { 23, CNTR_EVEN, T },
+		/*
+		 * Note that MIPS has only "hit" events countable for
+		 * the prefetch operation.
+		 */
+	},
+},
+[C(LL)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 28, CNTR_EVEN, P },
+		[C(RESULT_MISS)]	= { 28, CNTR_ODD, P },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_ACCESS)]	= { 28, CNTR_EVEN, P },
+		[C(RESULT_MISS)]	= { 28, CNTR_ODD, P },
+	},
+},
+[C(BPU)] = {
+	/* Using the same code for *HW_BRANCH* */
+	[C(OP_READ)] = {
+		[C(RESULT_MISS)]	= { 0x02, CNTR_ODD, T },
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_MISS)]	= { 0x02, CNTR_ODD, T },
 	},
 },
 };
@@ -1074,39 +1179,14 @@ static const struct mips_perf_event octeon_cache_map
 	},
 	[C(OP_WRITE)] = {
 		[C(RESULT_ACCESS)]	= { 0x30, CNTR_ALL },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 	},
 },
 [C(L1I)] = {
 	[C(OP_READ)] = {
 		[C(RESULT_ACCESS)]	= { 0x18, CNTR_ALL },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_WRITE)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 	},
 	[C(OP_PREFETCH)] = {
 		[C(RESULT_ACCESS)]	= { 0x19, CNTR_ALL },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-},
-[C(LL)] = {
-	[C(OP_READ)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_WRITE)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 	},
 },
 [C(DTLB)] = {
@@ -1115,45 +1195,72 @@ static const struct mips_perf_event octeon_cache_map
 	 * read and write.
 	 */
 	[C(OP_READ)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 		[C(RESULT_MISS)]	= { 0x35, CNTR_ALL },
 	},
 	[C(OP_WRITE)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 		[C(RESULT_MISS)]	= { 0x35, CNTR_ALL },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 	},
 },
 [C(ITLB)] = {
 	[C(OP_READ)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
 		[C(RESULT_MISS)]	= { 0x37, CNTR_ALL },
 	},
-	[C(OP_WRITE)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
+},
+};
+
+static const struct mips_perf_event xlp_cache_map
+				[PERF_COUNT_HW_CACHE_MAX]
+				[PERF_COUNT_HW_CACHE_OP_MAX]
+				[PERF_COUNT_HW_CACHE_RESULT_MAX] = {
+[C(L1D)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 0x31, CNTR_ALL }, /* PAPI_L1_DCR */
+		[C(RESULT_MISS)]	= { 0x30, CNTR_ALL }, /* PAPI_L1_LDM */
 	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
+	[C(OP_WRITE)] = {
+		[C(RESULT_ACCESS)]	= { 0x2f, CNTR_ALL }, /* PAPI_L1_DCW */
+		[C(RESULT_MISS)]	= { 0x2e, CNTR_ALL }, /* PAPI_L1_STM */
+	},
+},
+[C(L1I)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 0x04, CNTR_ALL }, /* PAPI_L1_ICA */
+		[C(RESULT_MISS)]	= { 0x07, CNTR_ALL }, /* PAPI_L1_ICM */
+	},
+},
+[C(LL)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_ACCESS)]	= { 0x35, CNTR_ALL }, /* PAPI_L2_DCR */
+		[C(RESULT_MISS)]	= { 0x37, CNTR_ALL }, /* PAPI_L2_LDM */
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_ACCESS)]	= { 0x34, CNTR_ALL }, /* PAPI_L2_DCA */
+		[C(RESULT_MISS)]	= { 0x36, CNTR_ALL }, /* PAPI_L2_DCM */
+	},
+},
+[C(DTLB)] = {
+	/*
+	 * Only general DTLB misses are counted use the same event for
+	 * read and write.
+	 */
+	[C(OP_READ)] = {
+		[C(RESULT_MISS)]	= { 0x2d, CNTR_ALL }, /* PAPI_TLB_DM */
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_MISS)]	= { 0x2d, CNTR_ALL }, /* PAPI_TLB_DM */
+	},
+},
+[C(ITLB)] = {
+	[C(OP_READ)] = {
+		[C(RESULT_MISS)]	= { 0x08, CNTR_ALL }, /* PAPI_TLB_IM */
+	},
+	[C(OP_WRITE)] = {
+		[C(RESULT_MISS)]	= { 0x08, CNTR_ALL }, /* PAPI_TLB_IM */
 	},
 },
 [C(BPU)] = {
-	/* Using the same code for *HW_BRANCH* */
 	[C(OP_READ)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_WRITE)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-	},
-	[C(OP_PREFETCH)] = {
-		[C(RESULT_ACCESS)]	= { UNSUPPORTED_PERF_EVENT_ID },
-		[C(RESULT_MISS)]	= { UNSUPPORTED_PERF_EVENT_ID },
+		[C(RESULT_MISS)]	= { 0x25, CNTR_ALL },
 	},
 },
 };
@@ -1222,7 +1329,7 @@ static int __hw_perf_event_init(struct perf_event *event)
 	 * We allow max flexibility on how each individual counter shared
 	 * by the single CPU operates (the mode exclusion and the range).
 	 */
-	hwc->config_base = M_PERFCTL_INTERRUPT_ENABLE;
+	hwc->config_base = MIPS_PERFCTRL_IE;
 
 	/* Calculate range bits and validate it. */
 	if (num_possible_cpus() > 1)
@@ -1233,14 +1340,14 @@ static int __hw_perf_event_init(struct perf_event *event)
 		mutex_unlock(&raw_event_mutex);
 
 	if (!attr->exclude_user)
-		hwc->config_base |= M_PERFCTL_USER;
+		hwc->config_base |= MIPS_PERFCTRL_U;
 	if (!attr->exclude_kernel) {
-		hwc->config_base |= M_PERFCTL_KERNEL;
+		hwc->config_base |= MIPS_PERFCTRL_K;
 		/* MIPS kernel mode: KSU == 00b || EXL == 1 || ERL == 1 */
-		hwc->config_base |= M_PERFCTL_EXL;
+		hwc->config_base |= MIPS_PERFCTRL_EXL;
 	}
 	if (!attr->exclude_hv)
-		hwc->config_base |= M_PERFCTL_SUPERVISOR;
+		hwc->config_base |= MIPS_PERFCTRL_S;
 
 	hwc->config_base &= M_PERFCTL_CONFIG_MASK;
 	/*
@@ -1270,7 +1377,7 @@ static int __hw_perf_event_init(struct perf_event *event)
 
 static void pause_local_counters(void)
 {
-	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	int ctr = mipspmu.num_counters;
 	unsigned long flags;
 
@@ -1286,7 +1393,7 @@ static void pause_local_counters(void)
 
 static void resume_local_counters(void)
 {
-	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	int ctr = mipspmu.num_counters;
 
 	do {
@@ -1297,14 +1404,14 @@ static void resume_local_counters(void)
 
 static int mipsxx_pmu_handle_shared_irq(void)
 {
-	struct cpu_hw_events *cpuc = &__get_cpu_var(cpu_hw_events);
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct perf_sample_data data;
 	unsigned int counters = mipspmu.num_counters;
 	u64 counter;
 	int handled = IRQ_NONE;
 	struct pt_regs *regs;
 
-	if (cpu_has_mips_r2 && !(read_c0_cause() & (1 << 26)))
+	if (cpu_has_perf_cntr_intr_bit && !(read_c0_cause() & CAUSEF_PCI))
 		return handled;
 	/*
 	 * First we pause the local counters, so that when we are locked
@@ -1314,13 +1421,13 @@ static int mipsxx_pmu_handle_shared_irq(void)
 	 * See also mipsxx_pmu_start().
 	 */
 	pause_local_counters();
-#ifdef CONFIG_MIPS_MT_SMP
+#ifdef CONFIG_MIPS_PERF_SHARED_TC_COUNTERS
 	read_lock(&pmuint_rwlock);
 #endif
 
 	regs = get_irq_regs();
 
-	perf_sample_data_init(&data, 0);
+	perf_sample_data_init(&data, 0, 0);
 
 	switch (counters) {
 #define HANDLE_COUNTER(n)						\
@@ -1338,6 +1445,11 @@ static int mipsxx_pmu_handle_shared_irq(void)
 	HANDLE_COUNTER(0)
 	}
 
+#ifdef CONFIG_MIPS_PERF_SHARED_TC_COUNTERS
+	read_unlock(&pmuint_rwlock);
+#endif
+	resume_local_counters();
+
 	/*
 	 * Do all the work for the pending perf events. We can do this
 	 * in here because the performance counter interrupt is a regular
@@ -1346,10 +1458,6 @@ static int mipsxx_pmu_handle_shared_irq(void)
 	if (handled == IRQ_HANDLED)
 		irq_work_run();
 
-#ifdef CONFIG_MIPS_MT_SMP
-	read_unlock(&pmuint_rwlock);
-#endif
-	resume_local_counters();
 	return handled;
 }
 
@@ -1371,11 +1479,18 @@ static irqreturn_t mipsxx_pmu_handle_irq(int irq, void *dev)
 	 (b) == 25 || (b) == 39 || (r) == 44 || (r) == 174 ||		\
 	 (r) == 176 || ((b) >= 50 && (b) <= 55) ||			\
 	 ((b) >= 64 && (b) <= 67))
-#define IS_RANGE_V_34K_EVENT(r)	((r) == 47)
+#define IS_RANGE_V_34K_EVENT(r) ((r) == 47)
 #endif
 
 /* 74K */
 #define IS_BOTH_COUNTERS_74K_EVENT(b)					\
+	((b) == 0 || (b) == 1)
+
+/* proAptiv */
+#define IS_BOTH_COUNTERS_PROAPTIV_EVENT(b)				\
+	((b) == 0 || (b) == 1)
+/* P5600 */
+#define IS_BOTH_COUNTERS_P5600_EVENT(b)					\
 	((b) == 0 || (b) == 1)
 
 /* 1004K */
@@ -1391,20 +1506,42 @@ static irqreturn_t mipsxx_pmu_handle_irq(int irq, void *dev)
 #define IS_RANGE_V_1004K_EVENT(r)	((r) == 47)
 #endif
 
+/* interAptiv */
+#define IS_BOTH_COUNTERS_INTERAPTIV_EVENT(b)				\
+	((b) == 0 || (b) == 1 || (b) == 11)
+#ifdef CONFIG_MIPS_MT_SMP
+/* The P/V/T info is not provided for "(b) == 38" in SUM, assume P. */
+#define IS_RANGE_P_INTERAPTIV_EVENT(r, b)				\
+	((b) == 0 || (r) == 18 || (b) == 21 || (b) == 22 ||		\
+	 (b) == 25 || (b) == 36 || (b) == 38 || (b) == 39 ||		\
+	 (r) == 44 || (r) == 174 || (r) == 176 || ((b) >= 50 &&		\
+	 (b) <= 59) || (r) == 188 || (b) == 61 || (b) == 62 ||		\
+	 ((b) >= 64 && (b) <= 67))
+#define IS_RANGE_V_INTERAPTIV_EVENT(r)	((r) == 47 || (r) == 175)
+#endif
+
+/* BMIPS5000 */
+#define IS_BOTH_COUNTERS_BMIPS5000_EVENT(b)				\
+	((b) == 0 || (b) == 1)
+
+
 /*
- * User can use 0-255 raw events, where 0-127 for the events of even
- * counters, and 128-255 for odd counters. Note that bit 7 is used to
- * indicate the parity. So, for example, when user wants to take the
- * Event Num of 15 for odd counters (by referring to the user manual),
- * then 128 needs to be added to 15 as the input for the event config,
- * i.e., 143 (0x8F) to be used.
+ * For most cores the user can use 0-255 raw events, where 0-127 for the events
+ * of even counters, and 128-255 for odd counters. Note that bit 7 is used to
+ * indicate the even/odd bank selector. So, for example, when user wants to take
+ * the Event Num of 15 for odd counters (by referring to the user manual), then
+ * 128 needs to be added to 15 as the input for the event config, i.e., 143 (0x8F)
+ * to be used.
+ *
+ * Some newer cores have even more events, in which case the user can use raw
+ * events 0-511, where 0-255 are for the events of even counters, and 256-511
+ * are for odd counters, so bit 8 is used to indicate the even/odd bank selector.
  */
 static const struct mips_perf_event *mipsxx_pmu_map_raw_event(u64 config)
 {
+	/* currently most cores have 7-bit event numbers */
 	unsigned int raw_id = config & 0xff;
 	unsigned int base_id = raw_id & 0x7f;
-
-	raw_event.event_id = base_id;
 
 	switch (current_cpu_type()) {
 	case CPU_24K:
@@ -1437,6 +1574,7 @@ static const struct mips_perf_event *mipsxx_pmu_map_raw_event(u64 config)
 #endif
 		break;
 	case CPU_74K:
+	case CPU_1074K:
 		if (IS_BOTH_COUNTERS_74K_EVENT(base_id))
 			raw_event.cntr_mask = CNTR_EVEN | CNTR_ODD;
 		else
@@ -1445,6 +1583,36 @@ static const struct mips_perf_event *mipsxx_pmu_map_raw_event(u64 config)
 #ifdef CONFIG_MIPS_MT_SMP
 		raw_event.range = P;
 #endif
+		break;
+	case CPU_PROAPTIV:
+		if (IS_BOTH_COUNTERS_PROAPTIV_EVENT(base_id))
+			raw_event.cntr_mask = CNTR_EVEN | CNTR_ODD;
+		else
+			raw_event.cntr_mask =
+				raw_id > 127 ? CNTR_ODD : CNTR_EVEN;
+#ifdef CONFIG_MIPS_MT_SMP
+		raw_event.range = P;
+#endif
+		break;
+	case CPU_P5600:
+	case CPU_P6600:
+		/* 8-bit event numbers */
+		raw_id = config & 0x1ff;
+		base_id = raw_id & 0xff;
+		if (IS_BOTH_COUNTERS_P5600_EVENT(base_id))
+			raw_event.cntr_mask = CNTR_EVEN | CNTR_ODD;
+		else
+			raw_event.cntr_mask =
+				raw_id > 255 ? CNTR_ODD : CNTR_EVEN;
+#ifdef CONFIG_MIPS_MT_SMP
+		raw_event.range = P;
+#endif
+		break;
+	case CPU_I6400:
+	case CPU_I6500:
+		/* 8-bit event numbers */
+		base_id = config & 0xff;
+		raw_event.cntr_mask = CNTR_EVEN | CNTR_ODD;
 		break;
 	case CPU_1004K:
 		if (IS_BOTH_COUNTERS_1004K_EVENT(base_id))
@@ -1461,7 +1629,34 @@ static const struct mips_perf_event *mipsxx_pmu_map_raw_event(u64 config)
 			raw_event.range = T;
 #endif
 		break;
+	case CPU_INTERAPTIV:
+		if (IS_BOTH_COUNTERS_INTERAPTIV_EVENT(base_id))
+			raw_event.cntr_mask = CNTR_EVEN | CNTR_ODD;
+		else
+			raw_event.cntr_mask =
+				raw_id > 127 ? CNTR_ODD : CNTR_EVEN;
+#ifdef CONFIG_MIPS_MT_SMP
+		if (IS_RANGE_P_INTERAPTIV_EVENT(raw_id, base_id))
+			raw_event.range = P;
+		else if (unlikely(IS_RANGE_V_INTERAPTIV_EVENT(raw_id)))
+			raw_event.range = V;
+		else
+			raw_event.range = T;
+#endif
+		break;
+	case CPU_BMIPS5000:
+		if (IS_BOTH_COUNTERS_BMIPS5000_EVENT(base_id))
+			raw_event.cntr_mask = CNTR_EVEN | CNTR_ODD;
+		else
+			raw_event.cntr_mask =
+				raw_id > 127 ? CNTR_ODD : CNTR_EVEN;
+		break;
+	case CPU_LOONGSON3:
+		raw_event.cntr_mask = raw_id > 127 ? CNTR_ODD : CNTR_EVEN;
+	break;
 	}
+
+	raw_event.event_id = base_id;
 
 	return &raw_event;
 }
@@ -1499,6 +1694,20 @@ static const struct mips_perf_event *octeon_pmu_map_raw_event(u64 config)
 	return &raw_event;
 }
 
+static const struct mips_perf_event *xlp_pmu_map_raw_event(u64 config)
+{
+	unsigned int raw_id = config & 0xff;
+
+	/* Only 1-63 are defined */
+	if ((raw_id < 0x01) || (raw_id > 0x3f))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	raw_event.cntr_mask = CNTR_ALL;
+	raw_event.event_id = raw_id;
+
+	return &raw_event;
+}
+
 static int __init
 init_hw_perf_events(void)
 {
@@ -1513,27 +1722,18 @@ init_hw_perf_events(void)
 		return -ENODEV;
 	}
 
-#ifdef CONFIG_MIPS_MT_SMP
+#ifdef CONFIG_MIPS_PERF_SHARED_TC_COUNTERS
 	cpu_has_mipsmt_pertccounters = read_c0_config7() & (1<<19);
 	if (!cpu_has_mipsmt_pertccounters)
 		counters = counters_total_to_per_cpu(counters);
 #endif
 
-#ifdef MSC01E_INT_BASE
-	if (cpu_has_veic) {
-		/*
-		 * Using platform specific interrupt controller defines.
-		 */
-		irq = MSC01E_INT_BASE + MSC01E_INT_PERFCTR;
-	} else {
-#endif
-		if (cp0_perfcount_irq >= 0)
-			irq = MIPS_CPU_IRQ_BASE + cp0_perfcount_irq;
-		else
-			irq = -1;
-#ifdef MSC01E_INT_BASE
-	}
-#endif
+	if (get_c0_perfcount_int)
+		irq = get_c0_perfcount_int();
+	else if (cp0_perfcount_irq >= 0)
+		irq = MIPS_CPU_IRQ_BASE + cp0_perfcount_irq;
+	else
+		irq = -1;
 
 	mipspmu.map_raw_event = mipsxx_pmu_map_raw_event;
 
@@ -1550,13 +1750,58 @@ init_hw_perf_events(void)
 		break;
 	case CPU_74K:
 		mipspmu.name = "mips/74K";
-		mipspmu.general_event_map = &mipsxx74Kcore_event_map;
-		mipspmu.cache_event_map = &mipsxx74Kcore_cache_map;
+		mipspmu.general_event_map = &mipsxxcore_event_map2;
+		mipspmu.cache_event_map = &mipsxxcore_cache_map2;
+		break;
+	case CPU_PROAPTIV:
+		mipspmu.name = "mips/proAptiv";
+		mipspmu.general_event_map = &mipsxxcore_event_map2;
+		mipspmu.cache_event_map = &mipsxxcore_cache_map2;
+		break;
+	case CPU_P5600:
+		mipspmu.name = "mips/P5600";
+		mipspmu.general_event_map = &mipsxxcore_event_map2;
+		mipspmu.cache_event_map = &mipsxxcore_cache_map2;
+		break;
+	case CPU_P6600:
+		mipspmu.name = "mips/P6600";
+		mipspmu.general_event_map = &mipsxxcore_event_map2;
+		mipspmu.cache_event_map = &mipsxxcore_cache_map2;
+		break;
+	case CPU_I6400:
+		mipspmu.name = "mips/I6400";
+		mipspmu.general_event_map = &i6x00_event_map;
+		mipspmu.cache_event_map = &i6x00_cache_map;
+		break;
+	case CPU_I6500:
+		mipspmu.name = "mips/I6500";
+		mipspmu.general_event_map = &i6x00_event_map;
+		mipspmu.cache_event_map = &i6x00_cache_map;
 		break;
 	case CPU_1004K:
 		mipspmu.name = "mips/1004K";
 		mipspmu.general_event_map = &mipsxxcore_event_map;
 		mipspmu.cache_event_map = &mipsxxcore_cache_map;
+		break;
+	case CPU_1074K:
+		mipspmu.name = "mips/1074K";
+		mipspmu.general_event_map = &mipsxxcore_event_map;
+		mipspmu.cache_event_map = &mipsxxcore_cache_map;
+		break;
+	case CPU_INTERAPTIV:
+		mipspmu.name = "mips/interAptiv";
+		mipspmu.general_event_map = &mipsxxcore_event_map;
+		mipspmu.cache_event_map = &mipsxxcore_cache_map;
+		break;
+	case CPU_LOONGSON1:
+		mipspmu.name = "mips/loongson1";
+		mipspmu.general_event_map = &mipsxxcore_event_map;
+		mipspmu.cache_event_map = &mipsxxcore_cache_map;
+		break;
+	case CPU_LOONGSON3:
+		mipspmu.name = "mips/loongson3";
+		mipspmu.general_event_map = &loongson3_event_map;
+		mipspmu.cache_event_map = &loongson3_cache_map;
 		break;
 	case CPU_CAVIUM_OCTEON:
 	case CPU_CAVIUM_OCTEON_PLUS:
@@ -1565,6 +1810,17 @@ init_hw_perf_events(void)
 		mipspmu.general_event_map = &octeon_event_map;
 		mipspmu.cache_event_map = &octeon_cache_map;
 		mipspmu.map_raw_event = octeon_pmu_map_raw_event;
+		break;
+	case CPU_BMIPS5000:
+		mipspmu.name = "BMIPS5000";
+		mipspmu.general_event_map = &bmips5000_event_map;
+		mipspmu.cache_event_map = &bmips5000_cache_map;
+		break;
+	case CPU_XLP:
+		mipspmu.name = "xlp";
+		mipspmu.general_event_map = &xlp_event_map;
+		mipspmu.cache_event_map = &xlp_cache_map;
+		mipspmu.map_raw_event = xlp_pmu_map_raw_event;
 		break;
 	default:
 		pr_cont("Either hardware does not support performance "
@@ -1575,7 +1831,7 @@ init_hw_perf_events(void)
 	mipspmu.num_counters = counters;
 	mipspmu.irq = irq;
 
-	if (read_c0_perfctrl0() & M_PERFCTL_WIDE) {
+	if (read_c0_perfctrl0() & MIPS_PERFCTRL_W) {
 		mipspmu.max_period = (1ULL << 63) - 1;
 		mipspmu.valid_count = (1ULL << 63) - 1;
 		mipspmu.overflow = 1ULL << 63;

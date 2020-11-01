@@ -11,13 +11,12 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/errno.h>
-#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/slab.h>
 #include <asm/prom.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 #include <linux/mtd/mtd.h>
@@ -56,8 +55,8 @@ int uflash_devinit(struct platform_device *op, struct device_node *dp)
 		/* Non-CFI userflash device-- once I find one we
 		 * can work on supporting it.
 		 */
-		printk(KERN_ERR PFX "Unsupported device at %s, 0x%llx\n",
-		       dp->full_name, (unsigned long long)op->resource[0].start);
+		printk(KERN_ERR PFX "Unsupported device at %pOF, 0x%llx\n",
+		       dp, (unsigned long long)op->resource[0].start);
 
 		return -ENODEV;
 	}
@@ -75,7 +74,7 @@ int uflash_devinit(struct platform_device *op, struct device_node *dp)
 
 	up->name = of_get_property(dp, "model", NULL);
 	if (up->name && 0 < strlen(up->name))
-		up->map.name = (char *)up->name;
+		up->map.name = up->name;
 
 	up->map.phys = op->resource[0].start;
 
@@ -108,7 +107,7 @@ int uflash_devinit(struct platform_device *op, struct device_node *dp)
 	return 0;
 }
 
-static int __devinit uflash_probe(struct platform_device *op)
+static int uflash_probe(struct platform_device *op)
 {
 	struct device_node *dp = op->dev.of_node;
 
@@ -121,7 +120,7 @@ static int __devinit uflash_probe(struct platform_device *op)
 	return uflash_devinit(op, dp);
 }
 
-static int __devexit uflash_remove(struct platform_device *op)
+static int uflash_remove(struct platform_device *op)
 {
 	struct uflash_dev *up = dev_get_drvdata(&op->dev);
 
@@ -151,11 +150,10 @@ MODULE_DEVICE_TABLE(of, uflash_match);
 static struct platform_driver uflash_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = uflash_match,
 	},
 	.probe		= uflash_probe,
-	.remove		= __devexit_p(uflash_remove),
+	.remove		= uflash_remove,
 };
 
 module_platform_driver(uflash_driver);

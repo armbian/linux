@@ -1,6 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * arch/s390/appldata/appldata.h
- *
  * Definitions and interface for Linux - z/VM Monitor Stream.
  *
  * Copyright IBM Corp. 2003, 2008

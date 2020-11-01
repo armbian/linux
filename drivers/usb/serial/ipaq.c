@@ -12,7 +12,6 @@
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/tty.h>
 #include <linux/tty_driver.h>
@@ -25,28 +24,20 @@
 
 #define KP_RETRIES	100
 
-/*
- * Version Information
- */
-
-#define DRIVER_VERSION "v1.0"
 #define DRIVER_AUTHOR "Ganesh Varadarajan <ganesh@veritas.com>"
 #define DRIVER_DESC "USB PocketPC PDA driver"
 
-static __u16 product, vendor;
-static bool debug;
 static int connect_retries = KP_RETRIES;
 static int initial_wait;
 
 /* Function prototypes for an ipaq */
 static int  ipaq_open(struct tty_struct *tty,
 			struct usb_serial_port *port);
-static int  ipaq_calc_num_ports(struct usb_serial *serial);
+static int ipaq_calc_num_ports(struct usb_serial *serial,
+					struct usb_serial_endpoints *epds);
 static int  ipaq_startup(struct usb_serial *serial);
 
-static struct usb_device_id ipaq_id_table [] = {
-	/* The first entry is a placeholder for the insmod-specified device */
-	{ USB_DEVICE(0x049F, 0x0003) },
+static const struct usb_device_id ipaq_id_table[] = {
 	{ USB_DEVICE(0x0104, 0x00BE) }, /* Socket USB Sync */
 	{ USB_DEVICE(0x03F0, 0x1016) }, /* HP USB Sync */
 	{ USB_DEVICE(0x03F0, 0x1116) }, /* HP USB Sync 1611 */
@@ -505,13 +496,6 @@ static struct usb_device_id ipaq_id_table [] = {
 
 MODULE_DEVICE_TABLE(usb, ipaq_id_table);
 
-static struct usb_driver ipaq_driver = {
-	.name =		"ipaq",
-	.probe =	usb_serial_probe,
-	.disconnect =	usb_serial_disconnect,
-	.id_table =	ipaq_id_table,
-};
-
 
 /* All of the device info needed for the Compaq iPAQ */
 static struct usb_serial_driver ipaq_device = {
@@ -538,8 +522,6 @@ static int ipaq_open(struct tty_struct *tty,
 	struct usb_serial	*serial = port->serial;
 	int			result = 0;
 	int			retries = connect_retries;
-
-	dbg("%s - port %d", __func__, port->number);
 
 	msleep(1000*initial_wait);
 
@@ -569,44 +551,38 @@ static int ipaq_open(struct tty_struct *tty,
 	return usb_serial_generic_open(tty, port);
 }
 
-static int ipaq_calc_num_ports(struct usb_serial *serial)
+static int ipaq_calc_num_ports(struct usb_serial *serial,
+					struct usb_serial_endpoints *epds)
 {
 	/*
-	 * some devices have 3 endpoints, the 3rd of which
-	 * must be ignored as it would make the core
-	 * create a second port which oopses when used
+	 * Some of the devices in ipaq_id_table[] are composite, and we
+	 * shouldn't bind to all the interfaces. This test will rule out
+	 * some obviously invalid possibilities.
 	 */
-	int ipaq_num_ports = 1;
-
-	dbg("%s - numberofendpoints: %d", __FUNCTION__,
-		(int)serial->interface->cur_altsetting->desc.bNumEndpoints);
+	if (epds->num_bulk_in == 0 || epds->num_bulk_out == 0)
+		return -ENODEV;
 
 	/*
-	 * a few devices have 4 endpoints, seemingly Yakuma devices,
-	 * and we need the second pair, so let them have 2 ports
-	 *
-	 * TODO: can we drop port 1 ?
+	 * A few devices have four endpoints, seemingly Yakuma devices, and
+	 * we need the second pair.
 	 */
-	if (serial->interface->cur_altsetting->desc.bNumEndpoints > 3) {
-		ipaq_num_ports = 2;
+	if (epds->num_bulk_in > 1 && epds->num_bulk_out > 1) {
+		epds->bulk_in[0] = epds->bulk_in[1];
+		epds->bulk_out[0] = epds->bulk_out[1];
 	}
 
-	return ipaq_num_ports;
-}
+	/*
+	 * Other devices have 3 endpoints, but we only use the first bulk in
+	 * and out endpoints.
+	 */
+	epds->num_bulk_in = 1;
+	epds->num_bulk_out = 1;
 
+	return 1;
+}
 
 static int ipaq_startup(struct usb_serial *serial)
 {
-	dbg("%s", __func__);
-
-	/* Some of the devices in ipaq_id_table[] are composite, and we
-	 * shouldn't bind to all the interfaces.  This test will rule out
-	 * some obviously invalid possibilities.
-	 */
-	if (serial->num_bulk_in < serial->num_ports ||
-			serial->num_bulk_out < serial->num_ports)
-		return -ENODEV;
-
 	if (serial->dev->actconfig->desc.bConfigurationValue != 1) {
 		/*
 		 * FIXME: HP iPaq rx3715, possibly others, have 1 config that
@@ -618,49 +594,14 @@ static int ipaq_startup(struct usb_serial *serial)
 		return -ENODEV;
 	}
 
-	dbg("%s - iPAQ module configured for %d ports",
-		__FUNCTION__, serial->num_ports);
-
 	return usb_reset_configuration(serial->dev);
 }
 
-static int __init ipaq_init(void)
-{
-	int retval;
-
-	if (vendor) {
-		ipaq_id_table[0].idVendor = vendor;
-		ipaq_id_table[0].idProduct = product;
-	}
-
-	retval = usb_serial_register_drivers(&ipaq_driver, serial_drivers);
-	if (retval == 0)
-		printk(KERN_INFO KBUILD_MODNAME ": " DRIVER_VERSION ":"
-			       DRIVER_DESC "\n");
-	return retval;
-}
-
-static void __exit ipaq_exit(void)
-{
-	usb_serial_deregister_drivers(&ipaq_driver, serial_drivers);
-}
-
-
-module_init(ipaq_init);
-module_exit(ipaq_exit);
+module_usb_serial_driver(serial_drivers, ipaq_id_table);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
-
-module_param(debug, bool, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(debug, "Debug enabled or not");
-
-module_param(vendor, ushort, 0);
-MODULE_PARM_DESC(vendor, "User specified USB idVendor");
-
-module_param(product, ushort, 0);
-MODULE_PARM_DESC(product, "User specified USB idProduct");
 
 module_param(connect_retries, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(connect_retries,

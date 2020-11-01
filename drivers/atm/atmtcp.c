@@ -10,7 +10,7 @@
 #include <linux/bitops.h>
 #include <linux/init.h>
 #include <linux/slab.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/atomic.h>
 
 
@@ -60,7 +60,7 @@ static int atmtcp_send_control(struct atm_vcc *vcc,int type,
 		return -EUNATCH;
 	}
 	atm_force_charge(out_vcc,skb->truesize);
-	new_msg = (struct atmtcp_control *) skb_put(skb,sizeof(*new_msg));
+	new_msg = skb_put(skb, sizeof(*new_msg));
 	*new_msg = *msg;
 	new_msg->hdr.length = ATMTCP_HDR_MAGIC;
 	new_msg->type = type;
@@ -157,7 +157,6 @@ static int atmtcp_v_ioctl(struct atm_dev *dev,unsigned int cmd,void __user *arg)
 {
 	struct atm_cirange ci;
 	struct atm_vcc *vcc;
-	struct hlist_node *node;
 	struct sock *s;
 	int i;
 
@@ -171,7 +170,7 @@ static int atmtcp_v_ioctl(struct atm_dev *dev,unsigned int cmd,void __user *arg)
 	for(i = 0; i < VCC_HTABLE_SIZE; ++i) {
 		struct hlist_head *head = &vcc_hash[i];
 
-		sk_for_each(s, node, head) {
+		sk_for_each(s, head) {
 			vcc = atm_sk(s);
 			if (vcc->dev != dev)
 				continue;
@@ -218,7 +217,7 @@ static int atmtcp_v_send(struct atm_vcc *vcc,struct sk_buff *skb)
 		atomic_inc(&vcc->stats->tx_err);
 		return -ENOBUFS;
 	}
-	hdr = (void *) skb_put(new_skb,sizeof(struct atmtcp_hdr));
+	hdr = skb_put(new_skb, sizeof(struct atmtcp_hdr));
 	hdr->vpi = htons(vcc->vpi);
 	hdr->vci = htons(vcc->vci);
 	hdr->length = htonl(skb->len);
@@ -264,12 +263,11 @@ static struct atm_vcc *find_vcc(struct atm_dev *dev, short vpi, int vci)
 {
         struct hlist_head *head;
         struct atm_vcc *vcc;
-        struct hlist_node *node;
         struct sock *s;
 
         head = &vcc_hash[vci & (VCC_HTABLE_SIZE -1)];
 
-        sk_for_each(s, node, head) {
+	sk_for_each(s, head) {
                 vcc = atm_sk(s);
                 if (vcc->dev == dev &&
                     vcc->vci == vci && vcc->vpi == vpi &&
@@ -301,6 +299,7 @@ static int atmtcp_c_send(struct atm_vcc *vcc,struct sk_buff *skb)
 	out_vcc = find_vcc(dev, ntohs(hdr->vpi), ntohs(hdr->vci));
 	read_unlock(&vcc_sklist_lock);
 	if (!out_vcc) {
+		result = -EUNATCH;
 		atomic_inc(&vcc->stats->tx_err);
 		goto done;
 	}
@@ -343,7 +342,7 @@ static struct atmdev_ops atmtcp_v_dev_ops = {
  */
 
 
-static struct atmdev_ops atmtcp_c_dev_ops = {
+static const struct atmdev_ops atmtcp_c_dev_ops = {
 	.close		= atmtcp_c_close,
 	.send		= atmtcp_c_send
 };

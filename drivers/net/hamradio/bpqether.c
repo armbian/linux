@@ -69,14 +69,13 @@
 #include <linux/if_arp.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/stat.h>
-#include <linux/netfilter.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/rtnetlink.h>
@@ -87,12 +86,8 @@
 
 #include <linux/bpqether.h>
 
-static const char banner[] __initdata = KERN_INFO \
+static const char banner[] __initconst = KERN_INFO \
 	"AX.25: bpqether driver version 004\n";
-
-static char bcast_addr[6]={0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
-
-static char bpq_eth_addr[6];
 
 static int bpq_rcv(struct sk_buff *, struct net_device *, struct packet_type *, struct net_device *);
 static int bpq_device_event(struct notifier_block *, unsigned long, void *);
@@ -103,7 +98,7 @@ static struct packet_type bpq_packet_type __read_mostly = {
 };
 
 static struct notifier_block bpq_dev_notifier = {
-	.notifier_call =bpq_device_event,
+	.notifier_call = bpq_device_event,
 };
 
 
@@ -208,7 +203,7 @@ static int bpq_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_ty
 	eth = eth_hdr(skb);
 
 	if (!(bpq->acpt_addr[0] & 0x01) &&
-	    memcmp(eth->h_source, bpq->acpt_addr, ETH_ALEN))
+	    !ether_addr_equal(eth->h_source, bpq->acpt_addr))
 		goto drop_unlock;
 
 	if (skb_cow(skb, sizeof(struct ethhdr)))
@@ -250,6 +245,9 @@ static netdev_tx_t bpq_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct bpqdev *bpq;
 	struct net_device *orig_dev;
 	int size;
+
+	if (skb->protocol == htons(ETH_P_IP))
+		return ax25_ip_xmit(skb);
 
 	/*
 	 * Just to be *really* sure not to send anything if the interface
@@ -474,14 +472,15 @@ static const struct net_device_ops bpq_netdev_ops = {
 static void bpq_setup(struct net_device *dev)
 {
 	dev->netdev_ops	     = &bpq_netdev_ops;
-	dev->destructor	     = free_netdev;
+	dev->needs_free_netdev = true;
 
 	memcpy(dev->broadcast, &ax25_bcast, AX25_ADDR_LEN);
 	memcpy(dev->dev_addr,  &ax25_defaddr, AX25_ADDR_LEN);
 
 	dev->flags      = 0;
+	dev->features	= NETIF_F_LLTX;	/* Allow recursion */
 
-#if defined(CONFIG_AX25) || defined(CONFIG_AX25_MODULE)
+#if IS_ENABLED(CONFIG_AX25)
 	dev->header_ops      = &ax25_header_ops;
 #endif
 
@@ -501,8 +500,8 @@ static int bpq_new_device(struct net_device *edev)
 	struct net_device *ndev;
 	struct bpqdev *bpq;
 
-	ndev = alloc_netdev(sizeof(struct bpqdev), "bpq%d",
-			   bpq_setup);
+	ndev = alloc_netdev(sizeof(struct bpqdev), "bpq%d", NET_NAME_UNKNOWN,
+			    bpq_setup);
 	if (!ndev)
 		return -ENOMEM;
 
@@ -512,8 +511,8 @@ static int bpq_new_device(struct net_device *edev)
 	bpq->ethdev = edev;
 	bpq->axdev = ndev;
 
-	memcpy(bpq->dest_addr, bcast_addr, sizeof(bpq_eth_addr));
-	memcpy(bpq->acpt_addr, bcast_addr, sizeof(bpq_eth_addr));
+	eth_broadcast_addr(bpq->dest_addr);
+	eth_broadcast_addr(bpq->acpt_addr);
 
 	err = register_netdevice(ndev);
 	if (err)
@@ -544,9 +543,10 @@ static void bpq_free_device(struct net_device *ndev)
 /*
  *	Handle device status changes.
  */
-static int bpq_device_event(struct notifier_block *this,unsigned long event, void *ptr)
+static int bpq_device_event(struct notifier_block *this,
+			    unsigned long event, void *ptr)
 {
-	struct net_device *dev = (struct net_device *)ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 
 	if (!net_eq(dev_net(dev), &init_net))
 		return NOTIFY_DONE;
@@ -586,7 +586,8 @@ static int bpq_device_event(struct notifier_block *this,unsigned long event, voi
 static int __init bpq_init_driver(void)
 {
 #ifdef CONFIG_PROC_FS
-	if (!proc_net_fops_create(&init_net, "bpqether", S_IRUGO, &bpq_info_fops)) {
+	if (!proc_create("bpqether", S_IRUGO, init_net.proc_net,
+			 &bpq_info_fops)) {
 		printk(KERN_ERR
 			"bpq: cannot create /proc/net/bpqether entry.\n");
 		return -ENOENT;
@@ -610,7 +611,7 @@ static void __exit bpq_cleanup_driver(void)
 
 	unregister_netdevice_notifier(&bpq_dev_notifier);
 
-	proc_net_remove(&init_net, "bpqether");
+	remove_proc_entry("bpqether", init_net.proc_net);
 
 	rtnl_lock();
 	while (!list_empty(&bpq_devices)) {

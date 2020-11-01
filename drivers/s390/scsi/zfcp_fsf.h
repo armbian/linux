@@ -1,9 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * zfcp device driver
  *
  * Interface to the FSF support functions.
  *
- * Copyright IBM Corporation 2002, 2010
+ * Copyright IBM Corp. 2002, 2017
  */
 
 #ifndef FSF_H
@@ -36,13 +37,6 @@
 #define FSF_CONFIG_COMMAND			0x00000003
 #define FSF_PORT_COMMAND			0x00000004
 
-/* FSF control file upload/download operations' subtype and options */
-#define FSF_CFDC_OPERATION_SUBTYPE		0x00020001
-#define FSF_CFDC_OPTION_NORMAL_MODE		0x00000000
-#define FSF_CFDC_OPTION_FORCE			0x00000001
-#define FSF_CFDC_OPTION_FULL_ACCESS		0x00000002
-#define FSF_CFDC_OPTION_RESTRICTED_ACCESS	0x00000004
-
 /* FSF protocol states */
 #define FSF_PROT_GOOD				0x00000001
 #define FSF_PROT_QTCB_VERSION_ERROR		0x00000010
@@ -64,7 +58,6 @@
 #define FSF_HANDLE_MISMATCH			0x00000005
 #define FSF_SERVICE_CLASS_NOT_SUPPORTED		0x00000006
 #define FSF_FCPLUN_NOT_VALID			0x00000009
-#define FSF_ACCESS_DENIED			0x00000010
 #define FSF_LUN_SHARING_VIOLATION               0x00000012
 #define FSF_FCP_COMMAND_DOES_NOT_EXIST		0x00000022
 #define FSF_DIRECTION_INDICATOR_NOT_VALID	0x00000030
@@ -86,6 +79,7 @@
 #define FSF_APP_TAG_CHECK_FAILURE		0x00000082
 #define FSF_REF_TAG_CHECK_FAILURE		0x00000083
 #define FSF_ADAPTER_STATUS_AVAILABLE		0x000000AD
+#define FSF_FCP_RSP_AVAILABLE			0x000000AF
 #define FSF_UNKNOWN_COMMAND			0x000000E2
 #define FSF_UNKNOWN_OP_SUBTYPE                  0x000000E3
 #define FSF_INVALID_COMMAND_OPTION              0x000000E5
@@ -130,7 +124,6 @@
 #define FSF_STATUS_READ_LINK_DOWN		0x00000005
 #define FSF_STATUS_READ_LINK_UP          	0x00000006
 #define FSF_STATUS_READ_NOTIFICATION_LOST	0x00000009
-#define FSF_STATUS_READ_CFDC_UPDATED		0x0000000A
 #define FSF_STATUS_READ_FEATURE_UPDATE_ALERT	0x0000000C
 
 /* status subtypes for link down */
@@ -140,7 +133,6 @@
 
 /* status subtypes for unsolicited status notification lost */
 #define FSF_STATUS_READ_SUB_INCOMING_ELS	0x00000001
-#define FSF_STATUS_READ_SUB_ACT_UPDATED		0x00000020
 
 /* topologie that is detected by the adapter */
 #define FSF_TOPO_P2P				0x00000001
@@ -166,8 +158,6 @@
 #define FSF_QTCB_LOG_SIZE			1024
 
 /* channel features */
-#define FSF_FEATURE_CFDC			0x00000002
-#define FSF_FEATURE_LUN_SHARING			0x00000004
 #define FSF_FEATURE_NOTIFICATION_LOST		0x00000008
 #define FSF_FEATURE_HBAAPI_MANAGEMENT           0x00000010
 #define FSF_FEATURE_ELS_CT_CHAINED_SBALS	0x00000020
@@ -181,20 +171,6 @@
 
 /* option */
 #define FSF_OPEN_LUN_SUPPRESS_BOXING		0x00000001
-
-/* open LUN access flags*/
-#define FSF_UNIT_ACCESS_EXCLUSIVE		0x02000000
-#define FSF_UNIT_ACCESS_OUTBOUND_TRANSFER	0x10000000
-
-/* FSF interface for CFDC */
-#define ZFCP_CFDC_MAX_SIZE		127 * 1024
-#define ZFCP_CFDC_PAGES 		PFN_UP(ZFCP_CFDC_MAX_SIZE)
-
-struct zfcp_fsf_cfdc {
-	struct scatterlist sg[ZFCP_CFDC_PAGES];
-	u32 command;
-	u32 option;
-};
 
 struct fsf_queue_designator {
 	u8  cssid;
@@ -337,8 +313,14 @@ struct fsf_qtcb_bottom_io {
 	u32 data_block_length;
 	u32 prot_data_length;
 	u8  res2[4];
-	u8  fcp_cmnd[FSF_FCP_CMND_SIZE];
-	u8  fcp_rsp[FSF_FCP_RSP_SIZE];
+	union {
+		u8		byte[FSF_FCP_CMND_SIZE];
+		struct fcp_cmnd iu;
+	}   fcp_cmnd;
+	union {
+		u8			 byte[FSF_FCP_RSP_SIZE];
+		struct fcp_resp_with_ext iu;
+	}   fcp_rsp;
 	u8  res3[64];
 } __attribute__ ((packed));
 
@@ -462,6 +444,7 @@ struct zfcp_blk_drv_data {
  * @handler_data: data passed to handler function
  * @port: Optional pointer to port for zfcp internal ELS (only test link ADISC)
  * @status: used to pass error status to calling function
+ * @d_id: Destination ID of either open WKA port for CT or of D_ID for ELS
  */
 struct zfcp_fsf_ct_els {
 	struct scatterlist *req;
@@ -470,6 +453,7 @@ struct zfcp_fsf_ct_els {
 	void *handler_data;
 	struct zfcp_port *port;
 	int status;
+	u32 d_id;
 };
 
 #endif				/* FSF_H */

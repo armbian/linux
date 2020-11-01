@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -31,4 +32,4 @@ static int __init proc_version_init(void)
 	proc_create("version", 0, NULL, &version_proc_fops);
 	return 0;
 }
-module_init(proc_version_init);
+fs_initcall(proc_version_init);

@@ -1,7 +1,7 @@
 /*
  * User memory copy functions for kernel
  *
- * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -44,7 +44,7 @@
 #define bytes r2
 #define loopcount r5
 
-#define FUNCNAME __copy_from_user_hexagon
+#define FUNCNAME raw_copy_from_user
 #include "copy_user_template.S"
 
 	/* LOAD FAULTS from COPY_FROM_USER */

@@ -9,10 +9,10 @@
  *
  * Derived from da903x:
  * Copyright (C) 2008 Compulab, Ltd.
- * 	Mike Rapoport <mike@compulab.co.il>
+ *	Mike Rapoport <mike@compulab.co.il>
  *
  * Copyright (C) 2006-2008 Marvell International Ltd.
- * 	Eric Miao <eric.miao@marvell.com>
+ *	Eric Miao <eric.miao@marvell.com>
  *
  * Licensed under the GPL-2 or later.
  */
@@ -20,7 +20,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -204,10 +203,10 @@ static int adp5520_remove_subdevs(struct adp5520_chip *chip)
 	return device_for_each_child(chip->dev, NULL, __remove_subdev);
 }
 
-static int __devinit adp5520_probe(struct i2c_client *client,
+static int adp5520_probe(struct i2c_client *client,
 					const struct i2c_device_id *id)
 {
-	struct adp5520_platform_data *pdata = client->dev.platform_data;
+	struct adp5520_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct platform_device *pdev;
 	struct adp5520_chip *chip;
 	int ret;
@@ -223,7 +222,7 @@ static int __devinit adp5520_probe(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
@@ -244,7 +243,7 @@ static int __devinit adp5520_probe(struct i2c_client *client,
 		if (ret) {
 			dev_err(&client->dev, "failed to request irq %d\n",
 					chip->irq);
-			goto out_free_chip;
+			return ret;
 		}
 	}
 
@@ -302,13 +301,10 @@ out_free_irq:
 	if (chip->irq)
 		free_irq(chip->irq, chip);
 
-out_free_chip:
-	kfree(chip);
-
 	return ret;
 }
 
-static int __devexit adp5520_remove(struct i2c_client *client)
+static int adp5520_remove(struct i2c_client *client)
 {
 	struct adp5520_chip *chip = dev_get_drvdata(&client->dev);
 
@@ -317,11 +313,10 @@ static int __devexit adp5520_remove(struct i2c_client *client)
 
 	adp5520_remove_subdevs(chip);
 	adp5520_write(chip->dev, ADP5520_MODE_STATUS, 0);
-	kfree(chip);
 	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int adp5520_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
@@ -356,25 +351,14 @@ MODULE_DEVICE_TABLE(i2c, adp5520_id);
 static struct i2c_driver adp5520_driver = {
 	.driver = {
 		.name	= "adp5520",
-		.owner	= THIS_MODULE,
 		.pm	= &adp5520_pm,
 	},
 	.probe		= adp5520_probe,
-	.remove		= __devexit_p(adp5520_remove),
-	.id_table 	= adp5520_id,
+	.remove		= adp5520_remove,
+	.id_table	= adp5520_id,
 };
 
-static int __init adp5520_init(void)
-{
-	return i2c_add_driver(&adp5520_driver);
-}
-module_init(adp5520_init);
-
-static void __exit adp5520_exit(void)
-{
-	i2c_del_driver(&adp5520_driver);
-}
-module_exit(adp5520_exit);
+module_i2c_driver(adp5520_driver);
 
 MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
 MODULE_DESCRIPTION("ADP5520(01) PMIC-MFD Driver");

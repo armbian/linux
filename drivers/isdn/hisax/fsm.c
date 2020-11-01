@@ -26,7 +26,7 @@ FsmNew(struct Fsm *fsm, struct FsmNode *fnlist, int fncount)
 {
 	int i;
 
-	fsm->jumpmatrix = (FSMFNPTR *)
+	fsm->jumpmatrix =
 		kzalloc(sizeof(FSMFNPTR) * fsm->state_count * fsm->event_count, GFP_KERNEL);
 	if (!fsm->jumpmatrix)
 		return -ENOMEM;
@@ -98,13 +98,11 @@ void
 FsmInitTimer(struct FsmInst *fi, struct FsmTimer *ft)
 {
 	ft->fi = fi;
-	ft->tl.function = (void *) FsmExpireTimer;
-	ft->tl.data = (long) ft;
 #if FSM_TIMER_DEBUG
 	if (ft->fi->debug)
 		ft->fi->printdebug(ft->fi, "FsmInitTimer %lx", (long) ft);
 #endif
-	init_timer(&ft->tl);
+	setup_timer(&ft->tl, (void *)FsmExpireTimer, (long)ft);
 }
 
 void

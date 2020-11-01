@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* -*- linux-c -*-
  *
  *	$Id: sysrq.h,v 1.3 1997/07/17 11:54:33 mj Exp $
@@ -16,9 +17,6 @@
 
 #include <linux/errno.h>
 #include <linux/types.h>
-
-/* Enable/disable SYSRQ support by default (0==no, 1==yes). */
-#define SYSRQ_DEFAULT_ENABLE	1
 
 /* Possible values of bitmask for enabling sysrq functions */
 /* 0x0001 is reserved for enable everything */

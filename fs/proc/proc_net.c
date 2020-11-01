@@ -8,7 +8,7 @@
  *  proc net directory handling functions
  */
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <linux/errno.h>
 #include <linux/time.h>
@@ -17,15 +17,21 @@
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/sched.h>
+#include <linux/sched/task.h>
 #include <linux/module.h>
 #include <linux/bitops.h>
 #include <linux/mount.h>
 #include <linux/nsproxy.h>
+#include <linux/uidgid.h>
 #include <net/net_namespace.h>
 #include <linux/seq_file.h>
 
 #include "internal.h"
 
+static inline struct net *PDE_NET(struct proc_dir_entry *pde)
+{
+	return pde->parent->data;
+}
 
 static struct net *get_proc_net(const struct inode *inode)
 {
@@ -109,9 +115,11 @@ static struct net *get_proc_task_net(struct inode *dir)
 	rcu_read_lock();
 	task = pid_task(proc_pid(dir), PIDTYPE_PID);
 	if (task != NULL) {
-		ns = task_nsproxy(task);
+		task_lock(task);
+		ns = task->nsproxy;
 		if (ns != NULL)
 			net = get_net(ns->net_ns);
+		task_unlock(task);
 	}
 	rcu_read_unlock();
 
@@ -119,7 +127,7 @@ static struct net *get_proc_task_net(struct inode *dir)
 }
 
 static struct dentry *proc_tgid_net_lookup(struct inode *dir,
-		struct dentry *dentry, struct nameidata *nd)
+		struct dentry *dentry, unsigned int flags)
 {
 	struct dentry *de;
 	struct net *net;
@@ -133,10 +141,10 @@ static struct dentry *proc_tgid_net_lookup(struct inode *dir,
 	return de;
 }
 
-static int proc_tgid_net_getattr(struct vfsmount *mnt, struct dentry *dentry,
-		struct kstat *stat)
+static int proc_tgid_net_getattr(const struct path *path, struct kstat *stat,
+				 u32 request_mask, unsigned int query_flags)
 {
-	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(path->dentry);
 	struct net *net;
 
 	net = get_proc_task_net(inode);
@@ -156,16 +164,15 @@ const struct inode_operations proc_net_inode_operations = {
 	.getattr	= proc_tgid_net_getattr,
 };
 
-static int proc_tgid_net_readdir(struct file *filp, void *dirent,
-		filldir_t filldir)
+static int proc_tgid_net_readdir(struct file *file, struct dir_context *ctx)
 {
 	int ret;
 	struct net *net;
 
 	ret = -EINVAL;
-	net = get_proc_task_net(filp->f_path.dentry->d_inode);
+	net = get_proc_task_net(file_inode(file));
 	if (net != NULL) {
-		ret = proc_readdir_de(net->proc_net, filp, dirent, filldir);
+		ret = proc_readdir_de(net->proc_net, file, ctx);
 		put_net(net);
 	}
 	return ret;
@@ -174,26 +181,14 @@ static int proc_tgid_net_readdir(struct file *filp, void *dirent,
 const struct file_operations proc_net_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
-	.readdir	= proc_tgid_net_readdir,
+	.iterate_shared	= proc_tgid_net_readdir,
 };
-
-
-struct proc_dir_entry *proc_net_fops_create(struct net *net,
-	const char *name, umode_t mode, const struct file_operations *fops)
-{
-	return proc_create(name, mode, net->proc_net, fops);
-}
-EXPORT_SYMBOL_GPL(proc_net_fops_create);
-
-void proc_net_remove(struct net *net, const char *name)
-{
-	remove_proc_entry(name, net->proc_net);
-}
-EXPORT_SYMBOL_GPL(proc_net_remove);
 
 static __net_init int proc_net_ns_init(struct net *net)
 {
 	struct proc_dir_entry *netd, *net_statd;
+	kuid_t uid;
+	kgid_t gid;
 	int err;
 
 	err = -ENOMEM;
@@ -201,11 +196,22 @@ static __net_init int proc_net_ns_init(struct net *net)
 	if (!netd)
 		goto out;
 
+	netd->subdir = RB_ROOT_CACHED;
 	netd->data = net;
 	netd->nlink = 2;
 	netd->namelen = 3;
 	netd->parent = &proc_root;
 	memcpy(netd->name, "net", 4);
+
+	uid = make_kuid(net->user_ns, 0);
+	if (!uid_valid(uid))
+		uid = netd->uid;
+
+	gid = make_kgid(net->user_ns, 0);
+	if (!gid_valid(gid))
+		gid = netd->gid;
+
+	proc_set_user(netd, uid, gid);
 
 	err = -EEXIST;
 	net_statd = proc_net_mkdir(net, "stat", netd);

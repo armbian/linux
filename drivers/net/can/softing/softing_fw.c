@@ -13,12 +13,11 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/firmware.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <asm/div64.h>
 #include <asm/io.h>
 
@@ -150,7 +149,7 @@ int softing_load_fw(const char *file, struct softing *card,
 	const uint8_t *mem, *end, *dat;
 	uint16_t type, len;
 	uint32_t addr;
-	uint8_t *buf = NULL;
+	uint8_t *buf = NULL, *new_buf;
 	int buflen = 0;
 	int8_t type_end = 0;
 
@@ -199,11 +198,12 @@ int softing_load_fw(const char *file, struct softing *card,
 		if (len > buflen) {
 			/* align buflen */
 			buflen = (len + (1024-1)) & ~(1024-1);
-			buf = krealloc(buf, buflen, GFP_KERNEL);
-			if (!buf) {
+			new_buf = krealloc(buf, buflen, GFP_KERNEL);
+			if (!new_buf) {
 				ret = -ENOMEM;
 				goto failed;
 			}
+			buf = new_buf;
 		}
 		/* verify record data */
 		memcpy_fromio(buf, &dpram[addr + offset], len);
@@ -390,7 +390,7 @@ static void softing_initialize_timestamp(struct softing *card)
 	ovf = 0x100000000ULL * 16;
 	do_div(ovf, card->pdat->freq ?: 16);
 
-	card->ts_overflow = ktime_add_us(ktime_set(0, 0), ovf);
+	card->ts_overflow = ktime_add_us(0, ovf);
 }
 
 ktime_t softing_raw2ktime(struct softing *card, u32 raw)
@@ -647,7 +647,7 @@ int softing_startstop(struct net_device *dev, int up)
 		open_candev(netdev);
 		if (dev != netdev) {
 			/* notify other busses on the restart */
-			softing_netdev_rx(netdev, &msg, ktime_set(0, 0));
+			softing_netdev_rx(netdev, &msg, 0);
 			++priv->can.can_stats.restarts;
 		}
 		netif_wake_queue(netdev);

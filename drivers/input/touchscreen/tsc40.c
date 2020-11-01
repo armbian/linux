@@ -11,7 +11,6 @@
 #include <linux/slab.h>
 #include <linux/input.h>
 #include <linux/serio.h>
-#include <linux/init.h>
 
 #define PACKET_LENGTH  5
 struct tsc_ser {
@@ -142,7 +141,7 @@ static void tsc_disconnect(struct serio *serio)
 	serio_set_drvdata(serio, NULL);
 }
 
-static struct serio_device_id tsc_serio_ids[] = {
+static const struct serio_device_id tsc_serio_ids[] = {
 	{
 		.type   = SERIO_RS232,
 		.proto  = SERIO_TSC40,
@@ -166,17 +165,7 @@ static struct serio_driver tsc_drv = {
 	.disconnect     = tsc_disconnect,
 };
 
-static int __init tsc_ser_init(void)
-{
-	return serio_register_driver(&tsc_drv);
-}
-module_init(tsc_ser_init);
-
-static void __exit tsc_exit(void)
-{
-	serio_unregister_driver(&tsc_drv);
-}
-module_exit(tsc_exit);
+module_serio_driver(tsc_drv);
 
 MODULE_AUTHOR("Sebastian Andrzej Siewior <bigeasy@linutronix.de>");
 MODULE_DESCRIPTION(DRIVER_DESC);

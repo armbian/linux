@@ -17,31 +17,16 @@
  */
 #include "xfs.h"
 #include "xfs_fs.h"
-#include "xfs_types.h"
-#include "xfs_bit.h"
-#include "xfs_log.h"
-#include "xfs_inum.h"
-#include "xfs_trans.h"
-#include "xfs_sb.h"
-#include "xfs_ag.h"
+#include "xfs_shared.h"
+#include "xfs_format.h"
+#include "xfs_log_format.h"
+#include "xfs_trans_resv.h"
 #include "xfs_mount.h"
-#include "xfs_bmap_btree.h"
-#include "xfs_alloc_btree.h"
-#include "xfs_ialloc_btree.h"
-#include "xfs_dinode.h"
 #include "xfs_inode.h"
-#include "xfs_btree.h"
+#include "xfs_trans.h"
 #include "xfs_trans_priv.h"
 #include "xfs_inode_item.h"
 #include "xfs_trace.h"
-
-#ifdef XFS_TRANS_DEBUG
-STATIC void
-xfs_trans_inode_broot_debug(
-	xfs_inode_t	*ip);
-#else
-#define	xfs_trans_inode_broot_debug(ip)
-#endif
 
 /*
  * Add a locked inode to the transaction.
@@ -69,8 +54,6 @@ xfs_trans_ijoin(
 	 * Get a log_item_desc to point at the new item.
 	 */
 	xfs_trans_add_item(tp, &iip->ili_item);
-
-	xfs_trans_inode_broot_debug(ip);
 }
 
 /*
@@ -85,25 +68,17 @@ xfs_trans_ichgtime(
 	int			flags)
 {
 	struct inode		*inode = VFS_I(ip);
-	timespec_t		tv;
+	struct timespec		tv;
 
 	ASSERT(tp);
 	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 
-	tv = current_fs_time(inode->i_sb);
+	tv = current_time(inode);
 
-	if ((flags & XFS_ICHGTIME_MOD) &&
-	    !timespec_equal(&inode->i_mtime, &tv)) {
+	if (flags & XFS_ICHGTIME_MOD)
 		inode->i_mtime = tv;
-		ip->i_d.di_mtime.t_sec = tv.tv_sec;
-		ip->i_d.di_mtime.t_nsec = tv.tv_nsec;
-	}
-	if ((flags & XFS_ICHGTIME_CHG) &&
-	    !timespec_equal(&inode->i_ctime, &tv)) {
+	if (flags & XFS_ICHGTIME_CHG)
 		inode->i_ctime = tv;
-		ip->i_d.di_ctime.t_sec = tv.tv_sec;
-		ip->i_d.di_ctime.t_nsec = tv.tv_nsec;
-	}
 }
 
 /*
@@ -124,6 +99,28 @@ xfs_trans_log_inode(
 	ASSERT(ip->i_itemp != NULL);
 	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 
+	/*
+	 * Record the specific change for fdatasync optimisation. This
+	 * allows fdatasync to skip log forces for inodes that are only
+	 * timestamp dirty. We do this before the change count so that
+	 * the core being logged in this case does not impact on fdatasync
+	 * behaviour.
+	 */
+	ip->i_itemp->ili_fsync_fields |= flags;
+
+	/*
+	 * First time we log the inode in a transaction, bump the inode change
+	 * counter if it is configured for this to occur. We don't use
+	 * inode_inc_version() because there is no need for extra locking around
+	 * i_version as we already hold the inode locked exclusively for
+	 * metadata modification.
+	 */
+	if (!(ip->i_itemp->ili_item.li_desc->lid_flags & XFS_LID_DIRTY) &&
+	    IS_I_VERSION(VFS_I(ip))) {
+		VFS_I(ip)->i_version++;
+		flags |= XFS_ILOG_CORE;
+	}
+
 	tp->t_flags |= XFS_TRANS_DIRTY;
 	ip->i_itemp->ili_item.li_desc->lid_flags |= XFS_LID_DIRTY;
 
@@ -138,33 +135,16 @@ xfs_trans_log_inode(
 	ip->i_itemp->ili_fields |= flags;
 }
 
-#ifdef XFS_TRANS_DEBUG
-/*
- * Keep track of the state of the inode btree root to make sure we
- * log it properly.
- */
-STATIC void
-xfs_trans_inode_broot_debug(
-	xfs_inode_t	*ip)
+int
+xfs_trans_roll_inode(
+	struct xfs_trans	**tpp,
+	struct xfs_inode	*ip)
 {
-	xfs_inode_log_item_t	*iip;
+	int			error;
 
-	ASSERT(ip->i_itemp != NULL);
-	iip = ip->i_itemp;
-	if (iip->ili_root_size != 0) {
-		ASSERT(iip->ili_orig_root != NULL);
-		kmem_free(iip->ili_orig_root);
-		iip->ili_root_size = 0;
-		iip->ili_orig_root = NULL;
-	}
-	if (ip->i_d.di_format == XFS_DINODE_FMT_BTREE) {
-		ASSERT((ip->i_df.if_broot != NULL) &&
-		       (ip->i_df.if_broot_bytes > 0));
-		iip->ili_root_size = ip->i_df.if_broot_bytes;
-		iip->ili_orig_root =
-			(char*)kmem_alloc(iip->ili_root_size, KM_SLEEP);
-		memcpy(iip->ili_orig_root, (char*)(ip->i_df.if_broot),
-		      iip->ili_root_size);
-	}
+	xfs_trans_log_inode(*tpp, ip, XFS_ILOG_CORE);
+	error = xfs_trans_roll(tpp);
+	if (!error)
+		xfs_trans_ijoin(*tpp, ip, 0);
+	return error;
 }
-#endif

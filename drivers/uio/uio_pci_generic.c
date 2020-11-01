@@ -53,7 +53,7 @@ static irqreturn_t irqhandler(int irq, struct uio_info *info)
 	return IRQ_HANDLED;
 }
 
-static int __devinit probe(struct pci_dev *pdev,
+static int probe(struct pci_dev *pdev,
 			   const struct pci_device_id *id)
 {
 	struct uio_pci_generic_dev *gdev;
@@ -66,14 +66,7 @@ static int __devinit probe(struct pci_dev *pdev,
 		return err;
 	}
 
-	if (!pdev->irq) {
-		dev_warn(&pdev->dev, "No IRQ assigned to device: "
-			 "no support for interrupts?\n");
-		pci_disable_device(pdev);
-		return -ENODEV;
-	}
-
-	if (!pci_intx_mask_supported(pdev)) {
+	if (pdev->irq && !pci_intx_mask_supported(pdev)) {
 		err = -ENODEV;
 		goto err_verify;
 	}
@@ -86,12 +79,18 @@ static int __devinit probe(struct pci_dev *pdev,
 
 	gdev->info.name = "uio_pci_generic";
 	gdev->info.version = DRIVER_VERSION;
-	gdev->info.irq = pdev->irq;
-	gdev->info.irq_flags = IRQF_SHARED;
-	gdev->info.handler = irqhandler;
 	gdev->pdev = pdev;
+	if (pdev->irq) {
+		gdev->info.irq = pdev->irq;
+		gdev->info.irq_flags = IRQF_SHARED;
+		gdev->info.handler = irqhandler;
+	} else {
+		dev_warn(&pdev->dev, "No IRQ assigned to device: "
+			 "no support for interrupts?\n");
+	}
 
-	if (uio_register_device(&pdev->dev, &gdev->info))
+	err = uio_register_device(&pdev->dev, &gdev->info);
+	if (err)
 		goto err_register;
 	pci_set_drvdata(pdev, gdev);
 
@@ -113,27 +112,14 @@ static void remove(struct pci_dev *pdev)
 	kfree(gdev);
 }
 
-static struct pci_driver driver = {
+static struct pci_driver uio_pci_driver = {
 	.name = "uio_pci_generic",
 	.id_table = NULL, /* only dynamic id's */
 	.probe = probe,
 	.remove = remove,
 };
 
-static int __init init(void)
-{
-	pr_info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
-	return pci_register_driver(&driver);
-}
-
-static void __exit cleanup(void)
-{
-	pci_unregister_driver(&driver);
-}
-
-module_init(init);
-module_exit(cleanup);
-
+module_pci_driver(uio_pci_driver);
 MODULE_VERSION(DRIVER_VERSION);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR(DRIVER_AUTHOR);

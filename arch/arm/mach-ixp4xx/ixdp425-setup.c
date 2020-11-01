@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/arm/mach-ixp4xx/ixdp425-setup.c
  *
@@ -17,9 +18,10 @@
 #include <linux/i2c-gpio.h>
 #include <linux/io.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/delay.h>
+#include <linux/gpio.h>
 #include <asm/types.h>
 #include <asm/setup.h>
 #include <asm/memory.h>
@@ -60,8 +62,6 @@ static struct platform_device ixdp425_flash = {
 #if defined(CONFIG_MTD_NAND_PLATFORM) || \
     defined(CONFIG_MTD_NAND_PLATFORM_MODULE)
 
-const char *part_probes[] = { "cmdlinepart", NULL };
-
 static struct mtd_partition ixdp425_partitions[] = {
 	{
 		.name	= "ixp400 NAND FS 0",
@@ -77,19 +77,19 @@ static struct mtd_partition ixdp425_partitions[] = {
 static void
 ixdp425_flash_nand_cmd_ctrl(struct mtd_info *mtd, int cmd, unsigned int ctrl)
 {
-	struct nand_chip *this = mtd->priv;
-	int offset = (int)this->priv;
+	struct nand_chip *this = mtd_to_nand(mtd);
+	int offset = (int)nand_get_controller_data(this);
 
 	if (ctrl & NAND_CTRL_CHANGE) {
 		if (ctrl & NAND_NCE) {
-			gpio_line_set(IXDP425_NAND_NCE_PIN, IXP4XX_GPIO_LOW);
+			gpio_set_value(IXDP425_NAND_NCE_PIN, 0);
 			udelay(5);
 		} else
-			gpio_line_set(IXDP425_NAND_NCE_PIN, IXP4XX_GPIO_HIGH);
+			gpio_set_value(IXDP425_NAND_NCE_PIN, 1);
 
 		offset = (ctrl & NAND_CLE) ? IXDP425_NAND_CMD_BYTE : 0;
 		offset |= (ctrl & NAND_ALE) ? IXDP425_NAND_ADDR_BYTE : 0;
-		this->priv = (void *)offset;
+		nand_set_controller_data(this, (void *)offset);
 	}
 
 	if (cmd != NAND_CMD_NONE)
@@ -100,8 +100,6 @@ static struct platform_nand_data ixdp425_flash_nand_data = {
 	.chip = {
 		.nr_chips		= 1,
 		.chip_delay		= 30,
-		.options		= NAND_NO_AUTOINCR,
-		.part_probe_types 	= part_probes,
 		.partitions	 	= ixdp425_partitions,
 		.nr_partitions	 	= ARRAY_SIZE(ixdp425_partitions),
 	},
@@ -231,7 +229,8 @@ static void __init ixdp425_init(void)
 	ixdp425_flash_nand_resource.start = IXP4XX_EXP_BUS_BASE(3),
 	ixdp425_flash_nand_resource.end   = IXP4XX_EXP_BUS_BASE(3) + 0x10 - 1;
 
-	gpio_line_config(IXDP425_NAND_NCE_PIN, IXP4XX_GPIO_OUT);
+	gpio_request(IXDP425_NAND_NCE_PIN, "NAND NCE pin");
+	gpio_direction_output(IXDP425_NAND_NCE_PIN, 0);
 
 	/* Configure expansion bus for NAND Flash */
 	*IXP4XX_EXP_CS3 = IXP4XX_EXP_BUS_CS_EN |
@@ -256,7 +255,7 @@ MACHINE_START(IXDP425, "Intel IXDP425 Development Platform")
 	.map_io		= ixp4xx_map_io,
 	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.timer		= &ixp4xx_timer,
+	.init_time	= ixp4xx_timer_init,
 	.atag_offset	= 0x100,
 	.init_machine	= ixdp425_init,
 #if defined(CONFIG_PCI)
@@ -272,7 +271,7 @@ MACHINE_START(IXDP465, "Intel IXDP465 Development Platform")
 	.map_io		= ixp4xx_map_io,
 	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.timer		= &ixp4xx_timer,
+	.init_time	= ixp4xx_timer_init,
 	.atag_offset	= 0x100,
 	.init_machine	= ixdp425_init,
 #if defined(CONFIG_PCI)
@@ -287,7 +286,7 @@ MACHINE_START(IXCDP1100, "Intel IXCDP1100 Development Platform")
 	.map_io		= ixp4xx_map_io,
 	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.timer		= &ixp4xx_timer,
+	.init_time	= ixp4xx_timer_init,
 	.atag_offset	= 0x100,
 	.init_machine	= ixdp425_init,
 #if defined(CONFIG_PCI)
@@ -302,7 +301,7 @@ MACHINE_START(KIXRP435, "Intel KIXRP435 Reference Platform")
 	.map_io		= ixp4xx_map_io,
 	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.timer		= &ixp4xx_timer,
+	.init_time	= ixp4xx_timer_init,
 	.atag_offset	= 0x100,
 	.init_machine	= ixdp425_init,
 #if defined(CONFIG_PCI)

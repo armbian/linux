@@ -23,7 +23,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/err.h>
@@ -90,8 +89,10 @@ static ssize_t als_sensing_range_store(struct device *dev,
 	int ret_val;
 	unsigned long val;
 
-	if (strict_strtoul(buf, 10, &val))
-		return -EINVAL;
+	ret_val = kstrtoul(buf, 10, &val);
+	if (ret_val)
+		return ret_val;
+
 	if (val < 1 || val > 64000)
 		return -EINVAL;
 
@@ -144,7 +145,7 @@ static struct attribute *mid_att_als[] = {
 	NULL
 };
 
-static struct attribute_group m_als_gr = {
+static const struct attribute_group m_als_gr = {
 	.name = "isl29020",
 	.attrs = mid_att_als
 };
@@ -187,7 +188,7 @@ static int isl29020_remove(struct i2c_client *client)
 	return 0;
 }
 
-static struct i2c_device_id isl29020_id[] = {
+static const struct i2c_device_id isl29020_id[] = {
 	{ "isl29020", 0 },
 	{ }
 };

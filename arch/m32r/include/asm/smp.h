@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_M32R_SMP_H
 #define _ASM_M32R_SMP_H
 
@@ -77,11 +78,6 @@ static __inline__ int cpu_logical_map(int cpu)
 static __inline__ int cpu_number_map(int cpu)
 {
 	return cpu;
-}
-
-static __inline__ unsigned int num_booting_cpus(void)
-{
-	return cpumask_weight(&cpu_callout_map);
 }
 
 extern void smp_send_timer(void);

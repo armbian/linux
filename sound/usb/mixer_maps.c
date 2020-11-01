@@ -107,8 +107,10 @@ static struct usbmix_name_map extigy_map[] = {
  * e.g. no Master and fake PCM volume
  *			Pavel Mihaylov <bin@bash.info>
  */
-static struct usbmix_dB_map mp3plus_dB_1 = {-4781, 0};	/* just guess */
-static struct usbmix_dB_map mp3plus_dB_2 = {-1781, 618}; /* just guess */
+static struct usbmix_dB_map mp3plus_dB_1 = {.min = -4781, .max = 0};
+						/* just guess */
+static struct usbmix_dB_map mp3plus_dB_2 = {.min = -1781, .max = 618};
+						/* just guess */
 
 static struct usbmix_name_map mp3plus_map[] = {
 	/* 1: IT pcm */
@@ -176,6 +178,20 @@ static struct usbmix_name_map audigy2nx_map[] = {
 	{ 29, "Digital Out Source" }, /* SU */
 	{ 30, "Headphone Playback" }, /* FU */
 	{ 31, "Headphone Source" }, /* SU */
+	{ 0 } /* terminator */
+};
+
+static struct usbmix_name_map mbox1_map[] = {
+	{ 1, "Clock" },
+	{ 0 } /* terminator */
+};
+
+static struct usbmix_selector_map c400_selectors[] = {
+	{
+		.id = 0x80,
+		.count = 2,
+		.names = (const char*[]) {"Internal", "SPDIF"}
+	},
 	{ 0 } /* terminator */
 };
 
@@ -288,6 +304,15 @@ static struct usbmix_name_map scratch_live_map[] = {
 	{ 0 } /* terminator */
 };
 
+static struct usbmix_name_map ebox44_map[] = {
+	{ 4, NULL }, /* FU */
+	{ 6, NULL }, /* MU */
+	{ 7, NULL }, /* FU */
+	{ 10, NULL }, /* FU */
+	{ 11, NULL }, /* MU */
+	{ 0 }
+};
+
 /* "Gamesurround Muse Pocket LT" looks same like "Sound Blaster MP3+"
  *  most importand difference is SU[8], it should be set to "Capture Source"
  *  to make alsamixer and PA working properly.
@@ -304,6 +329,12 @@ static struct usbmix_name_map hercules_usb51_map[] = {
 	{ 0 }				/* terminator */
 };
 
+/* Plantronics Gamecom 780 has a broken volume control, better to disable it */
+static struct usbmix_name_map gamecom780_map[] = {
+	{ 9, NULL }, /* FU, speaker out */
+	{}
+};
+
 /* some (all?) SCMS USB3318 devices are affected by a firmware lock up
  * when anything attempts to access FU 10 (control)
  */
@@ -317,6 +348,27 @@ static struct usbmix_dB_map bose_companion5_dB = {-5006, -6};
 static struct usbmix_name_map bose_companion5_map[] = {
 	{ 3, NULL, .dB = &bose_companion5_dB },
 	{ 0 }	/* terminator */
+};
+
+/*
+ * Dell usb dock with ALC4020 codec had a firmware problem where it got
+ * screwed up when zero volume is passed; just skip it as a workaround
+ *
+ * Also the extension unit gives an access error, so skip it as well.
+ */
+static const struct usbmix_name_map dell_alc4020_map[] = {
+	{ 4, NULL },	/* extension unit */
+	{ 16, NULL },
+	{ 19, NULL },
+	{ 0 }
+};
+
+/* Some mobos shipped with a dummy HD-audio show the invalid GET_MIN/GET_MAX
+ * response for Input Gain Pad (id=19, control=12).  Skip it.
+ */
+static const struct usbmix_name_map asus_rog_map[] = {
+	{ 19, NULL, 12 }, /* FU, Input Gain Pad */
+	{}
 };
 
 /*
@@ -347,6 +399,18 @@ static struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		.map = audigy2nx_map,
 		.selector_map = audigy2nx_selectors,
 	},
+	{	/* Logitech, Inc. QuickCam Pro for Notebooks */
+		.id = USB_ID(0x046d, 0x0991),
+		.ignore_ctl_error = 1,
+	},
+	{	/* Logitech, Inc. QuickCam E 3500 */
+		.id = USB_ID(0x046d, 0x09a4),
+		.ignore_ctl_error = 1,
+	},
+	{	/* Plantronics GameCom 780 */
+		.id = USB_ID(0x047f, 0xc010),
+		.map = gamecom780_map,
+	},
 	{
 		/* Hercules DJ Console (Windows Edition) */
 		.id = USB_ID(0x06f8, 0xb000),
@@ -363,6 +427,14 @@ static struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		 */
 		.id = USB_ID(0x06f8, 0xc000),
 		.map = hercules_usb51_map,
+	},
+	{
+		.id = USB_ID(0x0763, 0x2030),
+		.selector_map = c400_selectors,
+	},
+	{
+		.id = USB_ID(0x0763, 0x2031),
+		.selector_map = c400_selectors,
 	},
 	{
 		.id = USB_ID(0x08bb, 0x2702),
@@ -382,9 +454,21 @@ static struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		.map = aureon_51_2_map,
 	},
 	{
+		.id = USB_ID(0x0bda, 0x4014),
+		.map = dell_alc4020_map,
+	},
+	{
+		.id = USB_ID(0x0dba, 0x1000),
+		.map = mbox1_map,
+	},
+	{
 		.id = USB_ID(0x13e5, 0x0001),
 		.map = scratch_live_map,
 		.ignore_ctl_error = 1,
+	},
+	{
+		.id = USB_ID(0x200c, 0x1018),
+		.map = ebox44_map,
 	},
 	{
 		/* MAYA44 USB+ */
@@ -405,6 +489,26 @@ static struct usbmix_ctl_map usbmix_ctl_maps[] = {
 		/* Bose Companion 5 */
 		.id = USB_ID(0x05a7, 0x1020),
 		.map = bose_companion5_map,
+	},
+	{	/* Gigabyte TRX40 Aorus Pro WiFi */
+		.id = USB_ID(0x0414, 0xa002),
+		.map = asus_rog_map,
+	},
+	{	/* ASUS ROG Zenith II */
+		.id = USB_ID(0x0b05, 0x1916),
+		.map = asus_rog_map,
+	},
+	{	/* ASUS ROG Strix */
+		.id = USB_ID(0x0b05, 0x1917),
+		.map = asus_rog_map,
+	},
+	{	/* MSI TRX40 Creator */
+		.id = USB_ID(0x0db0, 0x0d64),
+		.map = asus_rog_map,
+	},
+	{	/* MSI TRX40 */
+		.id = USB_ID(0x0db0, 0x543d),
+		.map = asus_rog_map,
 	},
 	{ 0 } /* terminator */
 };

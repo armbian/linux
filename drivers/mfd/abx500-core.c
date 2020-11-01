@@ -8,7 +8,8 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/err.h>
-#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/export.h>
 #include <linux/mfd/abx500.h>
 
 static LIST_HEAD(abx500_list);
@@ -36,7 +37,9 @@ int abx500_register_ops(struct device *dev, struct abx500_ops *ops)
 {
 	struct abx500_device_entry *dev_entry;
 
-	dev_entry = kzalloc(sizeof(struct abx500_device_entry), GFP_KERNEL);
+	dev_entry = devm_kzalloc(dev,
+				 sizeof(struct abx500_device_entry),
+				 GFP_KERNEL);
 	if (!dev_entry) {
 		dev_err(dev, "register_ops kzalloc failed");
 		return -ENOMEM;
@@ -54,12 +57,8 @@ void abx500_remove_ops(struct device *dev)
 	struct abx500_device_entry *dev_entry, *tmp;
 
 	list_for_each_entry_safe(dev_entry, tmp, &abx500_list, list)
-	{
-		if (dev_entry->dev == dev) {
+		if (dev_entry->dev == dev)
 			list_del(&dev_entry->list);
-			kfree(dev_entry);
-		}
-	}
 }
 EXPORT_SYMBOL(abx500_remove_ops);
 
@@ -152,7 +151,3 @@ int abx500_startup_irq_enabled(struct device *dev, unsigned int irq)
 		return -ENOTSUPP;
 }
 EXPORT_SYMBOL(abx500_startup_irq_enabled);
-
-MODULE_AUTHOR("Mattias Wallin <mattias.wallin@stericsson.com>");
-MODULE_DESCRIPTION("ABX500 core driver");
-MODULE_LICENSE("GPL");

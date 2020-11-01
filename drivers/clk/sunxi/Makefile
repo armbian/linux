@@ -1,15 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for sunxi specific clk
 #
 
-obj-y += clk-factors.o clk-periph.o clk-default.o
-obj-${CONFIG_COMMON_CLK_DEBUG} += clk-debugfs.o
-obj-${CONFIG_ARCH_SUN8IW1} += clk-sun8iw1.o
-obj-${CONFIG_ARCH_SUN8IW3} += clk-sun8iw3.o
-obj-${CONFIG_ARCH_SUN8IW5} += clk-sun8iw5.o
-obj-${CONFIG_ARCH_SUN8IW6} += clk-sun8iw6.o
-obj-${CONFIG_ARCH_SUN8IW7} += clk-sun8iw7.o
-obj-${CONFIG_ARCH_SUN8IW8} += clk-sun8iw8.o
-obj-${CONFIG_ARCH_SUN8IW9} += clk-sun8iw9.o
-obj-${CONFIG_ARCH_SUN9IW1} += clk-sun9iw1.o
-obj-$(CONFIG_SUNXI_AC100_CLK) +=clk-ac100.o
+obj-y += clk-sunxi.o clk-factors.o
+obj-y += clk-a10-codec.o
+obj-y += clk-a10-hosc.o
+obj-y += clk-a10-mod1.o
+obj-y += clk-a10-pll2.o
+obj-y += clk-a10-ve.o
+obj-y += clk-a20-gmac.o
+obj-y += clk-mod0.o
+obj-y += clk-simple-gates.o
+obj-y += clk-sun4i-display.o
+obj-y += clk-sun4i-pll3.o
+obj-y += clk-sun4i-tcon-ch1.o
+obj-y += clk-sun8i-bus-gates.o
+obj-y += clk-sun8i-mbus.o
+obj-y += clk-sun9i-core.o
+obj-y += clk-sun9i-mmc.o
+obj-y += clk-usb.o
+
+obj-$(CONFIG_MACH_SUN9I) += clk-sun8i-apb0.o
+obj-$(CONFIG_MACH_SUN9I) += clk-sun9i-cpus.o
+
+obj-$(CONFIG_MFD_SUN6I_PRCM) += \
+	clk-sun6i-ar100.o clk-sun6i-apb0.o clk-sun6i-apb0-gates.o \
+	clk-sun8i-apb0.o

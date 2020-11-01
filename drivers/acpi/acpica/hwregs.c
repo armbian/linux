@@ -1,4 +1,3 @@
-
 /*******************************************************************************
  *
  * Module Name: hwregs - Read/write access functions for the various ACPI
@@ -7,7 +6,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -45,7 +44,6 @@
 
 #include <acpi/acpi.h>
 #include "accommon.h"
-#include "acnamesp.h"
 #include "acevents.h"
 
 #define _COMPONENT          ACPI_HARDWARE
@@ -53,6 +51,11 @@ ACPI_MODULE_NAME("hwregs")
 
 #if (!ACPI_REDUCED_HARDWARE)
 /* Local Prototypes */
+static u8
+acpi_hw_get_access_bit_width(u64 address,
+			     struct acpi_generic_address *reg,
+			     u8 max_bit_width);
+
 static acpi_status
 acpi_hw_read_multiple(u32 *value,
 		      struct acpi_generic_address *register_a,
@@ -67,11 +70,81 @@ acpi_hw_write_multiple(u32 value,
 
 /******************************************************************************
  *
+ * FUNCTION:    acpi_hw_get_access_bit_width
+ *
+ * PARAMETERS:  address             - GAS register address
+ *              reg                 - GAS register structure
+ *              max_bit_width       - Max bit_width supported (32 or 64)
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Obtain optimal access bit width
+ *
+ ******************************************************************************/
+
+static u8
+acpi_hw_get_access_bit_width(u64 address,
+			     struct acpi_generic_address *reg, u8 max_bit_width)
+{
+	u8 access_bit_width;
+
+	/*
+	 * GAS format "register", used by FADT:
+	 *  1. Detected if bit_offset is 0 and bit_width is 8/16/32/64;
+	 *  2. access_size field is ignored and bit_width field is used for
+	 *     determining the boundary of the IO accesses.
+	 * GAS format "region", used by APEI registers:
+	 *  1. Detected if bit_offset is not 0 or bit_width is not 8/16/32/64;
+	 *  2. access_size field is used for determining the boundary of the
+	 *     IO accesses;
+	 *  3. bit_offset/bit_width fields are used to describe the "region".
+	 *
+	 * Note: This algorithm assumes that the "Address" fields should always
+	 *       contain aligned values.
+	 */
+	if (!reg->bit_offset && reg->bit_width &&
+	    ACPI_IS_POWER_OF_TWO(reg->bit_width) &&
+	    ACPI_IS_ALIGNED(reg->bit_width, 8)) {
+		access_bit_width = reg->bit_width;
+	} else if (reg->access_width) {
+		access_bit_width = ACPI_ACCESS_BIT_WIDTH(reg->access_width);
+	} else {
+		access_bit_width =
+		    ACPI_ROUND_UP_POWER_OF_TWO_8(reg->bit_offset +
+						 reg->bit_width);
+		if (access_bit_width <= 8) {
+			access_bit_width = 8;
+		} else {
+			while (!ACPI_IS_ALIGNED(address, access_bit_width >> 3)) {
+				access_bit_width >>= 1;
+			}
+		}
+	}
+
+	/* Maximum IO port access bit width is 32 */
+
+	if (reg->space_id == ACPI_ADR_SPACE_SYSTEM_IO) {
+		max_bit_width = 32;
+	}
+
+	/*
+	 * Return access width according to the requested maximum access bit width,
+	 * as the caller should know the format of the register and may enforce
+	 * a 32-bit accesses.
+	 */
+	if (access_bit_width < max_bit_width) {
+		return (access_bit_width);
+	}
+	return (max_bit_width);
+}
+
+/******************************************************************************
+ *
  * FUNCTION:    acpi_hw_validate_register
  *
- * PARAMETERS:  Reg                 - GAS register structure
+ * PARAMETERS:  reg                 - GAS register structure
  *              max_bit_width       - Max bit_width supported (32 or 64)
- *              Address             - Pointer to where the gas->address
+ *              address             - Pointer to where the gas->address
  *                                    is returned
  *
  * RETURN:      Status
@@ -85,6 +158,8 @@ acpi_status
 acpi_hw_validate_register(struct acpi_generic_address *reg,
 			  u8 max_bit_width, u64 *address)
 {
+	u8 bit_width;
+	u8 access_width;
 
 	/* Must have a valid pointer to a GAS structure */
 
@@ -102,7 +177,7 @@ acpi_hw_validate_register(struct acpi_generic_address *reg,
 		return (AE_BAD_ADDRESS);
 	}
 
-	/* Validate the space_iD */
+	/* Validate the space_ID */
 
 	if ((reg->space_id != ACPI_ADR_SPACE_SYSTEM_MEMORY) &&
 	    (reg->space_id != ACPI_ADR_SPACE_SYSTEM_IO)) {
@@ -111,23 +186,26 @@ acpi_hw_validate_register(struct acpi_generic_address *reg,
 		return (AE_SUPPORT);
 	}
 
-	/* Validate the bit_width */
+	/* Validate the access_width */
 
-	if ((reg->bit_width != 8) &&
-	    (reg->bit_width != 16) &&
-	    (reg->bit_width != 32) && (reg->bit_width != max_bit_width)) {
+	if (reg->access_width > 4) {
 		ACPI_ERROR((AE_INFO,
-			    "Unsupported register bit width: 0x%X",
-			    reg->bit_width));
+			    "Unsupported register access width: 0x%X",
+			    reg->access_width));
 		return (AE_SUPPORT);
 	}
 
-	/* Validate the bit_offset. Just a warning for now. */
+	/* Validate the bit_width, convert access_width into number of bits */
 
-	if (reg->bit_offset != 0) {
+	access_width =
+	    acpi_hw_get_access_bit_width(*address, reg, max_bit_width);
+	bit_width =
+	    ACPI_ROUND_UP(reg->bit_offset + reg->bit_width, access_width);
+	if (max_bit_width < bit_width) {
 		ACPI_WARNING((AE_INFO,
-			      "Unsupported register bit offset: 0x%X",
-			      reg->bit_offset));
+			      "Requested bit width 0x%X is smaller than register bit width 0x%X",
+			      max_bit_width, bit_width));
+		return (AE_SUPPORT);
 	}
 
 	return (AE_OK);
@@ -137,8 +215,8 @@ acpi_hw_validate_register(struct acpi_generic_address *reg,
  *
  * FUNCTION:    acpi_hw_read
  *
- * PARAMETERS:  Value               - Where the value is returned
- *              Reg                 - GAS register structure
+ * PARAMETERS:  value               - Where the value is returned
+ *              reg                 - GAS register structure
  *
  * RETURN:      Status
  *
@@ -147,17 +225,19 @@ acpi_hw_validate_register(struct acpi_generic_address *reg,
  *              64-bit values is not needed.
  *
  * LIMITATIONS: <These limitations also apply to acpi_hw_write>
- *      bit_width must be exactly 8, 16, or 32.
- *      space_iD must be system_memory or system_iO.
- *      bit_offset and access_width are currently ignored, as there has
- *          not been a need to implement these.
+ *      space_ID must be system_memory or system_IO.
  *
  ******************************************************************************/
 
 acpi_status acpi_hw_read(u32 *value, struct acpi_generic_address *reg)
 {
 	u64 address;
+	u8 access_width;
+	u32 bit_width;
+	u8 bit_offset;
 	u64 value64;
+	u32 value32;
+	u8 index;
 	acpi_status status;
 
 	ACPI_FUNCTION_NAME(hw_read);
@@ -169,28 +249,61 @@ acpi_status acpi_hw_read(u32 *value, struct acpi_generic_address *reg)
 		return (status);
 	}
 
-	/* Initialize entire 32-bit return value to zero */
-
+	/*
+	 * Initialize entire 32-bit return value to zero, convert access_width
+	 * into number of bits based
+	 */
 	*value = 0;
+	access_width = acpi_hw_get_access_bit_width(address, reg, 32);
+	bit_width = reg->bit_offset + reg->bit_width;
+	bit_offset = reg->bit_offset;
 
 	/*
 	 * Two address spaces supported: Memory or IO. PCI_Config is
 	 * not supported here because the GAS structure is insufficient
 	 */
-	if (reg->space_id == ACPI_ADR_SPACE_SYSTEM_MEMORY) {
-		status = acpi_os_read_memory((acpi_physical_address)
-					     address, &value64, reg->bit_width);
+	index = 0;
+	while (bit_width) {
+		if (bit_offset >= access_width) {
+			value32 = 0;
+			bit_offset -= access_width;
+		} else {
+			if (reg->space_id == ACPI_ADR_SPACE_SYSTEM_MEMORY) {
+				status =
+				    acpi_os_read_memory((acpi_physical_address)
+							address +
+							index *
+							ACPI_DIV_8
+							(access_width),
+							&value64, access_width);
+				value32 = (u32)value64;
+			} else {	/* ACPI_ADR_SPACE_SYSTEM_IO, validated earlier */
 
-		*value = (u32)value64;
-	} else {		/* ACPI_ADR_SPACE_SYSTEM_IO, validated earlier */
+				status = acpi_hw_read_port((acpi_io_address)
+							   address +
+							   index *
+							   ACPI_DIV_8
+							   (access_width),
+							   &value32,
+							   access_width);
+			}
+		}
 
-		status = acpi_hw_read_port((acpi_io_address)
-					   address, value, reg->bit_width);
+		/*
+		 * Use offset style bit writes because "Index * AccessWidth" is
+		 * ensured to be less than 32-bits by acpi_hw_validate_register().
+		 */
+		ACPI_SET_BITS(value, index * access_width,
+			      ACPI_MASK_BITS_ABOVE_32(access_width), value32);
+
+		bit_width -=
+		    bit_width > access_width ? access_width : bit_width;
+		index++;
 	}
 
 	ACPI_DEBUG_PRINT((ACPI_DB_IO,
 			  "Read:  %8.8X width %2d from %8.8X%8.8X (%s)\n",
-			  *value, reg->bit_width, ACPI_FORMAT_UINT64(address),
+			  *value, access_width, ACPI_FORMAT_UINT64(address),
 			  acpi_ut_get_region_name(reg->space_id)));
 
 	return (status);
@@ -200,8 +313,8 @@ acpi_status acpi_hw_read(u32 *value, struct acpi_generic_address *reg)
  *
  * FUNCTION:    acpi_hw_write
  *
- * PARAMETERS:  Value               - Value to be written
- *              Reg                 - GAS register structure
+ * PARAMETERS:  value               - Value to be written
+ *              reg                 - GAS register structure
  *
  * RETURN:      Status
  *
@@ -214,6 +327,12 @@ acpi_status acpi_hw_read(u32 *value, struct acpi_generic_address *reg)
 acpi_status acpi_hw_write(u32 value, struct acpi_generic_address *reg)
 {
 	u64 address;
+	u8 access_width;
+	u32 bit_width;
+	u8 bit_offset;
+	u64 value64;
+	u32 value32;
+	u8 index;
 	acpi_status status;
 
 	ACPI_FUNCTION_NAME(hw_write);
@@ -225,23 +344,61 @@ acpi_status acpi_hw_write(u32 value, struct acpi_generic_address *reg)
 		return (status);
 	}
 
+	/* Convert access_width into number of bits based */
+
+	access_width = acpi_hw_get_access_bit_width(address, reg, 32);
+	bit_width = reg->bit_offset + reg->bit_width;
+	bit_offset = reg->bit_offset;
+
 	/*
 	 * Two address spaces supported: Memory or IO. PCI_Config is
 	 * not supported here because the GAS structure is insufficient
 	 */
-	if (reg->space_id == ACPI_ADR_SPACE_SYSTEM_MEMORY) {
-		status = acpi_os_write_memory((acpi_physical_address)
-					      address, (u64)value,
-					      reg->bit_width);
-	} else {		/* ACPI_ADR_SPACE_SYSTEM_IO, validated earlier */
+	index = 0;
+	while (bit_width) {
+		/*
+		 * Use offset style bit reads because "Index * AccessWidth" is
+		 * ensured to be less than 32-bits by acpi_hw_validate_register().
+		 */
+		value32 = ACPI_GET_BITS(&value, index * access_width,
+					ACPI_MASK_BITS_ABOVE_32(access_width));
 
-		status = acpi_hw_write_port((acpi_io_address)
-					    address, value, reg->bit_width);
+		if (bit_offset >= access_width) {
+			bit_offset -= access_width;
+		} else {
+			if (reg->space_id == ACPI_ADR_SPACE_SYSTEM_MEMORY) {
+				value64 = (u64)value32;
+				status =
+				    acpi_os_write_memory((acpi_physical_address)
+							 address +
+							 index *
+							 ACPI_DIV_8
+							 (access_width),
+							 value64, access_width);
+			} else {	/* ACPI_ADR_SPACE_SYSTEM_IO, validated earlier */
+
+				status = acpi_hw_write_port((acpi_io_address)
+							    address +
+							    index *
+							    ACPI_DIV_8
+							    (access_width),
+							    value32,
+							    access_width);
+			}
+		}
+
+		/*
+		 * Index * access_width is ensured to be less than 32-bits by
+		 * acpi_hw_validate_register().
+		 */
+		bit_width -=
+		    bit_width > access_width ? access_width : bit_width;
+		index++;
 	}
 
 	ACPI_DEBUG_PRINT((ACPI_DB_IO,
 			  "Wrote: %8.8X width %2d   to %8.8X%8.8X (%s)\n",
-			  value, reg->bit_width, ACPI_FORMAT_UINT64(address),
+			  value, access_width, ACPI_FORMAT_UINT64(address),
 			  acpi_ut_get_region_name(reg->space_id)));
 
 	return (status);
@@ -280,8 +437,9 @@ acpi_status acpi_hw_clear_acpi_status(void)
 
 	acpi_os_release_lock(acpi_gbl_hardware_lock, lock_flags);
 
-	if (ACPI_FAILURE(status))
+	if (ACPI_FAILURE(status)) {
 		goto exit;
+	}
 
 	/* Clear the GPE Bits in all GPE registers in all GPE blocks */
 
@@ -365,8 +523,7 @@ acpi_status acpi_hw_write_pm1_control(u32 pm1a_control, u32 pm1b_control)
  * DESCRIPTION: Read from the specified ACPI register
  *
  ******************************************************************************/
-acpi_status
-acpi_hw_register_read(u32 register_id, u32 * return_value)
+acpi_status acpi_hw_register_read(u32 register_id, u32 *return_value)
 {
 	u32 value = 0;
 	acpi_status status;
@@ -422,6 +579,7 @@ acpi_hw_register_read(u32 register_id, u32 * return_value)
 		break;
 
 	default:
+
 		ACPI_ERROR((AE_INFO, "Unknown Register ID: 0x%X", register_id));
 		status = AE_BAD_PARAMETER;
 		break;
@@ -439,7 +597,7 @@ acpi_hw_register_read(u32 register_id, u32 * return_value)
  * FUNCTION:    acpi_hw_register_write
  *
  * PARAMETERS:  register_id         - ACPI Register ID
- *              Value               - The value to write
+ *              value               - The value to write
  *
  * RETURN:      Status
  *
@@ -486,7 +644,7 @@ acpi_status acpi_hw_register_write(u32 register_id, u32 value)
 						&acpi_gbl_xpm1b_status);
 		break;
 
-	case ACPI_REGISTER_PM1_ENABLE:	/* PM1 A/B: 16-bit access */
+	case ACPI_REGISTER_PM1_ENABLE:	/* PM1 A/B: 16-bit access each */
 
 		status = acpi_hw_write_multiple(value,
 						&acpi_gbl_xpm1a_enable,
@@ -494,7 +652,6 @@ acpi_status acpi_hw_register_write(u32 register_id, u32 value)
 		break;
 
 	case ACPI_REGISTER_PM1_CONTROL:	/* PM1 A/B: 16-bit access each */
-
 		/*
 		 * Perform a read first to preserve certain bits (per ACPI spec)
 		 * Note: This includes SCI_EN, we never want to change this bit
@@ -523,7 +680,6 @@ acpi_status acpi_hw_register_write(u32 register_id, u32 value)
 		break;
 
 	case ACPI_REGISTER_PM2_CONTROL:	/* 8-bit access */
-
 		/*
 		 * For control registers, all reserved bits must be preserved,
 		 * as per the ACPI spec.
@@ -558,12 +714,13 @@ acpi_status acpi_hw_register_write(u32 register_id, u32 value)
 		break;
 
 	default:
+
 		ACPI_ERROR((AE_INFO, "Unknown Register ID: 0x%X", register_id));
 		status = AE_BAD_PARAMETER;
 		break;
 	}
 
-      exit:
+exit:
 	return_ACPI_STATUS(status);
 }
 
@@ -571,7 +728,7 @@ acpi_status acpi_hw_register_write(u32 register_id, u32 value)
  *
  * FUNCTION:    acpi_hw_read_multiple
  *
- * PARAMETERS:  Value               - Where the register value is returned
+ * PARAMETERS:  value               - Where the register value is returned
  *              register_a           - First ACPI register (required)
  *              register_b           - Second ACPI register (optional)
  *
@@ -624,7 +781,7 @@ acpi_hw_read_multiple(u32 *value,
  *
  * FUNCTION:    acpi_hw_write_multiple
  *
- * PARAMETERS:  Value               - The value to write
+ * PARAMETERS:  value               - The value to write
  *              register_a           - First ACPI register (required)
  *              register_b           - Second ACPI register (optional)
  *

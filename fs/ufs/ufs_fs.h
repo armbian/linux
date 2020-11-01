@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  linux/include/linux/ufs_fs.h
  *
@@ -34,6 +35,7 @@
 #include <linux/kernel.h>
 #include <linux/stat.h>
 #include <linux/fs.h>
+#include <linux/workqueue.h>
 
 #include <asm/div64.h>
 typedef __u64 __bitwise __fs64;
@@ -732,10 +734,8 @@ struct ufs_sb_private_info {
 	__u32	s_dblkno;	/* offset of first data after cg */
 	__u32	s_cgoffset;	/* cylinder group offset in cylinder */
 	__u32	s_cgmask;	/* used to calc mod fs_ntrak */
-	__u32	s_size;		/* number of blocks (fragments) in fs */
-	__u32	s_dsize;	/* number of data blocks in fs */
-	__u64	s_u2_size;	/* ufs2: number of blocks (fragments) in fs */
-	__u64	s_u2_dsize;	/*ufs2:  number of data blocks in fs */
+	__u64	s_size;		/* number of blocks (fragments) in fs */
+	__u64	s_dsize;	/* number of data blocks in fs */
 	__u32	s_ncg;		/* number of cylinder groups */
 	__u32	s_bsize;	/* size of basic blocks */
 	__u32	s_fsize;	/* size of fragments */
@@ -792,6 +792,9 @@ struct ufs_sb_private_info {
 	__u32	s_maxsymlinklen;/* upper limit on fast symlinks' size */
 	__s32	fs_magic;       /* filesystem magic */
 	unsigned int s_dirblksize;
+	__u64   s_root_blocks;
+	__u64	s_time_to_space;
+	__u64	s_space_to_time;
 };
 
 /*

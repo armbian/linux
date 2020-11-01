@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SCSI_LOGGING_H
 #define _SCSI_LOGGING_H
 
@@ -51,6 +52,7 @@ do {								\
 		} while (0);					\
 } while (0)
 #else
+#define SCSI_LOG_LEVEL(SHIFT, BITS) 0
 #define SCSI_CHECK_LOGGING(SHIFT, BITS, LEVEL, CMD)
 #endif /* CONFIG_SCSI_LOGGING */
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_UHCI_HCD_H
 #define __LINUX_UHCI_HCD_H
 
@@ -48,6 +49,8 @@
 /* USB port status and control registers */
 #define USBPORTSC1	16
 #define USBPORTSC2	18
+#define USBPORTSC3	20
+#define USBPORTSC4	22
 #define   USBPORTSC_CCS		0x0001	/* Current Connect Status
 					 * ("device present") */
 #define   USBPORTSC_CSC		0x0002	/* Connect Status Change */
@@ -211,10 +214,6 @@ struct uhci_qh {
 #define TD_CTRL_CRCTIMEO	(1 << 18)	/* CRC/Time Out Error */
 #define TD_CTRL_BITSTUFF	(1 << 17)	/* Bit Stuff Error */
 #define TD_CTRL_ACTLEN_MASK	0x7FF	/* actual length, encoded as n - 1 */
-
-#define TD_CTRL_ANY_ERROR	(TD_CTRL_STALLED | TD_CTRL_DBUFERR | \
-				 TD_CTRL_BABBLE | TD_CTRL_CRCTIME | \
-				 TD_CTRL_BITSTUFF)
 
 #define uhci_maxerr(err)		((err) << TD_CTRL_C_ERR_SHIFT)
 #define uhci_status_bits(ctrl_sts)	((ctrl_sts) & 0xF60000)
@@ -431,6 +430,7 @@ struct uhci_hcd {
 	unsigned int wait_for_hp:1;		/* Wait for HP port reset */
 	unsigned int big_endian_mmio:1;		/* Big endian registers */
 	unsigned int big_endian_desc:1;		/* Big endian descriptors */
+	unsigned int is_aspeed:1;		/* Aspeed impl. workarounds */
 
 	/* Support for port suspend/resume/reset */
 	unsigned long port_c_suspend;		/* Bit-arrays of ports */
@@ -494,6 +494,12 @@ struct urb_priv {
 #define PCI_VENDOR_ID_GENESYS		0x17a0
 #define PCI_DEVICE_ID_GL880S_UHCI	0x8083
 
+/* Aspeed SoC needs some quirks */
+static inline bool uhci_is_aspeed(const struct uhci_hcd *uhci)
+{
+	return IS_ENABLED(CONFIG_USB_UHCI_ASPEED) && uhci->is_aspeed;
+}
+
 /*
  * Functions used to access controller registers. The UCHI spec says that host
  * controller I/O registers are mapped into PCI I/O space. For non-PCI hosts
@@ -534,7 +540,7 @@ static inline void uhci_writeb(const struct uhci_hcd *uhci, u8 val, int reg)
 
 #else
 /* Support non-PCI host controllers */
-#ifdef CONFIG_PCI
+#ifdef CONFIG_USB_PCI
 /* Support PCI and non-PCI host controllers */
 #define uhci_has_pci_registers(u)	((u)->io_addr != 0)
 #else
@@ -549,10 +555,42 @@ static inline void uhci_writeb(const struct uhci_hcd *uhci, u8 val, int reg)
 #define uhci_big_endian_mmio(u)		0
 #endif
 
+static inline int uhci_aspeed_reg(unsigned int reg)
+{
+	switch (reg) {
+	case USBCMD:
+		return 00;
+	case USBSTS:
+		return 0x04;
+	case USBINTR:
+		return 0x08;
+	case USBFRNUM:
+		return 0x80;
+	case USBFLBASEADD:
+		return 0x0c;
+	case USBSOF:
+		return 0x84;
+	case USBPORTSC1:
+		return 0x88;
+	case USBPORTSC2:
+		return 0x8c;
+	case USBPORTSC3:
+		return 0x90;
+	case USBPORTSC4:
+		return 0x94;
+	default:
+		pr_warn("UHCI: Unsupported register 0x%02x on Aspeed\n", reg);
+		/* Return an unimplemented register */
+		return 0x10;
+	}
+}
+
 static inline u32 uhci_readl(const struct uhci_hcd *uhci, int reg)
 {
 	if (uhci_has_pci_registers(uhci))
 		return inl(uhci->io_addr + reg);
+	else if (uhci_is_aspeed(uhci))
+		return readl(uhci->regs + uhci_aspeed_reg(reg));
 #ifdef CONFIG_USB_UHCI_BIG_ENDIAN_MMIO
 	else if (uhci_big_endian_mmio(uhci))
 		return readl_be(uhci->regs + reg);
@@ -565,6 +603,8 @@ static inline void uhci_writel(const struct uhci_hcd *uhci, u32 val, int reg)
 {
 	if (uhci_has_pci_registers(uhci))
 		outl(val, uhci->io_addr + reg);
+	else if (uhci_is_aspeed(uhci))
+		writel(val, uhci->regs + uhci_aspeed_reg(reg));
 #ifdef CONFIG_USB_UHCI_BIG_ENDIAN_MMIO
 	else if (uhci_big_endian_mmio(uhci))
 		writel_be(val, uhci->regs + reg);
@@ -577,6 +617,8 @@ static inline u16 uhci_readw(const struct uhci_hcd *uhci, int reg)
 {
 	if (uhci_has_pci_registers(uhci))
 		return inw(uhci->io_addr + reg);
+	else if (uhci_is_aspeed(uhci))
+		return readl(uhci->regs + uhci_aspeed_reg(reg));
 #ifdef CONFIG_USB_UHCI_BIG_ENDIAN_MMIO
 	else if (uhci_big_endian_mmio(uhci))
 		return readw_be(uhci->regs + reg);
@@ -589,6 +631,8 @@ static inline void uhci_writew(const struct uhci_hcd *uhci, u16 val, int reg)
 {
 	if (uhci_has_pci_registers(uhci))
 		outw(val, uhci->io_addr + reg);
+	else if (uhci_is_aspeed(uhci))
+		writel(val, uhci->regs + uhci_aspeed_reg(reg));
 #ifdef CONFIG_USB_UHCI_BIG_ENDIAN_MMIO
 	else if (uhci_big_endian_mmio(uhci))
 		writew_be(val, uhci->regs + reg);
@@ -601,6 +645,8 @@ static inline u8 uhci_readb(const struct uhci_hcd *uhci, int reg)
 {
 	if (uhci_has_pci_registers(uhci))
 		return inb(uhci->io_addr + reg);
+	else if (uhci_is_aspeed(uhci))
+		return readl(uhci->regs + uhci_aspeed_reg(reg));
 #ifdef CONFIG_USB_UHCI_BIG_ENDIAN_MMIO
 	else if (uhci_big_endian_mmio(uhci))
 		return readb_be(uhci->regs + reg);
@@ -613,6 +659,8 @@ static inline void uhci_writeb(const struct uhci_hcd *uhci, u8 val, int reg)
 {
 	if (uhci_has_pci_registers(uhci))
 		outb(val, uhci->io_addr + reg);
+	else if (uhci_is_aspeed(uhci))
+		writel(val, uhci->regs + uhci_aspeed_reg(reg));
 #ifdef CONFIG_USB_UHCI_BIG_ENDIAN_MMIO
 	else if (uhci_big_endian_mmio(uhci))
 		writeb_be(val, uhci->regs + reg);

@@ -151,8 +151,8 @@ MODULE_LICENSE("GPL");
 
 module_param(max_interrupt_work, int, 0);
 module_param(debug, int, 0);
-module_param_array(io, int, NULL, 0);
-module_param_array(irq, int, NULL, 0);
+module_param_hw_array(io, int, ioport, NULL, 0);
+module_param_hw_array(irq, int, irq, NULL, 0);
 module_param_array(xcvr, int, NULL, 0);
 MODULE_PARM_DESC(max_interrupt_work, "ATP maximum events handled per interrupt");
 MODULE_PARM_DESC(debug, "ATP debug level (0-7)");
@@ -170,13 +170,12 @@ struct net_local {
     spinlock_t lock;
     struct net_device *next_module;
     struct timer_list timer;	/* Media selection timer. */
-    long last_rx_time;		/* Last Rx, in jiffies, to handle Rx hang. */
+    unsigned long last_rx_time;	/* Last Rx, in jiffies, to handle Rx hang. */
     int saved_tx_size;
     unsigned int tx_unit_busy:1;
     unsigned char re_tx,	/* Number of packet retransmissions. */
 		addr_mode,		/* Current Rx filter e.g. promiscuous, etc. */
-		pac_cnt_in_tx_buf,
-		chip_type;
+		pac_cnt_in_tx_buf;
 };
 
 /* This code, written by wwc@super.org, resets the adapter every
@@ -246,7 +245,6 @@ static const struct net_device_ops atp_netdev_ops = {
 	.ndo_start_xmit		= atp_send_packet,
 	.ndo_set_rx_mode	= set_rx_mode,
 	.ndo_tx_timeout		= tx_timeout,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -339,7 +337,6 @@ static int __init atp_probe1(long ioaddr)
 	write_reg_high(ioaddr, CMR1, CMR1h_RESET | CMR1h_MUX);
 
 	lp = netdev_priv(dev);
-	lp->chip_type = RTL8002;
 	lp->addr_mode = CMR2h_Normal;
 	spin_lock_init(&lp->lock);
 
@@ -546,7 +543,7 @@ static void tx_timeout(struct net_device *dev)
 	dev->stats.tx_errors++;
 	/* Try to restart the adapter. */
 	hardware_init(dev);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	netif_wake_queue(dev);
 	dev->stats.tx_errors++;
 }
@@ -671,11 +668,11 @@ static irqreturn_t atp_interrupt(int irq, void *dev_instance)
 			}
 			num_tx_since_rx++;
 		} else if (num_tx_since_rx > 8 &&
-			   time_after(jiffies, dev->last_rx + HZ)) {
+			   time_after(jiffies, lp->last_rx_time + HZ)) {
 			if (net_debug > 2)
 				printk(KERN_DEBUG "%s: Missed packet? No Rx after %d Tx and "
 					   "%ld jiffies status %02x  CMR1 %02x.\n", dev->name,
-					   num_tx_since_rx, jiffies - dev->last_rx, status,
+					   num_tx_since_rx, jiffies - lp->last_rx_time, status,
 					   (read_nibble(ioaddr, CMR1) >> 3) & 15);
 			dev->stats.rx_missed_errors++;
 			hardware_init(dev);
@@ -784,8 +781,6 @@ static void net_rx(struct net_device *dev)
 
 		skb = netdev_alloc_skb(dev, pkt_len + 2);
 		if (skb == NULL) {
-			printk(KERN_ERR "%s: Memory squeeze, dropping packet.\n",
-				   dev->name);
 			dev->stats.rx_dropped++;
 			goto done;
 		}
@@ -794,7 +789,6 @@ static void net_rx(struct net_device *dev)
 		read_block(ioaddr, pkt_len, skb_put(skb,pkt_len), dev->if_port);
 		skb->protocol = eth_type_trans(skb, dev);
 		netif_rx(skb);
-		dev->last_rx = jiffies;
 		dev->stats.rx_packets++;
 		dev->stats.rx_bytes += pkt_len;
 	}
@@ -852,7 +846,7 @@ net_close(struct net_device *dev)
  *	Set or clear the multicast filter for this adapter.
  */
 
-static void set_rx_mode_8002(struct net_device *dev)
+static void set_rx_mode(struct net_device *dev)
 {
 	struct net_local *lp = netdev_priv(dev);
 	long ioaddr = dev->base_addr;
@@ -863,58 +857,6 @@ static void set_rx_mode_8002(struct net_device *dev)
 		lp->addr_mode = CMR2h_Normal;
 	write_reg_high(ioaddr, CMR2, lp->addr_mode);
 }
-
-static void set_rx_mode_8012(struct net_device *dev)
-{
-	struct net_local *lp = netdev_priv(dev);
-	long ioaddr = dev->base_addr;
-	unsigned char new_mode, mc_filter[8]; /* Multicast hash filter */
-	int i;
-
-	if (dev->flags & IFF_PROMISC) {			/* Set promiscuous. */
-		new_mode = CMR2h_PROMISC;
-	} else if ((netdev_mc_count(dev) > 1000) ||
-		   (dev->flags & IFF_ALLMULTI)) {
-		/* Too many to filter perfectly -- accept all multicasts. */
-		memset(mc_filter, 0xff, sizeof(mc_filter));
-		new_mode = CMR2h_Normal;
-	} else {
-		struct netdev_hw_addr *ha;
-
-		memset(mc_filter, 0, sizeof(mc_filter));
-		netdev_for_each_mc_addr(ha, dev) {
-			int filterbit = ether_crc_le(ETH_ALEN, ha->addr) & 0x3f;
-			mc_filter[filterbit >> 5] |= 1 << (filterbit & 31);
-		}
-		new_mode = CMR2h_Normal;
-	}
-	lp->addr_mode = new_mode;
-    write_reg(ioaddr, CMR2, CMR2_IRQOUT | 0x04); /* Switch to page 1. */
-    for (i = 0; i < 8; i++)
-		write_reg_byte(ioaddr, i, mc_filter[i]);
-	if (net_debug > 2 || 1) {
-		lp->addr_mode = 1;
-		printk(KERN_DEBUG "%s: Mode %d, setting multicast filter to",
-			   dev->name, lp->addr_mode);
-		for (i = 0; i < 8; i++)
-			printk(" %2.2x", mc_filter[i]);
-		printk(".\n");
-	}
-
-	write_reg_high(ioaddr, CMR2, lp->addr_mode);
-    write_reg(ioaddr, CMR2, CMR2_IRQOUT); /* Switch back to page 0 */
-}
-
-static void set_rx_mode(struct net_device *dev)
-{
-	struct net_local *lp = netdev_priv(dev);
-
-	if (lp->chip_type == RTL8002)
-		return set_rx_mode_8002(dev);
-	else
-		return set_rx_mode_8012(dev);
-}
-
 
 static int __init atp_init_module(void) {
 	if (debug)					/* Emit version even if no cards detected. */

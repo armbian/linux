@@ -1,6 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  drivers/s390/char/tty3270.h
- *
  *    Copyright IBM Corp. 2007
  *
  */

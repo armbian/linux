@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef ACPI_PNP_H
 #define ACPI_PNP_H
 
-#include <acpi/acpi_bus.h>
 #include <linux/acpi.h>
 #include <linux/pnp.h>
 

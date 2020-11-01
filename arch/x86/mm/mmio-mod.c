@@ -24,7 +24,7 @@
 
 #define DEBUG 1
 
-#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/debugfs.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
@@ -32,7 +32,7 @@
 #include <linux/kallsyms.h>
 #include <asm/pgtable.h>
 #include <linux/mmiotrace.h>
-#include <asm/e820.h> /* for ISA_START_ADDRESS */
+#include <asm/e820/api.h> /* for ISA_START_ADDRESS */
 #include <linux/atomic.h>
 #include <linux/percpu.h>
 #include <linux/cpu.h>
@@ -410,9 +410,7 @@ out:
 		pr_warning("multiple CPUs still online, may miss events.\n");
 }
 
-/* __ref because leave_uniprocessor calls cpu_up which is __cpuinit,
-   but this whole function is ifdefed CONFIG_HOTPLUG_CPU */
-static void __ref leave_uniprocessor(void)
+static void leave_uniprocessor(void)
 {
 	int cpu;
 	int err;

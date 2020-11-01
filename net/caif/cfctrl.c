@@ -1,6 +1,6 @@
 /*
  * Copyright (C) ST-Ericsson AB 2010
- * Author:	Sjur Brendeland/sjur.brandeland@stericsson.com
+ * Author:	Sjur Brendeland
  * License terms: GNU General Public License (GPL) version 2
  */
 
@@ -9,6 +9,7 @@
 #include <linux/stddef.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
+#include <linux/pkt_sched.h>
 #include <net/caif/caif_layer.h>
 #include <net/caif/cfpkt.h>
 #include <net/caif/cfctrl.h>
@@ -19,12 +20,12 @@
 
 #ifdef CAIF_NO_LOOP
 static int handle_loop(struct cfctrl *ctrl,
-			      int cmd, struct cfpkt *pkt){
+		       int cmd, struct cfpkt *pkt){
 	return -1;
 }
 #else
 static int handle_loop(struct cfctrl *ctrl,
-		int cmd, struct cfpkt *pkt);
+		       int cmd, struct cfpkt *pkt);
 #endif
 static int cfctrl_recv(struct cflayer *layr, struct cfpkt *pkt);
 static void cfctrl_ctrlcmd(struct cflayer *layr, enum caif_ctrlcmd ctrl,
@@ -71,7 +72,7 @@ void cfctrl_remove(struct cflayer *layer)
 }
 
 static bool param_eq(const struct cfctrl_link_param *p1,
-			const struct cfctrl_link_param *p2)
+		     const struct cfctrl_link_param *p2)
 {
 	bool eq =
 	    p1->linktype == p2->linktype &&
@@ -174,27 +175,30 @@ static void init_info(struct caif_payload_info *info, struct cfctrl *cfctrl)
 
 void cfctrl_enum_req(struct cflayer *layer, u8 physlinkid)
 {
+	struct cfpkt *pkt;
 	struct cfctrl *cfctrl = container_obj(layer);
-	struct cfpkt *pkt = cfpkt_create(CFPKT_CTRL_PKT_LEN);
 	struct cflayer *dn = cfctrl->serv.layer.dn;
-	if (!pkt)
-		return;
+
 	if (!dn) {
 		pr_debug("not able to send enum request\n");
 		return;
 	}
+	pkt = cfpkt_create(CFPKT_CTRL_PKT_LEN);
+	if (!pkt)
+		return;
 	caif_assert(offsetof(struct cfctrl, serv.layer) == 0);
 	init_info(cfpkt_info(pkt), cfctrl);
 	cfpkt_info(pkt)->dev_info->id = physlinkid;
 	cfctrl->serv.dev_info.id = physlinkid;
 	cfpkt_addbdy(pkt, CFCTRL_CMD_ENUM);
 	cfpkt_addbdy(pkt, physlinkid);
+	cfpkt_set_prio(pkt, TC_PRIO_CONTROL);
 	dn->transmit(dn, pkt);
 }
 
 int cfctrl_linkup_request(struct cflayer *layer,
-			   struct cfctrl_link_param *param,
-			   struct cflayer *user_layer)
+			  struct cfctrl_link_param *param,
+			  struct cflayer *user_layer)
 {
 	struct cfctrl *cfctrl = container_obj(layer);
 	u32 tmp32;
@@ -281,6 +285,7 @@ int cfctrl_linkup_request(struct cflayer *layer,
 	 *	might arrive with the newly allocated channel ID.
 	 */
 	cfpkt_info(pkt)->dev_info->id = param->phyid;
+	cfpkt_set_prio(pkt, TC_PRIO_CONTROL);
 	ret =
 	    dn->transmit(dn, pkt);
 	if (ret < 0) {
@@ -297,24 +302,24 @@ int cfctrl_linkup_request(struct cflayer *layer,
 }
 
 int cfctrl_linkdown_req(struct cflayer *layer, u8 channelid,
-				struct cflayer *client)
+			struct cflayer *client)
 {
 	int ret;
+	struct cfpkt *pkt;
 	struct cfctrl *cfctrl = container_obj(layer);
-	struct cfpkt *pkt = cfpkt_create(CFPKT_CTRL_PKT_LEN);
 	struct cflayer *dn = cfctrl->serv.layer.dn;
-
-	if (!pkt)
-		return -ENOMEM;
 
 	if (!dn) {
 		pr_debug("not able to send link-down request\n");
 		return -ENODEV;
 	}
-
+	pkt = cfpkt_create(CFPKT_CTRL_PKT_LEN);
+	if (!pkt)
+		return -ENOMEM;
 	cfpkt_addbdy(pkt, CFCTRL_CMD_LINK_DESTROY);
 	cfpkt_addbdy(pkt, channelid);
 	init_info(cfpkt_info(pkt), cfctrl);
+	cfpkt_set_prio(pkt, TC_PRIO_CONTROL);
 	ret =
 	    dn->transmit(dn, pkt);
 #ifndef CAIF_NO_LOOP
@@ -347,15 +352,14 @@ static int cfctrl_recv(struct cflayer *layer, struct cfpkt *pkt)
 	u8 cmdrsp;
 	u8 cmd;
 	int ret = -1;
-	u16 tmp16;
 	u8 len;
 	u8 param[255];
-	u8 linkid;
+	u8 linkid = 0;
 	struct cfctrl *cfctrl = container_obj(layer);
 	struct cfctrl_request_info rsp, *req;
 
 
-	cfpkt_extr_head(pkt, &cmdrsp, 1);
+	cmdrsp = cfpkt_extr_head_u8(pkt);
 	cmd = cmdrsp & CFCTRL_CMD_MASK;
 	if (cmd != CFCTRL_CMD_LINK_ERR
 	    && CFCTRL_RSP_BIT != (CFCTRL_RSP_BIT & cmdrsp)
@@ -373,13 +377,12 @@ static int cfctrl_recv(struct cflayer *layer, struct cfpkt *pkt)
 			u8 physlinkid;
 			u8 prio;
 			u8 tmp;
-			u32 tmp32;
 			u8 *cp;
 			int i;
 			struct cfctrl_link_param linkparam;
 			memset(&linkparam, 0, sizeof(linkparam));
 
-			cfpkt_extr_head(pkt, &tmp, 1);
+			tmp = cfpkt_extr_head_u8(pkt);
 
 			serv = tmp & CFCTRL_SRV_MASK;
 			linkparam.linktype = serv;
@@ -387,13 +390,13 @@ static int cfctrl_recv(struct cflayer *layer, struct cfpkt *pkt)
 			servtype = tmp >> 4;
 			linkparam.chtype = servtype;
 
-			cfpkt_extr_head(pkt, &tmp, 1);
+			tmp = cfpkt_extr_head_u8(pkt);
 			physlinkid = tmp & 0x07;
 			prio = tmp >> 3;
 
 			linkparam.priority = prio;
 			linkparam.phyid = physlinkid;
-			cfpkt_extr_head(pkt, &endpoint, 1);
+			endpoint = cfpkt_extr_head_u8(pkt);
 			linkparam.endpoint = endpoint & 0x03;
 
 			switch (serv) {
@@ -402,45 +405,43 @@ static int cfctrl_recv(struct cflayer *layer, struct cfpkt *pkt)
 				if (CFCTRL_ERR_BIT & cmdrsp)
 					break;
 				/* Link ID */
-				cfpkt_extr_head(pkt, &linkid, 1);
+				linkid = cfpkt_extr_head_u8(pkt);
 				break;
 			case CFCTRL_SRV_VIDEO:
-				cfpkt_extr_head(pkt, &tmp, 1);
+				tmp = cfpkt_extr_head_u8(pkt);
 				linkparam.u.video.connid = tmp;
 				if (CFCTRL_ERR_BIT & cmdrsp)
 					break;
 				/* Link ID */
-				cfpkt_extr_head(pkt, &linkid, 1);
+				linkid = cfpkt_extr_head_u8(pkt);
 				break;
 
 			case CFCTRL_SRV_DATAGRAM:
-				cfpkt_extr_head(pkt, &tmp32, 4);
 				linkparam.u.datagram.connid =
-				    le32_to_cpu(tmp32);
+				    cfpkt_extr_head_u32(pkt);
 				if (CFCTRL_ERR_BIT & cmdrsp)
 					break;
 				/* Link ID */
-				cfpkt_extr_head(pkt, &linkid, 1);
+				linkid = cfpkt_extr_head_u8(pkt);
 				break;
 			case CFCTRL_SRV_RFM:
 				/* Construct a frame, convert
 				 * DatagramConnectionID
 				 * to network format long and copy it out...
 				 */
-				cfpkt_extr_head(pkt, &tmp32, 4);
 				linkparam.u.rfm.connid =
-				  le32_to_cpu(tmp32);
+				    cfpkt_extr_head_u32(pkt);
 				cp = (u8 *) linkparam.u.rfm.volume;
-				for (cfpkt_extr_head(pkt, &tmp, 1);
+				for (tmp = cfpkt_extr_head_u8(pkt);
 				     cfpkt_more(pkt) && tmp != '\0';
-				     cfpkt_extr_head(pkt, &tmp, 1))
+				     tmp = cfpkt_extr_head_u8(pkt))
 					*cp++ = tmp;
 				*cp = '\0';
 
 				if (CFCTRL_ERR_BIT & cmdrsp)
 					break;
 				/* Link ID */
-				cfpkt_extr_head(pkt, &linkid, 1);
+				linkid = cfpkt_extr_head_u8(pkt);
 
 				break;
 			case CFCTRL_SRV_UTIL:
@@ -449,13 +450,11 @@ static int cfctrl_recv(struct cflayer *layer, struct cfpkt *pkt)
 				 * to network format long and copy it out...
 				 */
 				/* Fifosize KB */
-				cfpkt_extr_head(pkt, &tmp16, 2);
 				linkparam.u.utility.fifosize_kb =
-				    le16_to_cpu(tmp16);
+				    cfpkt_extr_head_u16(pkt);
 				/* Fifosize bufs */
-				cfpkt_extr_head(pkt, &tmp16, 2);
 				linkparam.u.utility.fifosize_bufs =
-				    le16_to_cpu(tmp16);
+				    cfpkt_extr_head_u16(pkt);
 				/* name */
 				cp = (u8 *) linkparam.u.utility.name;
 				caif_assert(sizeof(linkparam.u.utility.name)
@@ -463,24 +462,24 @@ static int cfctrl_recv(struct cflayer *layer, struct cfpkt *pkt)
 				for (i = 0;
 				     i < UTILITY_NAME_LENGTH
 				     && cfpkt_more(pkt); i++) {
-					cfpkt_extr_head(pkt, &tmp, 1);
+					tmp = cfpkt_extr_head_u8(pkt);
 					*cp++ = tmp;
 				}
 				/* Length */
-				cfpkt_extr_head(pkt, &len, 1);
+				len = cfpkt_extr_head_u8(pkt);
 				linkparam.u.utility.paramlen = len;
 				/* Param Data */
 				cp = linkparam.u.utility.params;
 				while (cfpkt_more(pkt) && len--) {
-					cfpkt_extr_head(pkt, &tmp, 1);
+					tmp = cfpkt_extr_head_u8(pkt);
 					*cp++ = tmp;
 				}
 				if (CFCTRL_ERR_BIT & cmdrsp)
 					break;
 				/* Link ID */
-				cfpkt_extr_head(pkt, &linkid, 1);
+				linkid = cfpkt_extr_head_u8(pkt);
 				/* Length */
-				cfpkt_extr_head(pkt, &len, 1);
+				len = cfpkt_extr_head_u8(pkt);
 				/* Param Data */
 				cfpkt_extr_head(pkt, &param, len);
 				break;
@@ -511,14 +510,13 @@ static int cfctrl_recv(struct cflayer *layer, struct cfpkt *pkt)
 							  client_layer : NULL);
 			}
 
-			if (req != NULL)
-				kfree(req);
+			kfree(req);
 
 			spin_unlock_bh(&cfctrl->info_list_lock);
 		}
 		break;
 	case CFCTRL_CMD_LINK_DESTROY:
-		cfpkt_extr_head(pkt, &linkid, 1);
+		linkid = cfpkt_extr_head_u8(pkt);
 		cfctrl->res.linkdestroy_rsp(cfctrl->serv.layer.up, linkid);
 		break;
 	case CFCTRL_CMD_LINK_ERR:
@@ -543,7 +541,6 @@ static int cfctrl_recv(struct cflayer *layer, struct cfpkt *pkt)
 	default:
 		pr_err("Unrecognized Control Frame\n");
 		goto error;
-		break;
 	}
 	ret = 0;
 error:
@@ -552,7 +549,7 @@ error:
 }
 
 static void cfctrl_ctrlcmd(struct cflayer *layr, enum caif_ctrlcmd ctrl,
-			int phyid)
+			   int phyid)
 {
 	struct cfctrl *this = container_obj(layr);
 	switch (ctrl) {

@@ -1,7 +1,7 @@
 /*
  * DMA implementation for Hexagon
  *
- * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,42 +23,34 @@
 #include <linux/genalloc.h>
 #include <asm/dma-mapping.h>
 #include <linux/module.h>
+#include <asm/page.h>
 
-struct dma_map_ops *dma_ops;
+#define HEXAGON_MAPPING_ERROR	0
+
+const struct dma_map_ops *dma_ops;
 EXPORT_SYMBOL(dma_ops);
 
-int bad_dma_address;  /*  globals are automatically initialized to zero  */
-
-int dma_supported(struct device *dev, u64 mask)
+static inline void *dma_addr_to_virt(dma_addr_t dma_addr)
 {
-	if (mask == DMA_BIT_MASK(32))
-		return 1;
-	else
-		return 0;
+	return phys_to_virt((unsigned long) dma_addr);
 }
-EXPORT_SYMBOL(dma_supported);
-
-int dma_set_mask(struct device *dev, u64 mask)
-{
-	if (!dev->dma_mask || !dma_supported(dev, mask))
-		return -EIO;
-
-	*dev->dma_mask = mask;
-
-	return 0;
-}
-EXPORT_SYMBOL(dma_set_mask);
 
 static struct gen_pool *coherent_pool;
 
 
 /* Allocates from a pool of uncached memory that was reserved at boot time */
 
-void *hexagon_dma_alloc_coherent(struct device *dev, size_t size,
+static void *hexagon_dma_alloc_coherent(struct device *dev, size_t size,
 				 dma_addr_t *dma_addr, gfp_t flag,
-				 struct dma_attrs *attrs)
+				 unsigned long attrs)
 {
 	void *ret;
+
+	/*
+	 * Our max_low_pfn should have been backed off by 16MB in
+	 * mm/init.c to create DMA coherent space.  Use that as the VA
+	 * for the pool.
+	 */
 
 	if (coherent_pool == NULL) {
 		coherent_pool = gen_pool_create(PAGE_SHIFT, -1);
@@ -67,7 +59,7 @@ void *hexagon_dma_alloc_coherent(struct device *dev, size_t size,
 			panic("Can't create %s() memory pool!", __func__);
 		else
 			gen_pool_add(coherent_pool,
-				(PAGE_OFFSET + (max_low_pfn << PAGE_SHIFT)),
+				(unsigned long)pfn_to_virt(max_low_pfn),
 				hexagon_coherent_pool_size, -1);
 	}
 
@@ -75,7 +67,7 @@ void *hexagon_dma_alloc_coherent(struct device *dev, size_t size,
 
 	if (ret) {
 		memset(ret, 0, size);
-		*dma_addr = (dma_addr_t) (ret - PAGE_OFFSET);
+		*dma_addr = (dma_addr_t) virt_to_phys(ret);
 	} else
 		*dma_addr = ~0;
 
@@ -83,7 +75,7 @@ void *hexagon_dma_alloc_coherent(struct device *dev, size_t size,
 }
 
 static void hexagon_free_coherent(struct device *dev, size_t size, void *vaddr,
-				  dma_addr_t dma_addr, struct dma_attrs *attrs)
+				  dma_addr_t dma_addr, unsigned long attrs)
 {
 	gen_pool_free(coherent_pool, (unsigned long) vaddr, size);
 }
@@ -104,7 +96,7 @@ static int check_addr(const char *name, struct device *hwdev,
 
 static int hexagon_map_sg(struct device *hwdev, struct scatterlist *sg,
 			  int nents, enum dma_data_direction dir,
-			  struct dma_attrs *attrs)
+			  unsigned long attrs)
 {
 	struct scatterlist *s;
 	int i;
@@ -118,8 +110,11 @@ static int hexagon_map_sg(struct device *hwdev, struct scatterlist *sg,
 
 		s->dma_length = s->length;
 
-		flush_dcache_range(PAGE_OFFSET + s->dma_address,
-				   PAGE_OFFSET + s->dma_address + s->length);
+		if (attrs & DMA_ATTR_SKIP_CPU_SYNC)
+			continue;
+
+		flush_dcache_range(dma_addr_to_virt(s->dma_address),
+				   dma_addr_to_virt(s->dma_address + s->length));
 	}
 
 	return nents;
@@ -149,11 +144,6 @@ static inline void dma_sync(void *addr, size_t size,
 	}
 }
 
-static inline void *dma_addr_to_virt(dma_addr_t dma_addr)
-{
-	return phys_to_virt((unsigned long) dma_addr);
-}
-
 /**
  * hexagon_map_page() - maps an address for device DMA
  * @dev:	pointer to DMA device
@@ -176,15 +166,16 @@ static inline void *dma_addr_to_virt(dma_addr_t dma_addr)
 static dma_addr_t hexagon_map_page(struct device *dev, struct page *page,
 				   unsigned long offset, size_t size,
 				   enum dma_data_direction dir,
-				   struct dma_attrs *attrs)
+				   unsigned long attrs)
 {
 	dma_addr_t bus = page_to_phys(page) + offset;
 	WARN_ON(size == 0);
 
 	if (!check_addr("map_single", dev, bus, size))
-		return bad_dma_address;
+		return HEXAGON_MAPPING_ERROR;
 
-	dma_sync(dma_addr_to_virt(bus), size, dir);
+	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
+		dma_sync(dma_addr_to_virt(bus), size, dir);
 
 	return bus;
 }
@@ -203,13 +194,19 @@ static void hexagon_sync_single_for_device(struct device *dev,
 	dma_sync(dma_addr_to_virt(dma_handle), size, dir);
 }
 
-struct dma_map_ops hexagon_dma_ops = {
+static int hexagon_mapping_error(struct device *dev, dma_addr_t dma_addr)
+{
+	return dma_addr == HEXAGON_MAPPING_ERROR;
+}
+
+const struct dma_map_ops hexagon_dma_ops = {
 	.alloc		= hexagon_dma_alloc_coherent,
 	.free		= hexagon_free_coherent,
 	.map_sg		= hexagon_map_sg,
 	.map_page	= hexagon_map_page,
 	.sync_single_for_cpu = hexagon_sync_single_for_cpu,
 	.sync_single_for_device = hexagon_sync_single_for_device,
+	.mapping_error	= hexagon_mapping_error,
 	.is_phys	= 1,
 };
 

@@ -23,7 +23,6 @@
 
 #define GET_SHADOW_VCPU(reg)    \
 	mr	reg, r13
-#define MTMSR_EERI(reg)		mtmsrd	(reg),1
 
 #elif defined(CONFIG_PPC_BOOK3S_32)
 
@@ -31,7 +30,6 @@
 	tophys(reg, r2);       			\
 	lwz     reg, (THREAD + THREAD_KVM_SVCPU)(reg);	\
 	tophys(reg, reg)
-#define MTMSR_EERI(reg)		mtmsr	(reg)
 
 #endif
 
@@ -92,6 +90,15 @@ kvmppc_handler_trampoline_enter:
 	LOAD_GUEST_SEGMENTS
 
 #ifdef CONFIG_PPC_BOOK3S_64
+BEGIN_FTR_SECTION
+	/* Save host FSCR */
+	mfspr	r8, SPRN_FSCR
+	std	r8, HSTATE_HOST_FSCR(r13)
+	/* Set FSCR during guest execution */
+	ld	r9, SVCPU_SHADOW_FSCR(r13)
+	mtspr	SPRN_FSCR, r9
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
+
 	/* Some guests may need to have dcbz set to 32 byte length.
 	 *
 	 * Usually we ensure that by patching the guest's instructions
@@ -116,7 +123,7 @@ no_dcbz32_on:
 	PPC_LL	r8, SVCPU_CTR(r3)
 	PPC_LL	r9, SVCPU_LR(r3)
 	lwz	r10, SVCPU_CR(r3)
-	lwz	r11, SVCPU_XER(r3)
+	PPC_LL	r11, SVCPU_XER(r3)
 
 	mtctr	r8
 	mtlr	r9
@@ -128,27 +135,28 @@ no_dcbz32_on:
 	/* First clear RI in our current MSR value */
 	li	r0, MSR_RI
 	andc	r6, r6, r0
-	MTMSR_EERI(r6)
-	mtsrr0	r9
-	mtsrr1	r4
 
 	PPC_LL	r0, SVCPU_R0(r3)
 	PPC_LL	r1, SVCPU_R1(r3)
 	PPC_LL	r2, SVCPU_R2(r3)
-	PPC_LL	r4, SVCPU_R4(r3)
 	PPC_LL	r5, SVCPU_R5(r3)
-	PPC_LL	r6, SVCPU_R6(r3)
 	PPC_LL	r7, SVCPU_R7(r3)
 	PPC_LL	r8, SVCPU_R8(r3)
-	PPC_LL	r9, SVCPU_R9(r3)
 	PPC_LL	r10, SVCPU_R10(r3)
 	PPC_LL	r11, SVCPU_R11(r3)
 	PPC_LL	r12, SVCPU_R12(r3)
 	PPC_LL	r13, SVCPU_R13(r3)
 
+	MTMSR_EERI(r6)
+	mtsrr0	r9
+	mtsrr1	r4
+
+	PPC_LL	r4, SVCPU_R4(r3)
+	PPC_LL	r6, SVCPU_R6(r3)
+	PPC_LL	r9, SVCPU_R9(r3)
 	PPC_LL	r3, (SVCPU_R3)(r3)
 
-	RFI
+	RFI_TO_GUEST
 kvmppc_handler_trampoline_enter_end:
 
 
@@ -159,20 +167,38 @@ kvmppc_handler_trampoline_enter_end:
  *                                                                            *
  *****************************************************************************/
 
+.global kvmppc_interrupt_pr
+kvmppc_interrupt_pr:
+	/* 64-bit entry. Register usage at this point:
+	 *
+	 * SPRG_SCRATCH0   = guest R13
+	 * R12             = (guest CR << 32) | exit handler id
+	 * R13             = PACA
+	 * HSTATE.SCRATCH0 = guest R12
+	 * HSTATE.SCRATCH1 = guest CTR if RELOCATABLE
+	 */
+#ifdef CONFIG_PPC64
+	/* Match 32-bit entry */
+#ifdef CONFIG_RELOCATABLE
+	std	r9, HSTATE_SCRATCH2(r13)
+	ld	r9, HSTATE_SCRATCH1(r13)
+	mtctr	r9
+	ld	r9, HSTATE_SCRATCH2(r13)
+#endif
+	rotldi	r12, r12, 32		  /* Flip R12 halves for stw */
+	stw	r12, HSTATE_SCRATCH1(r13) /* CR is now in the low half */
+	srdi	r12, r12, 32		  /* shift trap into low half */
+#endif
+
 .global kvmppc_handler_trampoline_exit
 kvmppc_handler_trampoline_exit:
-
-.global kvmppc_interrupt
-kvmppc_interrupt:
-
 	/* Register usage at this point:
 	 *
-	 * SPRG_SCRATCH0  = guest R13
-	 * R12            = exit handler id
-	 * R13            = shadow vcpu (32-bit) or PACA (64-bit)
+	 * SPRG_SCRATCH0   = guest R13
+	 * R12             = exit handler id
+	 * R13             = shadow vcpu (32-bit) or PACA (64-bit)
 	 * HSTATE.SCRATCH0 = guest R12
 	 * HSTATE.SCRATCH1 = guest CR
-	 *
 	 */
 
 	/* Save registers */
@@ -229,7 +255,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
 	mfctr	r8
 	mflr	r9
 
-	stw	r5, SVCPU_XER(r13)
+	PPC_STL	r5, SVCPU_XER(r13)
 	PPC_STL	r6, SVCPU_FAULT_DAR(r13)
 	stw	r7, SVCPU_FAULT_DSISR(r13)
 	PPC_STL	r8, SVCPU_CTR(r13)
@@ -256,6 +282,10 @@ BEGIN_FTR_SECTION
 	cmpwi	r12, BOOK3S_INTERRUPT_H_EMUL_ASSIST
 	beq-	ld_last_inst
 END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
+BEGIN_FTR_SECTION
+	cmpwi	r12, BOOK3S_INTERRUPT_FAC_UNAVAIL
+	beq-	ld_last_inst
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 #endif
 
 	b	no_ld_last_inst
@@ -312,6 +342,18 @@ no_ld_last_inst:
 
 no_dcbz32_off:
 
+BEGIN_FTR_SECTION
+	/* Save guest FSCR on a FAC_UNAVAIL interrupt */
+	cmpwi	r12, BOOK3S_INTERRUPT_FAC_UNAVAIL
+	bne+	no_fscr_save
+	mfspr	r7, SPRN_FSCR
+	std	r7, SVCPU_SHADOW_FSCR(r13)
+no_fscr_save:
+	/* Restore host FSCR */
+	ld	r8, HSTATE_HOST_FSCR(r13)
+	mtspr	SPRN_FSCR, r8
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
+
 #endif /* CONFIG_PPC_BOOK3S_64 */
 
 	/*
@@ -362,6 +404,8 @@ END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
 	beqa	BOOK3S_INTERRUPT_DECREMENTER
 	cmpwi	r12, BOOK3S_INTERRUPT_PERFMON
 	beqa	BOOK3S_INTERRUPT_PERFMON
+	cmpwi	r12, BOOK3S_INTERRUPT_DOORBELL
+	beqa	BOOK3S_INTERRUPT_DOORBELL
 
-	RFI
+	RFI_TO_KERNEL
 kvmppc_handler_trampoline_exit_end:

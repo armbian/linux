@@ -1,19 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  include/asm-s390/cio.h
- *  include/asm-s390x/cio.h
- *
  * Common interface for I/O on S/390
  */
 #ifndef _ASM_S390_CIO_H_
 #define _ASM_S390_CIO_H_
 
 #include <linux/spinlock.h>
+#include <linux/bitops.h>
 #include <asm/types.h>
-
-#ifdef __KERNEL__
 
 #define LPM_ANYPATH 0xff
 #define __MAX_CSSID 0
+#define __MAX_SUBCHANNEL 65535
+#define __MAX_SSID 3
 
 #include <asm/scsw.h>
 
@@ -34,6 +33,24 @@ struct ccw1 {
 	__u16 count;
 	__u32 cda;
 } __attribute__ ((packed,aligned(8)));
+
+/**
+ * struct ccw0 - channel command word
+ * @cmd_code: command code
+ * @cda: data address
+ * @flags: flags, like IDA addressing, etc.
+ * @reserved: will be ignored
+ * @count: byte count
+ *
+ * The format-0 ccw structure.
+ */
+struct ccw0 {
+	__u8 cmd_code;
+	__u32 cda : 24;
+	__u8  flags;
+	__u8  reserved;
+	__u16 count;
+} __packed __aligned(8);
 
 #define CCW_FLAG_DC		0x80
 #define CCW_FLAG_CC		0x40
@@ -83,6 +100,18 @@ struct erw {
 	__u32 scnt  : 6;
 	__u32 res16 : 16;
 } __attribute__ ((packed));
+
+/**
+ * struct erw_eadm - EADM Subchannel extended report word
+ * @b: aob error
+ * @r: arsb error
+ */
+struct erw_eadm {
+	__u32 : 16;
+	__u32 b : 1;
+	__u32 r : 1;
+	__u32  : 14;
+} __packed;
 
 /**
  * struct sublog - subchannel logout area
@@ -175,9 +204,22 @@ struct esw3 {
 } __attribute__ ((packed));
 
 /**
+ * struct esw_eadm - EADM Subchannel Extended Status Word (ESW)
+ * @sublog: subchannel logout
+ * @erw: extended report word
+ */
+struct esw_eadm {
+	__u32 sublog;
+	struct erw_eadm erw;
+	__u32 : 32;
+	__u32 : 32;
+	__u32 : 32;
+} __packed;
+
+/**
  * struct irb - interruption response block
  * @scsw: subchannel status word
- * @esw: extened status word, 4 formats
+ * @esw: extended status word
  * @ecw: extended control word
  *
  * The irb that is handed to the device driver when an interrupt occurs. For
@@ -196,6 +238,7 @@ struct irb {
 		struct esw1 esw1;
 		struct esw2 esw2;
 		struct esw3 esw3;
+		struct esw_eadm eadm;
 	} esw;
 	__u8   ecw[32];
 } __attribute__ ((packed,aligned(4)));
@@ -273,13 +316,22 @@ static inline int ccw_dev_id_is_equal(struct ccw_dev_id *dev_id1,
 	return 0;
 }
 
-extern void wait_cons_dev(void);
+/**
+ * pathmask_to_pos() - find the position of the left-most bit in a pathmask
+ * @mask: pathmask with at least one bit set
+ */
+static inline u8 pathmask_to_pos(u8 mask)
+{
+	return 8 - ffs(mask);
+}
 
+void channel_subsystem_reinit(void);
 extern void css_schedule_reprobe(void);
 
 extern void reipl_ccw_dev(struct ccw_dev_id *id);
 
 struct cio_iplinfo {
+	u8 ssid;
 	u16 devno;
 	int is_qdio;
 };
@@ -287,9 +339,7 @@ struct cio_iplinfo {
 extern int cio_get_iplinfo(struct cio_iplinfo *iplinfo);
 
 /* Function from drivers/s390/cio/chsc.c */
-int chsc_sstpc(void *page, unsigned int op, u16 ctrl);
+int chsc_sstpc(void *page, unsigned int op, u16 ctrl, u64 *clock_delta);
 int chsc_sstpi(void *page, void *result, size_t size);
-
-#endif
 
 #endif

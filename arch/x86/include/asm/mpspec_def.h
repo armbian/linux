@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_MPSPEC_DEF_H
 #define _ASM_X86_MPSPEC_DEF_H
 
@@ -84,7 +85,7 @@ struct mpc_bus {
 #define BUSTYPE_EISA	"EISA"
 #define BUSTYPE_ISA	"ISA"
 #define BUSTYPE_INTERN	"INTERN"	/* Internal BUS */
-#define BUSTYPE_MCA	"MCA"
+#define BUSTYPE_MCA	"MCA"		/* Obsolete */
 #define BUSTYPE_VL	"VL"		/* Local bus */
 #define BUSTYPE_PCI	"PCI"
 #define BUSTYPE_PCMCIA	"PCMCIA"
@@ -169,6 +170,5 @@ enum mp_bustype {
 	MP_BUS_ISA = 1,
 	MP_BUS_EISA,
 	MP_BUS_PCI,
-	MP_BUS_MCA,
 };
 #endif /* _ASM_X86_MPSPEC_DEF_H */

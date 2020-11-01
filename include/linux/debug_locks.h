@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_DEBUG_LOCKING_H
 #define __LINUX_DEBUG_LOCKING_H
 
@@ -27,7 +28,7 @@ extern int debug_locks_off(void);
 									\
 	if (!oops_in_progress && unlikely(c)) {				\
 		if (debug_locks_off() && !debug_locks_silent)		\
-			WARN_ON(1);					\
+			WARN(1, "DEBUG_LOCKS_WARN_ON(%s)", #c);		\
 		__ret = 1;						\
 	}								\
 	__ret;								\

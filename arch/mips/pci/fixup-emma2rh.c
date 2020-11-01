@@ -42,8 +42,8 @@
  *
  */
 
-#define	MAX_SLOT_NUM 10
-static unsigned char irq_map[][5] __initdata = {
+#define MAX_SLOT_NUM 10
+static unsigned char irq_map[][5] = {
 	[3] = {0, MARKEINS_PCI_IRQ_INTB, MARKEINS_PCI_IRQ_INTC,
 	       MARKEINS_PCI_IRQ_INTD, 0,},
 	[4] = {0, MARKEINS_PCI_IRQ_INTA, 0, 0, 0,},
@@ -52,7 +52,7 @@ static unsigned char irq_map[][5] __initdata = {
 	       MARKEINS_PCI_IRQ_INTA, MARKEINS_PCI_IRQ_INTB,},
 };
 
-static void __devinit nec_usb_controller_fixup(struct pci_dev *dev)
+static void nec_usb_controller_fixup(struct pci_dev *dev)
 {
 	if (PCI_SLOT(dev->devfn) == EMMA2RH_USB_SLOT)
 		/* on board USB controller configuration */
@@ -67,7 +67,7 @@ DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_NEC, PCI_DEVICE_ID_NEC_USB,
  * if it is the host bridge by marking it as such.  These resources are of
  * no consequence to the PCI layer (they are handled elsewhere).
  */
-static void __devinit emma2rh_pci_host_fixup(struct pci_dev *dev)
+static void emma2rh_pci_host_fixup(struct pci_dev *dev)
 {
 	int i;
 
@@ -85,7 +85,7 @@ static void __devinit emma2rh_pci_host_fixup(struct pci_dev *dev)
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NEC, PCI_DEVICE_ID_NEC_EMMA2RH,
 			 emma2rh_pci_host_fixup);
 
-int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	return irq_map[slot][pin];
 }

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Machine vector for IA-64.
  *
@@ -22,7 +23,6 @@ struct pci_bus;
 struct task_struct;
 struct pci_dev;
 struct msi_desc;
-struct dma_attrs;
 
 typedef void ia64_mv_setup_t (char **);
 typedef void ia64_mv_cpu_init_t (void);
@@ -45,7 +45,7 @@ typedef void ia64_mv_kernel_launch_event_t(void);
 /* DMA-mapping interface: */
 typedef void ia64_mv_dma_init (void);
 typedef u64 ia64_mv_dma_get_required_mask (struct device *);
-typedef struct dma_map_ops *ia64_mv_dma_get_ops(struct device *);
+typedef const struct dma_map_ops *ia64_mv_dma_get_ops(struct device *);
 
 /*
  * WARNING: The legacy I/O space is _architected_.  Platforms are
@@ -113,14 +113,12 @@ extern void machvec_tlb_migrate_finish (struct mm_struct *);
 #  include <asm/machvec_sn2.h>
 # elif defined (CONFIG_IA64_SGI_UV)
 #  include <asm/machvec_uv.h>
-# elif defined (CONFIG_IA64_XEN_GUEST)
-#  include <asm/machvec_xen.h>
 # elif defined (CONFIG_IA64_GENERIC)
 
 # ifdef MACHVEC_PLATFORM_HEADER
 #  include MACHVEC_PLATFORM_HEADER
 # else
-#  define platform_name		ia64_mv.name
+#  define ia64_platform_name	ia64_mv.name
 #  define platform_setup	ia64_mv.setup
 #  define platform_cpu_init	ia64_mv.cpu_init
 #  define platform_irq_init	ia64_mv.irq_init
@@ -251,7 +249,7 @@ extern void machvec_init_from_cmdline(const char *cmdline);
 # endif /* CONFIG_IA64_GENERIC */
 
 extern void swiotlb_dma_init(void);
-extern struct dma_map_ops *dma_get_ops(struct device *);
+extern const struct dma_map_ops *dma_get_ops(struct device *);
 
 /*
  * Define default versions so we can extend machvec for new platforms without having

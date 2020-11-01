@@ -1,8 +1,9 @@
-#include <linux/module.h>
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/export.h>
 
 #include "libgcc.h"
 
-long long __ashldi3(long long u, word_type b)
+long long notrace __ashldi3(long long u, word_type b)
 {
 	DWunion uu, w;
 	word_type bm;

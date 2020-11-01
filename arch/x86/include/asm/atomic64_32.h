@@ -1,9 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_ATOMIC64_32_H
 #define _ASM_X86_ATOMIC64_32_H
 
 #include <linux/compiler.h>
 #include <linux/types.h>
-#include <asm/processor.h>
 //#include <asm/cmpxchg.h>
 
 /* An 64bit atomic type */
@@ -63,7 +63,7 @@ ATOMIC64_DECL(add_unless);
 
 /**
  * atomic64_cmpxchg - cmpxchg atomic64 variable
- * @p: pointer to type atomic64_t
+ * @v: pointer to type atomic64_t
  * @o: expected value
  * @n: new value
  *
@@ -98,7 +98,7 @@ static inline long long atomic64_xchg(atomic64_t *v, long long n)
 /**
  * atomic64_set - set atomic64 variable
  * @v: pointer to type atomic64_t
- * @n: value to assign
+ * @i: value to assign
  *
  * Atomically sets the value of @v to @n.
  */
@@ -200,7 +200,7 @@ static inline long long atomic64_sub(long long i, atomic64_t *v)
  * atomic64_sub_and_test - subtract value from variable and test result
  * @i: integer value to subtract
  * @v: pointer to type atomic64_t
-  *
+ *
  * Atomically subtracts @i from @v and returns
  * true if the result is zero, or false for all
  * other cases.
@@ -224,9 +224,9 @@ static inline void atomic64_inc(atomic64_t *v)
 
 /**
  * atomic64_dec - decrement atomic64 variable
- * @ptr: pointer to type atomic64_t
+ * @v: pointer to type atomic64_t
  *
- * Atomically decrements @ptr by 1.
+ * Atomically decrements @v by 1.
  */
 static inline void atomic64_dec(atomic64_t *v)
 {
@@ -312,5 +312,71 @@ static inline long long atomic64_dec_if_positive(atomic64_t *v)
 
 #undef alternative_atomic64
 #undef __alternative_atomic64
+
+static inline void atomic64_and(long long i, atomic64_t *v)
+{
+	long long old, c = 0;
+
+	while ((old = atomic64_cmpxchg(v, c, c & i)) != c)
+		c = old;
+}
+
+static inline long long atomic64_fetch_and(long long i, atomic64_t *v)
+{
+	long long old, c = 0;
+
+	while ((old = atomic64_cmpxchg(v, c, c & i)) != c)
+		c = old;
+
+	return old;
+}
+
+static inline void atomic64_or(long long i, atomic64_t *v)
+{
+	long long old, c = 0;
+
+	while ((old = atomic64_cmpxchg(v, c, c | i)) != c)
+		c = old;
+}
+
+static inline long long atomic64_fetch_or(long long i, atomic64_t *v)
+{
+	long long old, c = 0;
+
+	while ((old = atomic64_cmpxchg(v, c, c | i)) != c)
+		c = old;
+
+	return old;
+}
+
+static inline void atomic64_xor(long long i, atomic64_t *v)
+{
+	long long old, c = 0;
+
+	while ((old = atomic64_cmpxchg(v, c, c ^ i)) != c)
+		c = old;
+}
+
+static inline long long atomic64_fetch_xor(long long i, atomic64_t *v)
+{
+	long long old, c = 0;
+
+	while ((old = atomic64_cmpxchg(v, c, c ^ i)) != c)
+		c = old;
+
+	return old;
+}
+
+static inline long long atomic64_fetch_add(long long i, atomic64_t *v)
+{
+	long long old, c = 0;
+
+	while ((old = atomic64_cmpxchg(v, c, c + i)) != c)
+		c = old;
+
+	return old;
+}
+
+#define atomic64_fetch_sub(i, v)	atomic64_fetch_add(-(i), (v))
 
 #endif /* _ASM_X86_ATOMIC64_32_H */

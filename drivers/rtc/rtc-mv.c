@@ -10,10 +10,12 @@
 #include <linux/kernel.h>
 #include <linux/rtc.h>
 #include <linux/bcd.h>
+#include <linux/bitops.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
 #include <linux/delay.h>
+#include <linux/clk.h>
 #include <linux/gfp.h>
 #include <linux/module.h>
 
@@ -23,7 +25,7 @@
 #define RTC_MINUTES_OFFS	8
 #define RTC_HOURS_OFFS		16
 #define RTC_WDAY_OFFS		24
-#define RTC_HOURS_12H_MODE		(1 << 22) /* 12 hours mode */
+#define RTC_HOURS_12H_MODE	BIT(22) /* 12 hour mode */
 
 #define RTC_DATE_REG_OFFS	4
 #define RTC_MDAY_OFFS		0
@@ -32,7 +34,7 @@
 
 #define RTC_ALARM_TIME_REG_OFFS	8
 #define RTC_ALARM_DATE_REG_OFFS	0xc
-#define RTC_ALARM_VALID		(1 << 7)
+#define RTC_ALARM_VALID		BIT(7)
 
 #define RTC_ALARM_INTERRUPT_MASK_REG_OFFS	0x10
 #define RTC_ALARM_INTERRUPT_CASUE_REG_OFFS	0x14
@@ -41,6 +43,7 @@ struct rtc_plat_data {
 	struct rtc_device *rtc;
 	void __iomem *ioaddr;
 	int		irq;
+	struct clk	*clk;
 };
 
 static int mv_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -75,7 +78,7 @@ static int mv_rtc_read_time(struct device *dev, struct rtc_time *tm)
 
 	second = rtc_time & 0x7f;
 	minute = (rtc_time >> RTC_MINUTES_OFFS) & 0x7f;
-	hour = (rtc_time >> RTC_HOURS_OFFS) & 0x3f; /* assume 24 hours mode */
+	hour = (rtc_time >> RTC_HOURS_OFFS) & 0x3f; /* assume 24 hour mode */
 	wday = (rtc_time >> RTC_WDAY_OFFS) & 0x7;
 
 	day = rtc_date & 0x3f;
@@ -106,7 +109,7 @@ static int mv_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
 
 	second = rtc_time & 0x7f;
 	minute = (rtc_time >> RTC_MINUTES_OFFS) & 0x7f;
-	hour = (rtc_time >> RTC_HOURS_OFFS) & 0x3f; /* assume 24 hours mode */
+	hour = (rtc_time >> RTC_HOURS_OFFS) & 0x3f; /* assume 24 hour mode */
 	wday = (rtc_time >> RTC_WDAY_OFFS) & 0x7;
 
 	day = rtc_date & 0x3f;
@@ -215,35 +218,34 @@ static const struct rtc_class_ops mv_rtc_alarm_ops = {
 	.alarm_irq_enable = mv_rtc_alarm_irq_enable,
 };
 
-static int __devinit mv_rtc_probe(struct platform_device *pdev)
+static int __init mv_rtc_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	struct rtc_plat_data *pdata;
-	resource_size_t size;
 	u32 rtc_time;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -ENODEV;
+	u32 rtc_date;
+	int ret = 0;
 
 	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 
-	size = resource_size(res);
-	if (!devm_request_mem_region(&pdev->dev, res->start, size,
-				     pdev->name))
-		return -EBUSY;
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	pdata->ioaddr = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(pdata->ioaddr))
+		return PTR_ERR(pdata->ioaddr);
 
-	pdata->ioaddr = devm_ioremap(&pdev->dev, res->start, size);
-	if (!pdata->ioaddr)
-		return -ENOMEM;
+	pdata->clk = devm_clk_get(&pdev->dev, NULL);
+	/* Not all SoCs require a clock.*/
+	if (!IS_ERR(pdata->clk))
+		clk_prepare_enable(pdata->clk);
 
-	/* make sure the 24 hours mode is enabled */
+	/* make sure the 24 hour mode is enabled */
 	rtc_time = readl(pdata->ioaddr + RTC_TIME_REG_OFFS);
 	if (rtc_time & RTC_HOURS_12H_MODE) {
-		dev_err(&pdev->dev, "24 Hours mode not supported.\n");
-		return -EINVAL;
+		dev_err(&pdev->dev, "12 Hour mode is enabled but not supported.\n");
+		ret = -EINVAL;
+		goto out;
 	}
 
 	/* make sure it is actually functional */
@@ -252,8 +254,20 @@ static int __devinit mv_rtc_probe(struct platform_device *pdev)
 		rtc_time = readl(pdata->ioaddr + RTC_TIME_REG_OFFS);
 		if (rtc_time == 0x01000000) {
 			dev_err(&pdev->dev, "internal RTC not ticking\n");
-			return -ENODEV;
+			ret = -ENODEV;
+			goto out;
 		}
+	}
+
+	/*
+	 * A date after January 19th, 2038 does not fit on 32 bits and
+	 * will confuse the kernel and userspace. Reset to a sane date
+	 * (January 1st, 2013) if we're after 2038.
+	 */
+	rtc_date = readl(pdata->ioaddr + RTC_DATE_REG_OFFS);
+	if (bcd2bin((rtc_date >> RTC_YEAR_OFFS) & 0xff) >= 38) {
+		dev_info(&pdev->dev, "invalid RTC date, resetting to January 1st, 2013\n");
+		writel(0x130101, pdata->ioaddr + RTC_DATE_REG_OFFS);
 	}
 
 	pdata->irq = platform_get_irq(pdev, 0);
@@ -262,14 +276,17 @@ static int __devinit mv_rtc_probe(struct platform_device *pdev)
 
 	if (pdata->irq >= 0) {
 		device_init_wakeup(&pdev->dev, 1);
-		pdata->rtc = rtc_device_register(pdev->name, &pdev->dev,
+		pdata->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
 						 &mv_rtc_alarm_ops,
 						 THIS_MODULE);
-	} else
-		pdata->rtc = rtc_device_register(pdev->name, &pdev->dev,
+	} else {
+		pdata->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
 						 &mv_rtc_ops, THIS_MODULE);
-	if (IS_ERR(pdata->rtc))
-		return PTR_ERR(pdata->rtc);
+	}
+	if (IS_ERR(pdata->rtc)) {
+		ret = PTR_ERR(pdata->rtc);
+		goto out;
+	}
 
 	if (pdata->irq >= 0) {
 		writel(0, pdata->ioaddr + RTC_ALARM_INTERRUPT_MASK_REG_OFFS);
@@ -282,6 +299,11 @@ static int __devinit mv_rtc_probe(struct platform_device *pdev)
 	}
 
 	return 0;
+out:
+	if (!IS_ERR(pdata->clk))
+		clk_disable_unprepare(pdata->clk);
+
+	return ret;
 }
 
 static int __exit mv_rtc_remove(struct platform_device *pdev)
@@ -291,38 +313,29 @@ static int __exit mv_rtc_remove(struct platform_device *pdev)
 	if (pdata->irq >= 0)
 		device_init_wakeup(&pdev->dev, 0);
 
-	rtc_device_unregister(pdata->rtc);
+	if (!IS_ERR(pdata->clk))
+		clk_disable_unprepare(pdata->clk);
+
 	return 0;
 }
 
 #ifdef CONFIG_OF
-static struct of_device_id rtc_mv_of_match_table[] = {
-	{ .compatible = "mrvl,orion-rtc", },
+static const struct of_device_id rtc_mv_of_match_table[] = {
+	{ .compatible = "marvell,orion-rtc", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, rtc_mv_of_match_table);
 #endif
 
 static struct platform_driver mv_rtc_driver = {
 	.remove		= __exit_p(mv_rtc_remove),
 	.driver		= {
 		.name	= "rtc-mv",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(rtc_mv_of_match_table),
 	},
 };
 
-static __init int mv_init(void)
-{
-	return platform_driver_probe(&mv_rtc_driver, mv_rtc_probe);
-}
-
-static __exit void mv_exit(void)
-{
-	platform_driver_unregister(&mv_rtc_driver);
-}
-
-module_init(mv_init);
-module_exit(mv_exit);
+module_platform_driver_probe(mv_rtc_driver, mv_rtc_probe);
 
 MODULE_AUTHOR("Saeed Bishara <saeed@marvell.com>");
 MODULE_DESCRIPTION("Marvell RTC driver");

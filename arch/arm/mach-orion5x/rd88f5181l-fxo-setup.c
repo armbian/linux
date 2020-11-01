@@ -18,12 +18,11 @@
 #include <linux/ethtool.h>
 #include <net/dsa.h>
 #include <asm/mach-types.h>
-#include <asm/leds.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
-#include <mach/orion5x.h>
 #include "common.h"
 #include "mpp.h"
+#include "orion5x.h"
 
 /*****************************************************************************
  * RD-88F5181L FXO Info
@@ -102,11 +101,6 @@ static struct dsa_chip_data rd88f5181l_fxo_switch_chip_data = {
 	.port_names[7]	= "lan3",
 };
 
-static struct dsa_platform_data rd88f5181l_fxo_switch_plat_data = {
-	.nr_chips	= 1,
-	.chip		= &rd88f5181l_fxo_switch_chip_data,
-};
-
 static void __init rd88f5181l_fxo_init(void)
 {
 	/*
@@ -121,11 +115,13 @@ static void __init rd88f5181l_fxo_init(void)
 	 */
 	orion5x_ehci0_init();
 	orion5x_eth_init(&rd88f5181l_fxo_eth_data);
-	orion5x_eth_switch_init(&rd88f5181l_fxo_switch_plat_data, NO_IRQ);
+	orion5x_eth_switch_init(&rd88f5181l_fxo_switch_chip_data);
 	orion5x_uart0_init();
 
-	orion5x_setup_dev_boot_win(RD88F5181L_FXO_NOR_BOOT_BASE,
-				   RD88F5181L_FXO_NOR_BOOT_SIZE);
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
+				    ORION_MBUS_DEVBUS_BOOT_ATTR,
+				    RD88F5181L_FXO_NOR_BOOT_BASE,
+				    RD88F5181L_FXO_NOR_BOOT_SIZE);
 	platform_device_register(&rd88f5181l_fxo_nor_boot_flash);
 }
 
@@ -149,7 +145,6 @@ rd88f5181l_fxo_pci_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 
 static struct hw_pci rd88f5181l_fxo_pci __initdata = {
 	.nr_controllers	= 2,
-	.swizzle	= pci_std_swizzle,
 	.setup		= orion5x_pci_sys_setup,
 	.scan		= orion5x_pci_sys_scan_bus,
 	.map_irq	= rd88f5181l_fxo_pci_map_irq,
@@ -169,11 +164,12 @@ subsys_initcall(rd88f5181l_fxo_pci_init);
 MACHINE_START(RD88F5181L_FXO, "Marvell Orion-VoIP FXO Reference Design")
 	/* Maintainer: Nicolas Pitre <nico@marvell.com> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= ORION5X_NR_IRQS,
 	.init_machine	= rd88f5181l_fxo_init,
 	.map_io		= orion5x_map_io,
 	.init_early	= orion5x_init_early,
 	.init_irq	= orion5x_init_irq,
-	.timer		= &orion5x_timer,
+	.init_time	= orion5x_timer_init,
 	.fixup		= tag_fixup_mem32,
 	.restart	= orion5x_restart,
 MACHINE_END

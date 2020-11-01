@@ -40,7 +40,7 @@ static struct rc_map_table it913x_v2_rc[] = {
 	/* Type 2 */
 	/* keys stereo, snapshot unassigned */
 	{ 0x866b00, KEY_0 },
-	{ 0x866b1b, KEY_1 },
+	{ 0x866b01, KEY_1 },
 	{ 0x866b02, KEY_2 },
 	{ 0x866b03, KEY_3 },
 	{ 0x866b04, KEY_4 },
@@ -70,10 +70,10 @@ static struct rc_map_table it913x_v2_rc[] = {
 
 static struct rc_map_list it913x_v2_map = {
 	.map = {
-		.scan    = it913x_v2_rc,
-		.size    = ARRAY_SIZE(it913x_v2_rc),
-		.rc_type = RC_TYPE_NEC,
-		.name    = RC_MAP_IT913X_V2,
+		.scan     = it913x_v2_rc,
+		.size     = ARRAY_SIZE(it913x_v2_rc),
+		.rc_proto = RC_PROTO_NEC,
+		.name     = RC_MAP_IT913X_V2,
 	}
 };
 

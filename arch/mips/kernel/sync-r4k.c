@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Count register synchronisation.
  *
@@ -6,12 +7,9 @@
  * not have done anything significant (but they may have had interrupts
  * enabled briefly - prom_smp_finish() should not be responsible for enabling
  * interrupts...)
- *
- * FIXME: broken for SMTC
  */
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/irqflags.h>
 #include <linux/cpumask.h>
 
@@ -20,43 +18,21 @@
 #include <asm/barrier.h>
 #include <asm/mipsregs.h>
 
-static atomic_t __cpuinitdata count_start_flag = ATOMIC_INIT(0);
-static atomic_t __cpuinitdata count_count_start = ATOMIC_INIT(0);
-static atomic_t __cpuinitdata count_count_stop = ATOMIC_INIT(0);
-static atomic_t __cpuinitdata count_reference = ATOMIC_INIT(0);
+static unsigned int initcount = 0;
+static atomic_t count_count_start = ATOMIC_INIT(0);
+static atomic_t count_count_stop = ATOMIC_INIT(0);
 
-#define COUNTON	100
-#define NR_LOOPS 5
+#define COUNTON 100
+#define NR_LOOPS 3
 
-void __cpuinit synchronise_count_master(void)
+void synchronise_count_master(int cpu)
 {
 	int i;
 	unsigned long flags;
-	unsigned int initcount;
-	int nslaves;
 
-#ifdef CONFIG_MIPS_MT_SMTC
-	/*
-	 * SMTC needs to synchronise per VPE, not per CPU
-	 * ignore for now
-	 */
-	return;
-#endif
-
-	printk(KERN_INFO "Synchronize counters across %u CPUs: ",
-	       num_online_cpus());
+	pr_info("Synchronize counters for CPU %u: ", cpu);
 
 	local_irq_save(flags);
-
-	/*
-	 * Notify the slaves that it's time to start
-	 */
-	atomic_set(&count_reference, read_c0_count());
-	atomic_set(&count_start_flag, 1);
-	smp_wmb();
-
-	/* Count will be initialised to current timer for all CPU's */
-	initcount = read_c0_count();
 
 	/*
 	 * We loop a few times to get a primed instruction cache,
@@ -69,16 +45,19 @@ void __cpuinit synchronise_count_master(void)
 	 * two CPUs.
 	 */
 
-	nslaves = num_online_cpus()-1;
 	for (i = 0; i < NR_LOOPS; i++) {
-		/* slaves loop on '!= ncpus' */
-		while (atomic_read(&count_count_start) != nslaves)
+		/* slaves loop on '!= 2' */
+		while (atomic_read(&count_count_start) != 1)
 			mb();
 		atomic_set(&count_count_stop, 0);
 		smp_wmb();
 
-		/* this lets the slaves write their count register */
+		/* Let the slave writes its count register */
 		atomic_inc(&count_count_start);
+
+		/* Count will be initialised to current timer */
+		if (i == 1)
+			initcount = read_c0_count();
 
 		/*
 		 * Everyone initialises count in the last loop:
@@ -87,9 +66,9 @@ void __cpuinit synchronise_count_master(void)
 			write_c0_count(initcount);
 
 		/*
-		 * Wait for all slaves to leave the synchronization point:
+		 * Wait for slave to leave the synchronization point:
 		 */
-		while (atomic_read(&count_count_stop) != nslaves)
+		while (atomic_read(&count_count_stop) != 1)
 			mb();
 		atomic_set(&count_count_start, 0);
 		smp_wmb();
@@ -105,41 +84,21 @@ void __cpuinit synchronise_count_master(void)
 	 * count registers were almost certainly out of sync
 	 * so no point in alarming people
 	 */
-	printk("done.\n");
+	pr_cont("done.\n");
 }
 
-void __cpuinit synchronise_count_slave(void)
+void synchronise_count_slave(int cpu)
 {
 	int i;
-	unsigned long flags;
-	unsigned int initcount;
-	int ncpus;
-
-#ifdef CONFIG_MIPS_MT_SMTC
-	/*
-	 * SMTC needs to synchronise per VPE, not per CPU
-	 * ignore for now
-	 */
-	return;
-#endif
-
-	local_irq_save(flags);
 
 	/*
 	 * Not every cpu is online at the time this gets called,
 	 * so we first wait for the master to say everyone is ready
 	 */
 
-	while (!atomic_read(&count_start_flag))
-		mb();
-
-	/* Count will be initialised to next expire for all CPU's */
-	initcount = atomic_read(&count_reference);
-
-	ncpus = num_online_cpus();
 	for (i = 0; i < NR_LOOPS; i++) {
 		atomic_inc(&count_count_start);
-		while (atomic_read(&count_count_start) != ncpus)
+		while (atomic_read(&count_count_start) != 2)
 			mb();
 
 		/*
@@ -149,12 +108,10 @@ void __cpuinit synchronise_count_slave(void)
 			write_c0_count(initcount);
 
 		atomic_inc(&count_count_stop);
-		while (atomic_read(&count_count_stop) != ncpus)
+		while (atomic_read(&count_count_stop) != 2)
 			mb();
 	}
 	/* Arrange for an interrupt in a short while */
 	write_c0_compare(read_c0_count() + COUNTON);
-
-	local_irq_restore(flags);
 }
 #undef NR_LOOPS

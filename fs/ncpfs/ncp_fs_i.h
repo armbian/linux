@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  ncp_fs_i.h
  *
@@ -22,6 +23,7 @@ struct ncp_inode_info {
 	int	access;
 	int	flags;
 #define NCPI_KLUDGE_SYMLINK	0x0001
+#define NCPI_DIR_CACHE		0x0002
 	__u8	file_handle[6];
 	struct inode vfs_inode;
 };

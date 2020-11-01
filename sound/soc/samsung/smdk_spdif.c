@@ -144,14 +144,14 @@ static int smdk_hw_params(struct snd_pcm_substream *substream,
 	return ret;
 }
 
-static struct snd_soc_ops smdk_spdif_ops = {
+static const struct snd_soc_ops smdk_spdif_ops = {
 	.hw_params = smdk_hw_params,
 };
 
 static struct snd_soc_dai_link smdk_dai = {
 	.name = "S/PDIF",
 	.stream_name = "S/PDIF PCM Playback",
-	.platform_name = "samsung-audio",
+	.platform_name = "samsung-spdif",
 	.cpu_dai_name = "samsung-spdif",
 	.codec_dai_name = "dit-hifi",
 	.codec_name = "spdif-dit",

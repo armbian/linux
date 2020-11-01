@@ -10,7 +10,7 @@
  * Copyright (C) 2008 Panasas Inc.  All rights reserved.
  *
  * Authors:
- *   Boaz Harrosh <bharrosh@panasas.com>
+ *   Boaz Harrosh <ooo@electrozaur.com>
  *   Benny Halevy <bhalevy@panasas.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -74,7 +74,7 @@
 static const char osd_name[] = "osd";
 static const char *osd_version_string = "open-osd 0.2.1";
 
-MODULE_AUTHOR("Boaz Harrosh <bharrosh@panasas.com>");
+MODULE_AUTHOR("Boaz Harrosh <ooo@electrozaur.com>");
 MODULE_DESCRIPTION("open-osd Upper-Layer-Driver osd.ko");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_CHARDEV_MAJOR(SCSI_OSD_MAJOR);
@@ -97,9 +97,40 @@ struct osd_dev_handle {
 
 static DEFINE_IDA(osd_minor_ida);
 
+/*
+ * scsi sysfs attribute operations
+ */
+static ssize_t osdname_show(struct device *dev, struct device_attribute *attr,
+			    char *buf)
+{
+	struct osd_uld_device *ould = container_of(dev, struct osd_uld_device,
+						   class_dev);
+	return sprintf(buf, "%s\n", ould->odi.osdname);
+}
+static DEVICE_ATTR_RO(osdname);
+
+static ssize_t systemid_show(struct device *dev, struct device_attribute *attr,
+			    char *buf)
+{
+	struct osd_uld_device *ould = container_of(dev, struct osd_uld_device,
+						   class_dev);
+
+	memcpy(buf, ould->odi.systemid, ould->odi.systemid_len);
+	return ould->odi.systemid_len;
+}
+static DEVICE_ATTR_RO(systemid);
+
+static struct attribute *osd_uld_attrs[] = {
+	&dev_attr_osdname.attr,
+	&dev_attr_systemid.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(osd_uld);
+
 static struct class osd_uld_class = {
 	.owner		= THIS_MODULE,
 	.name		= "scsi_osd",
+	.dev_groups	= osd_uld_groups,
 };
 
 /*
@@ -240,18 +271,11 @@ static inline bool _the_same_or_null(const u8 *a1, unsigned a1_len,
 	return 0 == memcmp(a1, a2, a1_len);
 }
 
-struct find_oud_t {
-	const struct osd_dev_info *odi;
-	struct device *dev;
-	struct osd_uld_device *oud;
-} ;
-
-int _mach_odi(struct device *dev, void *find_data)
+static int _match_odi(struct device *dev, const void *find_data)
 {
 	struct osd_uld_device *oud = container_of(dev, struct osd_uld_device,
 						  class_dev);
-	struct find_oud_t *fot = find_data;
-	const struct osd_dev_info *odi = fot->odi;
+	const struct osd_dev_info *odi = find_data;
 
 	if (_the_same_or_null(oud->odi.systemid, oud->odi.systemid_len,
 			      odi->systemid, odi->systemid_len) &&
@@ -259,7 +283,6 @@ int _mach_odi(struct device *dev, void *find_data)
 			      odi->osdname, odi->osdname_len)) {
 		OSD_DEBUG("found device sysid_len=%d osdname=%d\n",
 			  odi->systemid_len, odi->osdname_len);
-		fot->oud = oud;
 		return 1;
 	} else {
 		return 0;
@@ -273,19 +296,19 @@ int _mach_odi(struct device *dev, void *find_data)
  */
 struct osd_dev *osduld_info_lookup(const struct osd_dev_info *odi)
 {
-	struct find_oud_t find = {.odi = odi};
-
-	find.dev = class_find_device(&osd_uld_class, NULL, &find, _mach_odi);
-	if (likely(find.dev)) {
+	struct device *dev = class_find_device(&osd_uld_class, NULL, odi, _match_odi);
+	if (likely(dev)) {
 		struct osd_dev_handle *odh = kzalloc(sizeof(*odh), GFP_KERNEL);
+		struct osd_uld_device *oud = container_of(dev,
+			struct osd_uld_device, class_dev);
 
 		if (unlikely(!odh)) {
-			put_device(find.dev);
+			put_device(dev);
 			return ERR_PTR(-ENOMEM);
 		}
 
-		odh->od = find.oud->od;
-		odh->oud = find.oud;
+		odh->od = oud->od;
+		odh->oud = oud;
 
 		return &odh->od;
 	}
@@ -349,6 +372,7 @@ EXPORT_SYMBOL(osduld_device_same);
 static int __detect_osd(struct osd_uld_device *oud)
 {
 	struct scsi_device *scsi_device = oud->od.scsi_device;
+	struct scsi_sense_hdr sense_hdr;
 	char caps[OSD_CAP_LEN];
 	int error;
 
@@ -357,7 +381,7 @@ static int __detect_osd(struct osd_uld_device *oud)
 	 */
 	OSD_DEBUG("start scsi_test_unit_ready %p %p %p\n",
 			oud, scsi_device, scsi_device->request_queue);
-	error = scsi_test_unit_ready(scsi_device, 10*HZ, 5, NULL);
+	error = scsi_test_unit_ready(scsi_device, 10*HZ, 5, &sense_hdr);
 	if (error)
 		OSD_ERR("warning: scsi_test_unit_ready failed\n");
 
@@ -376,9 +400,6 @@ static void __remove(struct device *dev)
 
 	kfree(oud->odi.osdname);
 
-	if (oud->cdev.owner)
-		cdev_del(&oud->cdev);
-
 	osd_dev_fini(&oud->od);
 	scsi_device_put(scsi_device);
 
@@ -387,7 +408,6 @@ static void __remove(struct device *dev)
 
 	if (oud->disk)
 		put_disk(oud->disk);
-	ida_remove(&osd_minor_ida, oud->minor);
 
 	kfree(oud);
 }
@@ -422,8 +442,21 @@ static int osd_probe(struct device *dev)
 	if (NULL == oud)
 		goto err_retract_minor;
 
+	/* class device member */
+	device_initialize(&oud->class_dev);
 	dev_set_drvdata(dev, oud);
 	oud->minor = minor;
+	oud->class_dev.devt = MKDEV(SCSI_OSD_MAJOR, oud->minor);
+	oud->class_dev.class = &osd_uld_class;
+	oud->class_dev.parent = dev;
+	oud->class_dev.release = __remove;
+
+	/* hold one more reference to the scsi_device that will get released
+	 * in __release, in case a logout is happening while fs is mounted
+	 */
+	if (scsi_device_get(scsi_device))
+		goto err_retract_minor;
+	osd_dev_init(&oud->od, scsi_device);
 
 	/* allocate a disk and set it up */
 	/* FIXME: do we need this since sg has already done that */
@@ -437,59 +470,34 @@ static int osd_probe(struct device *dev)
 	sprintf(disk->disk_name, "osd%d", oud->minor);
 	oud->disk = disk;
 
-	/* hold one more reference to the scsi_device that will get released
-	 * in __release, in case a logout is happening while fs is mounted
-	 */
-	scsi_device_get(scsi_device);
-	osd_dev_init(&oud->od, scsi_device);
-
 	/* Detect the OSD Version */
 	error = __detect_osd(oud);
 	if (error) {
 		OSD_ERR("osd detection failed, non-compatible OSD device\n");
-		goto err_put_disk;
+		goto err_free_osd;
 	}
 
 	/* init the char-device for communication with user-mode */
 	cdev_init(&oud->cdev, &osd_fops);
 	oud->cdev.owner = THIS_MODULE;
-	error = cdev_add(&oud->cdev,
-			 MKDEV(SCSI_OSD_MAJOR, oud->minor), 1);
-	if (error) {
-		OSD_ERR("cdev_add failed\n");
-		goto err_put_disk;
-	}
 
-	/* class device member */
-	oud->class_dev.devt = oud->cdev.dev;
-	oud->class_dev.class = &osd_uld_class;
-	oud->class_dev.parent = dev;
-	oud->class_dev.release = __remove;
 	error = dev_set_name(&oud->class_dev, "%s", disk->disk_name);
 	if (error) {
 		OSD_ERR("dev_set_name failed => %d\n", error);
-		goto err_put_cdev;
+		goto err_free_osd;
 	}
 
-	error = device_register(&oud->class_dev);
+	error = cdev_device_add(&oud->cdev, &oud->class_dev);
 	if (error) {
 		OSD_ERR("device_register failed => %d\n", error);
-		goto err_put_cdev;
+		goto err_free_osd;
 	}
-
-	get_device(&oud->class_dev);
 
 	OSD_INFO("osd_probe %s\n", disk->disk_name);
 	return 0;
 
-err_put_cdev:
-	cdev_del(&oud->cdev);
-err_put_disk:
-	scsi_device_put(scsi_device);
-	put_disk(disk);
 err_free_osd:
-	dev_set_drvdata(dev, NULL);
-	kfree(oud);
+	put_device(&oud->class_dev);
 err_retract_minor:
 	ida_remove(&osd_minor_ida, minor);
 	return error;
@@ -500,15 +508,15 @@ static int osd_remove(struct device *dev)
 	struct scsi_device *scsi_device = to_scsi_device(dev);
 	struct osd_uld_device *oud = dev_get_drvdata(dev);
 
-	if (!oud || (oud->od.scsi_device != scsi_device)) {
-		OSD_ERR("Half cooked osd-device %p,%p || %p!=%p",
-			dev, oud, oud ? oud->od.scsi_device : NULL,
-			scsi_device);
+	if (oud->od.scsi_device != scsi_device) {
+		OSD_ERR("Half cooked osd-device %p, || %p!=%p",
+			dev, oud->od.scsi_device, scsi_device);
 	}
 
-	device_unregister(&oud->class_dev);
-
+	cdev_device_del(&oud->cdev, &oud->class_dev);
+	ida_remove(&osd_minor_ida, oud->minor);
 	put_device(&oud->class_dev);
+
 	return 0;
 }
 
@@ -517,9 +525,9 @@ static int osd_remove(struct device *dev)
  */
 
 static struct scsi_driver osd_driver = {
-	.owner			= THIS_MODULE,
 	.gendrv = {
 		.name		= osd_name,
+		.owner		= THIS_MODULE,
 		.probe		= osd_probe,
 		.remove		= osd_remove,
 	}

@@ -4,7 +4,7 @@
  * This file contains AppArmor policy dfa matching engine definitions.
  *
  * Copyright (C) 1998-2008 Novell/SUSE
- * Copyright 2009-2010 Canonical Ltd.
+ * Copyright 2009-2012 Canonical Ltd.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -16,25 +16,30 @@
 #define __AA_MATCH_H
 
 #include <linux/kref.h>
-#include <linux/workqueue.h>
 
 #define DFA_NOMATCH			0
 #define DFA_START			1
 
-#define DFA_VALID_PERM_MASK		0xffffffff
-#define DFA_VALID_PERM2_MASK		0xffffffff
 
 /**
  * The format used for transition tables is based on the GNU flex table
  * file format (--tables-file option; see Table File Format in the flex
  * info pages and the flex sources for documentation). The magic number
  * used in the header is 0x1B5E783D instead of 0xF13C57B1 though, because
- * the YY_ID_CHK (check) and YY_ID_DEF (default) tables are used
- * slightly differently (see the apparmor-parser package).
+ * new tables have been defined and others YY_ID_CHK (check) and YY_ID_DEF
+ * (default) tables are used slightly differently (see the apparmor-parser
+ * package).
+ *
+ *
+ * The data in the packed dfa is stored in network byte order, and the tables
+ * are arranged for flexibility.  We convert the table data to host native
+ * byte order.
+ *
+ * The dfa begins with a table set header, and is followed by the actual
+ * tables.
  */
 
 #define YYTH_MAGIC	0x1B5E783D
-#define YYTH_DEF_RECURSE 0x1			/* DEF Table is recursive */
 
 struct table_set_header {
 	u32 th_magic;		/* YYTH_MAGIC */
@@ -57,13 +62,14 @@ struct table_set_header {
 #define YYTD_ID_ACCEPT2 6
 #define YYTD_ID_NXT	7
 #define YYTD_ID_TSIZE	8
+#define YYTD_ID_MAX	8
 
 #define YYTD_DATA8	1
 #define YYTD_DATA16	2
 #define YYTD_DATA32	4
 #define YYTD_DATA64	8
 
-/* Each ACCEPT2 table gets 6 dedicated flags, YYTD_DATAX define the
+/* ACCEPT & ACCEPT2 tables gets 6 dedicated flags, YYTD_DATAX define the
  * first flags
  */
 #define ACCEPT1_FLAGS(X) ((X) & 0x3f)
@@ -94,13 +100,15 @@ struct aa_dfa {
 	struct table_header *tables[YYTD_ID_TSIZE];
 };
 
+extern struct aa_dfa *nulldfa;
+
 #define byte_to_byte(X) (X)
 
-#define UNPACK_ARRAY(TABLE, BLOB, LEN, TYPE, NTOHX) \
+#define UNPACK_ARRAY(TABLE, BLOB, LEN, TTYPE, BTYPE, NTOHX)	\
 	do { \
 		typeof(LEN) __i; \
-		TYPE *__t = (TYPE *) TABLE; \
-		TYPE *__b = (TYPE *) BLOB; \
+		TTYPE *__t = (TTYPE *) TABLE; \
+		BTYPE *__b = (BTYPE *) BLOB; \
 		for (__i = 0; __i < LEN; __i++) { \
 			__t[__i] = NTOHX(__b[__i]); \
 		} \
@@ -111,6 +119,9 @@ static inline size_t table_size(size_t len, size_t el_size)
 	return ALIGN(sizeof(struct table_header) + len * el_size, 8);
 }
 
+int aa_setup_dfa_engine(void);
+void aa_teardown_dfa_engine(void);
+
 struct aa_dfa *aa_dfa_unpack(void *blob, size_t size, int flags);
 unsigned int aa_dfa_match_len(struct aa_dfa *dfa, unsigned int start,
 			      const char *str, int len);
@@ -120,6 +131,21 @@ unsigned int aa_dfa_next(struct aa_dfa *dfa, unsigned int state,
 			 const char c);
 
 void aa_dfa_free_kref(struct kref *kref);
+
+/**
+ * aa_get_dfa - increment refcount on dfa @p
+ * @dfa: dfa  (MAYBE NULL)
+ *
+ * Returns: pointer to @dfa if @dfa is NULL will return NULL
+ * Requires: @dfa must be held with valid refcount when called
+ */
+static inline struct aa_dfa *aa_get_dfa(struct aa_dfa *dfa)
+{
+	if (dfa)
+		kref_get(&(dfa->count));
+
+	return dfa;
+}
 
 /**
  * aa_put_dfa - put a dfa refcount

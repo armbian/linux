@@ -119,12 +119,12 @@
 
 
 /* MPC5200 device tree match tables */
-static struct of_device_id mpc52xx_pic_ids[] __initdata = {
+static const struct of_device_id mpc52xx_pic_ids[] __initconst = {
 	{ .compatible = "fsl,mpc5200-pic", },
 	{ .compatible = "mpc5200-pic", },
 	{}
 };
-static struct of_device_id mpc52xx_sdma_ids[] __initdata = {
+static const struct of_device_id mpc52xx_sdma_ids[] __initconst = {
 	{ .compatible = "fsl,mpc5200-bestcomm", },
 	{ .compatible = "mpc5200-bestcomm", },
 	{}
@@ -196,7 +196,7 @@ static int mpc52xx_extirq_set_type(struct irq_data *d, unsigned int flow_type)
 	ctrl_reg |= (type << (22 - (l2irq * 2)));
 	out_be32(&intr->ctrl, ctrl_reg);
 
-	__irq_set_handler_locked(d->irq, handler);
+	irq_set_handler_locked(d, handler);
 
 	return 0;
 }
@@ -340,7 +340,7 @@ static int mpc52xx_irqhost_map(struct irq_domain *h, unsigned int virq,
 {
 	int l1irq;
 	int l2irq;
-	struct irq_chip *irqchip;
+	struct irq_chip *uninitialized_var(irqchip);
 	void *hndlr;
 	int type;
 	u32 reg;
@@ -372,10 +372,11 @@ static int mpc52xx_irqhost_map(struct irq_domain *h, unsigned int virq,
 	case MPC52xx_IRQ_L1_MAIN: irqchip = &mpc52xx_main_irqchip; break;
 	case MPC52xx_IRQ_L1_PERP: irqchip = &mpc52xx_periph_irqchip; break;
 	case MPC52xx_IRQ_L1_SDMA: irqchip = &mpc52xx_sdma_irqchip; break;
-	default:
-		pr_err("%s: invalid irq: virq=%i, l1=%i, l2=%i\n",
-		       __func__, virq, l1irq, l2irq);
-		return -EINVAL;
+	case MPC52xx_IRQ_L1_CRIT:
+		pr_warn("%s: Critical IRQ #%d is unsupported! Nopping it.\n",
+			__func__, l2irq);
+		irq_set_chip(virq, &no_irq_chip);
+		return 0;
 	}
 
 	irq_set_chip_and_handler(virq, irqchip, handle_level_irq);
@@ -510,7 +511,7 @@ unsigned int mpc52xx_get_irq(void)
 			irq |= (MPC52xx_IRQ_L1_PERP << MPC52xx_IRQ_L1_OFFSET);
 		}
 	} else {
-		return NO_IRQ;
+		return 0;
 	}
 
 	return irq_linear_revmap(mpc52xx_irqhost, irq);

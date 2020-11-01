@@ -1,8 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/pid_namespace.h>
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
+#include <linux/sched/loadavg.h>
+#include <linux/sched/stat.h>
 #include <linux/seq_file.h>
 #include <linux/seqlock.h>
 #include <linux/time.h>
@@ -42,4 +45,4 @@ static int __init proc_loadavg_init(void)
 	proc_create("loadavg", 0, NULL, &loadavg_proc_fops);
 	return 0;
 }
-module_init(proc_loadavg_init);
+fs_initcall(proc_loadavg_init);

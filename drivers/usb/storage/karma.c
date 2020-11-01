@@ -1,4 +1,5 @@
-/* Driver for Rio Karma
+/*
+ * Driver for Rio Karma
  *
  *   (c) 2006 Bob Copeland <me@bobcopeland.com>
  *   (c) 2006 Keith Bennett <keith@mcs.st-and.ac.uk>
@@ -28,6 +29,9 @@
 #include "usb.h"
 #include "transport.h"
 #include "debug.h"
+#include "scsiglue.h"
+
+#define DRV_NAME "ums-karma"
 
 MODULE_DESCRIPTION("Driver for Rio Karma");
 MODULE_AUTHOR("Bob Copeland <me@bobcopeland.com>, Keith Bennett <keith@mcs.st-and.ac.uk>");
@@ -57,7 +61,7 @@ static int rio_karma_init(struct us_data *us);
 		    vendorName, productName, useProtocol, useTransport, \
 		    initFunction, flags) \
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
-  .driver_info = (flags)|(USB_US_TYPE_STOR<<24) }
+  .driver_info = (flags) }
 
 static struct usb_device_id karma_usb_ids[] = {
 #	include "unusual_karma.h"
@@ -101,12 +105,12 @@ static struct us_unusual_dev karma_unusual_dev_list[] = {
  */
 static int rio_karma_send_command(char cmd, struct us_data *us)
 {
-	int result, partial;
+	int result;
 	unsigned long timeout;
 	static unsigned char seq = 1;
 	struct karma_data *data = (struct karma_data *) us->extra;
 
-	US_DEBUGP("karma: sending command %04x\n", cmd);
+	usb_stor_dbg(us, "sending command %04x\n", cmd);
 	memset(us->iobuf, 0, RIO_SEND_LEN);
 	memcpy(us->iobuf, RIO_PREFIX, RIO_PREFIX_LEN);
 	us->iobuf[5] = cmd;
@@ -115,12 +119,12 @@ static int rio_karma_send_command(char cmd, struct us_data *us)
 	timeout = jiffies + msecs_to_jiffies(6000);
 	for (;;) {
 		result = usb_stor_bulk_transfer_buf(us, us->send_bulk_pipe,
-			us->iobuf, RIO_SEND_LEN, &partial);
+			us->iobuf, RIO_SEND_LEN, NULL);
 		if (result != USB_STOR_XFER_GOOD)
 			goto err;
 
 		result = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe,
-			data->recv, RIO_RECV_LEN, &partial);
+			data->recv, RIO_RECV_LEN, NULL);
 		if (result != USB_STOR_XFER_GOOD)
 			goto err;
 
@@ -139,10 +143,10 @@ static int rio_karma_send_command(char cmd, struct us_data *us)
 	if (seq == 0)
 		seq = 1;
 
-	US_DEBUGP("karma: sent command %04x\n", cmd);
+	usb_stor_dbg(us, "sent command %04x\n", cmd);
 	return 0;
 err:
-	US_DEBUGP("karma: command %04x failed\n", cmd);
+	usb_stor_dbg(us, "command %04x failed\n", cmd);
 	return USB_STOR_TRANSPORT_FAILED;
 }
 
@@ -200,6 +204,8 @@ out:
 	return ret;
 }
 
+static struct scsi_host_template karma_host_template;
+
 static int karma_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -207,7 +213,8 @@ static int karma_probe(struct usb_interface *intf,
 	int result;
 
 	result = usb_stor_probe1(&us, intf, id,
-			(id - karma_usb_ids) + karma_unusual_dev_list);
+			(id - karma_usb_ids) + karma_unusual_dev_list,
+			&karma_host_template);
 	if (result)
 		return result;
 
@@ -220,7 +227,7 @@ static int karma_probe(struct usb_interface *intf,
 }
 
 static struct usb_driver karma_driver = {
-	.name =		"ums-karma",
+	.name =		DRV_NAME,
 	.probe =	karma_probe,
 	.disconnect =	usb_stor_disconnect,
 	.suspend =	usb_stor_suspend,
@@ -233,4 +240,4 @@ static struct usb_driver karma_driver = {
 	.no_dynamic_id = 1,
 };
 
-module_usb_driver(karma_driver);
+module_usb_stor_driver(karma_driver, karma_host_template, DRV_NAME);

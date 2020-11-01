@@ -26,10 +26,10 @@
 /* Settings which are common for all ip32 CPUs */
 #define cpu_has_tlb		1
 #define cpu_has_4kex		1
-#define cpu_has_fpu		1
 #define cpu_has_32fpr		1
 #define cpu_has_counter		1
 #define cpu_has_mips16		0
+#define cpu_has_mips16e2	0
 #define cpu_has_vce		0
 #define cpu_has_cache_cdex_s	0
 #define cpu_has_mcheck		0
@@ -37,6 +37,7 @@
 #define cpu_has_vtag_icache	0
 #define cpu_has_ic_fills_f_dc	0
 #define cpu_has_dsp		0
+#define cpu_has_dsp2		0
 #define cpu_has_4k_cache	1
 #define cpu_has_mipsmt		0
 #define cpu_has_userlocal	0

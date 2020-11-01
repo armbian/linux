@@ -1,5 +1,6 @@
 /* (C) 1999-2001 Paul `Rusty' Russell
  * (C) 2002-2004 Netfilter Core Team <coreteam@netfilter.org>
+ * (C) 2006-2010 Patrick McHardy <kaber@trash.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -23,8 +24,13 @@
 
 static unsigned int nf_ct_icmp_timeout __read_mostly = 30*HZ;
 
+static inline struct nf_icmp_net *icmp_pernet(struct net *net)
+{
+	return &net->ct.nf_ct_proto.icmp;
+}
+
 static bool icmp_pkt_to_tuple(const struct sk_buff *skb, unsigned int dataoff,
-			      struct nf_conntrack_tuple *tuple)
+			      struct net *net, struct nf_conntrack_tuple *tuple)
 {
 	const struct icmphdr *hp;
 	struct icmphdr _hdr;
@@ -65,19 +71,9 @@ static bool icmp_invert_tuple(struct nf_conntrack_tuple *tuple,
 	return true;
 }
 
-/* Print out the per-protocol part of the tuple. */
-static int icmp_print_tuple(struct seq_file *s,
-			    const struct nf_conntrack_tuple *tuple)
-{
-	return seq_printf(s, "type=%u code=%u id=%u ",
-			  tuple->dst.u.icmp.type,
-			  tuple->dst.u.icmp.code,
-			  ntohs(tuple->src.u.icmp.id));
-}
-
 static unsigned int *icmp_get_timeouts(struct net *net)
 {
-	return &nf_ct_icmp_timeout;
+	return &icmp_pernet(net)->timeout;
 }
 
 /* Returns verdict for packet, or -1 for invalid. */
@@ -86,7 +82,6 @@ static int icmp_packet(struct nf_conn *ct,
 		       unsigned int dataoff,
 		       enum ip_conntrack_info ctinfo,
 		       u_int8_t pf,
-		       unsigned int hooknum,
 		       unsigned int *timeout)
 {
 	/* Do not immediately delete the connection after the first
@@ -122,26 +117,28 @@ static bool icmp_new(struct nf_conn *ct, const struct sk_buff *skb,
 /* Returns conntrack if it dealt with ICMP, and filled in skb fields */
 static int
 icmp_error_message(struct net *net, struct nf_conn *tmpl, struct sk_buff *skb,
-		 enum ip_conntrack_info *ctinfo,
 		 unsigned int hooknum)
 {
 	struct nf_conntrack_tuple innertuple, origtuple;
 	const struct nf_conntrack_l4proto *innerproto;
 	const struct nf_conntrack_tuple_hash *h;
-	u16 zone = tmpl ? nf_ct_zone(tmpl) : NF_CT_DEFAULT_ZONE;
+	const struct nf_conntrack_zone *zone;
+	enum ip_conntrack_info ctinfo;
+	struct nf_conntrack_zone tmp;
 
-	NF_CT_ASSERT(skb->nfct == NULL);
+	WARN_ON(skb_nfct(skb));
+	zone = nf_ct_zone_tmpl(tmpl, skb, &tmp);
 
 	/* Are they talking about one of our connections? */
 	if (!nf_ct_get_tuplepr(skb,
 			       skb_network_offset(skb) + ip_hdrlen(skb)
 						       + sizeof(struct icmphdr),
-			       PF_INET, &origtuple)) {
+			       PF_INET, net, &origtuple)) {
 		pr_debug("icmp_error_message: failed to get tuple\n");
 		return -NF_ACCEPT;
 	}
 
-	/* rcu_read_lock()ed by nf_hook_slow */
+	/* rcu_read_lock()ed by nf_hook_thresh */
 	innerproto = __nf_ct_l4proto_find(PF_INET, origtuple.dst.protonum);
 
 	/* Ordinarily, we'd expect the inverted tupleproto, but it's
@@ -152,7 +149,7 @@ icmp_error_message(struct net *net, struct nf_conn *tmpl, struct sk_buff *skb,
 		return -NF_ACCEPT;
 	}
 
-	*ctinfo = IP_CT_RELATED;
+	ctinfo = IP_CT_RELATED;
 
 	h = nf_conntrack_find_get(net, zone, &innertuple);
 	if (!h) {
@@ -161,11 +158,10 @@ icmp_error_message(struct net *net, struct nf_conn *tmpl, struct sk_buff *skb,
 	}
 
 	if (NF_CT_DIRECTION(h) == IP_CT_DIR_REPLY)
-		*ctinfo += IP_CT_IS_REPLY;
+		ctinfo += IP_CT_IS_REPLY;
 
 	/* Update skb to refer to this connection */
-	skb->nfct = &nf_ct_tuplehash_to_ctrack(h)->ct_general;
-	skb->nfctinfo = *ctinfo;
+	nf_ct_set(skb, nf_ct_tuplehash_to_ctrack(h), ctinfo);
 	return NF_ACCEPT;
 }
 
@@ -173,7 +169,7 @@ icmp_error_message(struct net *net, struct nf_conn *tmpl, struct sk_buff *skb,
 static int
 icmp_error(struct net *net, struct nf_conn *tmpl,
 	   struct sk_buff *skb, unsigned int dataoff,
-	   enum ip_conntrack_info *ctinfo, u_int8_t pf, unsigned int hooknum)
+	   u8 pf, unsigned int hooknum)
 {
 	const struct icmphdr *icmph;
 	struct icmphdr _ih;
@@ -182,8 +178,8 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 	icmph = skb_header_pointer(skb, ip_hdrlen(skb), sizeof(_ih), &_ih);
 	if (icmph == NULL) {
 		if (LOG_INVALID(net, IPPROTO_ICMP))
-			nf_log_packet(PF_INET, 0, skb, NULL, NULL, NULL,
-				      "nf_ct_icmp: short packet ");
+			nf_log_packet(net, PF_INET, 0, skb, NULL, NULL,
+				      NULL, "nf_ct_icmp: short packet ");
 		return -NF_ACCEPT;
 	}
 
@@ -191,7 +187,7 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 	if (net->ct.sysctl_checksum && hooknum == NF_INET_PRE_ROUTING &&
 	    nf_ip_checksum(skb, hooknum, dataoff, 0)) {
 		if (LOG_INVALID(net, IPPROTO_ICMP))
-			nf_log_packet(PF_INET, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, PF_INET, 0, skb, NULL, NULL, NULL,
 				      "nf_ct_icmp: bad HW ICMP checksum ");
 		return -NF_ACCEPT;
 	}
@@ -204,7 +200,7 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 	 */
 	if (icmph->type > NR_ICMP_TYPES) {
 		if (LOG_INVALID(net, IPPROTO_ICMP))
-			nf_log_packet(PF_INET, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, PF_INET, 0, skb, NULL, NULL, NULL,
 				      "nf_ct_icmp: invalid ICMP type ");
 		return -NF_ACCEPT;
 	}
@@ -217,10 +213,10 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 	    icmph->type != ICMP_REDIRECT)
 		return NF_ACCEPT;
 
-	return icmp_error_message(net, tmpl, skb, ctinfo, hooknum);
+	return icmp_error_message(net, tmpl, skb, hooknum);
 }
 
-#if defined(CONFIG_NF_CT_NETLINK) || defined(CONFIG_NF_CT_NETLINK_MODULE)
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK)
 
 #include <linux/netfilter/nfnetlink.h>
 #include <linux/netfilter/nfnetlink_conntrack.h>
@@ -228,10 +224,10 @@ icmp_error(struct net *net, struct nf_conn *tmpl,
 static int icmp_tuple_to_nlattr(struct sk_buff *skb,
 				const struct nf_conntrack_tuple *t)
 {
-	NLA_PUT_BE16(skb, CTA_PROTO_ICMP_ID, t->src.u.icmp.id);
-	NLA_PUT_U8(skb, CTA_PROTO_ICMP_TYPE, t->dst.u.icmp.type);
-	NLA_PUT_U8(skb, CTA_PROTO_ICMP_CODE, t->dst.u.icmp.code);
-
+	if (nla_put_be16(skb, CTA_PROTO_ICMP_ID, t->src.u.icmp.id) ||
+	    nla_put_u8(skb, CTA_PROTO_ICMP_TYPE, t->dst.u.icmp.type) ||
+	    nla_put_u8(skb, CTA_PROTO_ICMP_CODE, t->dst.u.icmp.code))
+		goto nla_put_failure;
 	return 0;
 
 nla_put_failure:
@@ -274,16 +270,18 @@ static int icmp_nlattr_tuple_size(void)
 #include <linux/netfilter/nfnetlink.h>
 #include <linux/netfilter/nfnetlink_cttimeout.h>
 
-static int icmp_timeout_nlattr_to_obj(struct nlattr *tb[], void *data)
+static int icmp_timeout_nlattr_to_obj(struct nlattr *tb[],
+				      struct net *net, void *data)
 {
 	unsigned int *timeout = data;
+	struct nf_icmp_net *in = icmp_pernet(net);
 
 	if (tb[CTA_TIMEOUT_ICMP_TIMEOUT]) {
 		*timeout =
 			ntohl(nla_get_be32(tb[CTA_TIMEOUT_ICMP_TIMEOUT])) * HZ;
 	} else {
 		/* Set default ICMP timeout. */
-		*timeout = nf_ct_icmp_timeout;
+		*timeout = in->timeout;
 	}
 	return 0;
 }
@@ -293,8 +291,8 @@ icmp_timeout_obj_to_nlattr(struct sk_buff *skb, const void *data)
 {
 	const unsigned int *timeout = data;
 
-	NLA_PUT_BE32(skb, CTA_TIMEOUT_ICMP_TIMEOUT, htonl(*timeout / HZ));
-
+	if (nla_put_be32(skb, CTA_TIMEOUT_ICMP_TIMEOUT, htonl(*timeout / HZ)))
+		goto nla_put_failure;
 	return 0;
 
 nla_put_failure:
@@ -308,46 +306,60 @@ icmp_timeout_nla_policy[CTA_TIMEOUT_ICMP_MAX+1] = {
 #endif /* CONFIG_NF_CT_NETLINK_TIMEOUT */
 
 #ifdef CONFIG_SYSCTL
-static struct ctl_table_header *icmp_sysctl_header;
 static struct ctl_table icmp_sysctl_table[] = {
 	{
 		.procname	= "nf_conntrack_icmp_timeout",
-		.data		= &nf_ct_icmp_timeout,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_jiffies,
 	},
 	{ }
 };
-#ifdef CONFIG_NF_CONNTRACK_PROC_COMPAT
-static struct ctl_table icmp_compat_sysctl_table[] = {
-	{
-		.procname	= "ip_conntrack_icmp_timeout",
-		.data		= &nf_ct_icmp_timeout,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_jiffies,
-	},
-	{ }
-};
-#endif /* CONFIG_NF_CONNTRACK_PROC_COMPAT */
 #endif /* CONFIG_SYSCTL */
+
+static int icmp_kmemdup_sysctl_table(struct nf_proto_net *pn,
+				     struct nf_icmp_net *in)
+{
+#ifdef CONFIG_SYSCTL
+	pn->ctl_table = kmemdup(icmp_sysctl_table,
+				sizeof(icmp_sysctl_table),
+				GFP_KERNEL);
+	if (!pn->ctl_table)
+		return -ENOMEM;
+
+	pn->ctl_table[0].data = &in->timeout;
+#endif
+	return 0;
+}
+
+static int icmp_init_net(struct net *net, u_int16_t proto)
+{
+	struct nf_icmp_net *in = icmp_pernet(net);
+	struct nf_proto_net *pn = &in->pn;
+
+	in->timeout = nf_ct_icmp_timeout;
+
+	return icmp_kmemdup_sysctl_table(pn, in);
+}
+
+static struct nf_proto_net *icmp_get_net_proto(struct net *net)
+{
+	return &net->ct.nf_ct_proto.icmp.pn;
+}
 
 struct nf_conntrack_l4proto nf_conntrack_l4proto_icmp __read_mostly =
 {
 	.l3proto		= PF_INET,
 	.l4proto		= IPPROTO_ICMP,
-	.name			= "icmp",
 	.pkt_to_tuple		= icmp_pkt_to_tuple,
 	.invert_tuple		= icmp_invert_tuple,
-	.print_tuple		= icmp_print_tuple,
 	.packet			= icmp_packet,
 	.get_timeouts		= icmp_get_timeouts,
 	.new			= icmp_new,
 	.error			= icmp_error,
 	.destroy		= NULL,
 	.me			= NULL,
-#if defined(CONFIG_NF_CT_NETLINK) || defined(CONFIG_NF_CT_NETLINK_MODULE)
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK)
 	.tuple_to_nlattr	= icmp_tuple_to_nlattr,
 	.nlattr_tuple_size	= icmp_nlattr_tuple_size,
 	.nlattr_to_tuple	= icmp_nlattr_to_tuple,
@@ -362,11 +374,6 @@ struct nf_conntrack_l4proto nf_conntrack_l4proto_icmp __read_mostly =
 		.nla_policy	= icmp_timeout_nla_policy,
 	},
 #endif /* CONFIG_NF_CT_NETLINK_TIMEOUT */
-#ifdef CONFIG_SYSCTL
-	.ctl_table_header	= &icmp_sysctl_header,
-	.ctl_table		= icmp_sysctl_table,
-#ifdef CONFIG_NF_CONNTRACK_PROC_COMPAT
-	.ctl_compat_table	= icmp_compat_sysctl_table,
-#endif
-#endif
+	.init_net		= icmp_init_net,
+	.get_net_proto		= icmp_get_net_proto,
 };

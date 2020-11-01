@@ -124,6 +124,7 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	 */
 99:
 	li	r0,__NR_clock_gettime
+  .cfi_restore lr
 	sc
 	blr
   .cfi_endproc
@@ -144,12 +145,15 @@ V_FUNCTION_BEGIN(__kernel_clock_getres)
 	cror	cr0*4+eq,cr0*4+eq,cr1*4+eq
 	bne	cr0,99f
 
+	mflr	r12
+  .cfi_register lr,r12
+	bl	V_LOCAL_FUNC(__get_datapage)
+	lwz	r5, CLOCK_HRTIMER_RES(r3)
+	mtlr	r12
 	li	r3,0
-	cmpli	cr0,r4,0
+	cmpldi	cr0,r4,0
 	crclr	cr0*4+so
 	beqlr
-	lis	r5,CLOCK_REALTIME_RES@h
-	ori	r5,r5,CLOCK_REALTIME_RES@l
 	std	r3,TSPC64_TV_SEC(r4)
 	std	r5,TSPC64_TV_NSEC(r4)
 	blr
@@ -163,6 +167,32 @@ V_FUNCTION_BEGIN(__kernel_clock_getres)
 	blr
   .cfi_endproc
 V_FUNCTION_END(__kernel_clock_getres)
+
+/*
+ * Exact prototype of time()
+ *
+ * time_t time(time *t);
+ *
+ */
+V_FUNCTION_BEGIN(__kernel_time)
+  .cfi_startproc
+	mflr	r12
+  .cfi_register lr,r12
+
+	mr	r11,r3			/* r11 holds t */
+	bl	V_LOCAL_FUNC(__get_datapage)
+
+	ld	r4,STAMP_XTIME+TSPC64_TV_SEC(r3)
+
+	cmpldi	r11,0			/* check if t is NULL */
+	beq	2f
+	std	r4,0(r11)		/* store result at *t */
+2:	mtlr	r12
+	crclr	cr0*4+so
+	mr	r3,r4
+	blr
+  .cfi_endproc
+V_FUNCTION_END(__kernel_time)
 
 
 /*

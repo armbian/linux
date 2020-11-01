@@ -32,7 +32,6 @@
 #include <linux/slab.h>
 #include <linux/input.h>
 #include <linux/serio.h>
-#include <linux/init.h>
 
 #define DRIVER_DESC	"Gravis Stinger gamepad driver"
 
@@ -185,7 +184,7 @@ static int stinger_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static struct serio_device_id stinger_serio_ids[] = {
+static const struct serio_device_id stinger_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_STINGER,
@@ -208,19 +207,4 @@ static struct serio_driver stinger_drv = {
 	.disconnect	= stinger_disconnect,
 };
 
-/*
- * The functions for inserting/removing us as a module.
- */
-
-static int __init stinger_init(void)
-{
-	return serio_register_driver(&stinger_drv);
-}
-
-static void __exit stinger_exit(void)
-{
-	serio_unregister_driver(&stinger_drv);
-}
-
-module_init(stinger_init);
-module_exit(stinger_exit);
+module_serio_driver(stinger_drv);

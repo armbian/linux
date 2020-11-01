@@ -36,8 +36,8 @@
 #include <scsi/scsi_host.h>
 #include <linux/libata.h>
 #include <linux/platform_device.h>
+#include <linux/gpio.h>
 #include <asm/dma.h>
-#include <asm/gpio.h>
 #include <asm/portmux.h>
 
 #define DRV_NAME		"pata-bf54x"
@@ -1143,7 +1143,7 @@ static unsigned char bfin_bmdma_status(struct ata_port *ap)
 
 /**
  *	bfin_data_xfer - Transfer data by PIO
- *	@adev: device for this I/O
+ *	@qc: queued command
  *	@buf: data buffer
  *	@buflen: buffer length
  *	@write_data: read/write
@@ -1151,10 +1151,11 @@ static unsigned char bfin_bmdma_status(struct ata_port *ap)
  *	Note: Original code is ata_sff_data_xfer().
  */
 
-static unsigned int bfin_data_xfer(struct ata_device *dev, unsigned char *buf,
+static unsigned int bfin_data_xfer(struct ata_queued_cmd *qc,
+				   unsigned char *buf,
 				   unsigned int buflen, int rw)
 {
-	struct ata_port *ap = dev->link->ap;
+	struct ata_port *ap = qc->dev->link->ap;
 	void __iomem *base = (void __iomem *)ap->ioaddr.ctl_addr;
 	unsigned int words = buflen >> 1;
 	unsigned short *buf16 = (u16 *)buf;
@@ -1538,7 +1539,7 @@ static unsigned short atapi_io_port[] = {
  *		- IRQ	   (IORESOURCE_IRQ)
  *
  */
-static int __devinit bfin_atapi_probe(struct platform_device *pdev)
+static int bfin_atapi_probe(struct platform_device *pdev)
 {
 	int board_idx = 0;
 	struct resource *res;
@@ -1596,8 +1597,6 @@ static int __devinit bfin_atapi_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	dev_set_drvdata(&pdev->dev, host);
-
 	return 0;
 }
 
@@ -1608,23 +1607,21 @@ static int __devinit bfin_atapi_probe(struct platform_device *pdev)
  *	A bfin atapi device has been unplugged. Perform the needed
  *	cleanup. Also called on module unload for any active devices.
  */
-static int __devexit bfin_atapi_remove(struct platform_device *pdev)
+static int bfin_atapi_remove(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
-	struct ata_host *host = dev_get_drvdata(dev);
+	struct ata_host *host = platform_get_drvdata(pdev);
 
 	ata_host_detach(host);
-	dev_set_drvdata(&pdev->dev, NULL);
 
 	peripheral_free_list(atapi_io_port);
 
 	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int bfin_atapi_suspend(struct platform_device *pdev, pm_message_t state)
 {
-	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	struct ata_host *host = platform_get_drvdata(pdev);
 	if (host)
 		return ata_host_suspend(host, state);
 	else
@@ -1633,7 +1630,7 @@ static int bfin_atapi_suspend(struct platform_device *pdev, pm_message_t state)
 
 static int bfin_atapi_resume(struct platform_device *pdev)
 {
-	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	struct ata_host *host = platform_get_drvdata(pdev);
 	int ret;
 
 	if (host) {
@@ -1654,12 +1651,11 @@ static int bfin_atapi_resume(struct platform_device *pdev)
 
 static struct platform_driver bfin_atapi_driver = {
 	.probe			= bfin_atapi_probe,
-	.remove			= __devexit_p(bfin_atapi_remove),
+	.remove			= bfin_atapi_remove,
 	.suspend		= bfin_atapi_suspend,
 	.resume			= bfin_atapi_resume,
 	.driver = {
 		.name		= DRV_NAME,
-		.owner		= THIS_MODULE,
 	},
 };
 

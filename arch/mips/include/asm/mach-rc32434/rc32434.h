@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Definitions for IDT RC323434 CPU.
  */
@@ -16,4 +17,4 @@ static inline void rc32434_sync(void)
 	__asm__ volatile ("sync");
 }
 
-#endif  /* _ASM_RC32434_RC32434_H_ */
+#endif	/* _ASM_RC32434_RC32434_H_ */

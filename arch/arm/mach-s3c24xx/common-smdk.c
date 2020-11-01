@@ -23,7 +23,7 @@
 #include <linux/platform_device.h>
 
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 #include <linux/io.h>
@@ -37,14 +37,15 @@
 #include <asm/irq.h>
 
 #include <mach/regs-gpio.h>
-#include <mach/leds-gpio.h>
+#include <mach/gpio-samsung.h>
+#include <linux/platform_data/leds-s3c24xx.h>
+#include <linux/platform_data/mtd-nand-s3c2410.h>
 
-#include <plat/nand.h>
-
-#include <plat/common-smdk.h>
 #include <plat/gpio-cfg.h>
 #include <plat/devs.h>
 #include <plat/pm.h>
+
+#include "common-smdk.h"
 
 /* LED devices */
 
@@ -170,6 +171,7 @@ static struct s3c2410_platform_nand smdk_nand_info = {
 	.twrph1		= 20,
 	.nr_sets	= ARRAY_SIZE(smdk_nand_sets),
 	.sets		= smdk_nand_sets,
+	.ecc_mode       = NAND_ECC_SOFT,
 };
 
 /* devices we initialise */
@@ -182,19 +184,21 @@ static struct platform_device __initdata *smdk_devs[] = {
 	&smdk_led7,
 };
 
+static const struct gpio smdk_led_gpios[] = {
+	{ S3C2410_GPF(4), GPIOF_OUT_INIT_HIGH, NULL },
+	{ S3C2410_GPF(5), GPIOF_OUT_INIT_HIGH, NULL },
+	{ S3C2410_GPF(6), GPIOF_OUT_INIT_HIGH, NULL },
+	{ S3C2410_GPF(7), GPIOF_OUT_INIT_HIGH, NULL },
+};
+
 void __init smdk_machine_init(void)
 {
 	/* Configure the LEDs (even if we have no LED support)*/
 
-	s3c_gpio_cfgpin(S3C2410_GPF(4), S3C2410_GPIO_OUTPUT);
-	s3c_gpio_cfgpin(S3C2410_GPF(5), S3C2410_GPIO_OUTPUT);
-	s3c_gpio_cfgpin(S3C2410_GPF(6), S3C2410_GPIO_OUTPUT);
-	s3c_gpio_cfgpin(S3C2410_GPF(7), S3C2410_GPIO_OUTPUT);
-
-	s3c2410_gpio_setpin(S3C2410_GPF(4), 1);
-	s3c2410_gpio_setpin(S3C2410_GPF(5), 1);
-	s3c2410_gpio_setpin(S3C2410_GPF(6), 1);
-	s3c2410_gpio_setpin(S3C2410_GPF(7), 1);
+	int ret = gpio_request_array(smdk_led_gpios,
+				     ARRAY_SIZE(smdk_led_gpios));
+	if (!WARN_ON(ret < 0))
+		gpio_free_array(smdk_led_gpios, ARRAY_SIZE(smdk_led_gpios));
 
 	if (machine_is_smdk2443())
 		smdk_nand_info.twrph0 = 50;

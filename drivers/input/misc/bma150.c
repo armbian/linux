@@ -46,18 +46,6 @@
 #define BMA150_POLL_MAX		200
 #define BMA150_POLL_MIN		0
 
-#define BMA150_BW_25HZ		0
-#define BMA150_BW_50HZ		1
-#define BMA150_BW_100HZ		2
-#define BMA150_BW_190HZ		3
-#define BMA150_BW_375HZ		4
-#define BMA150_BW_750HZ		5
-#define BMA150_BW_1500HZ	6
-
-#define BMA150_RANGE_2G		0
-#define BMA150_RANGE_4G		1
-#define BMA150_RANGE_8G		2
-
 #define BMA150_MODE_NORMAL	0
 #define BMA150_MODE_SLEEP	2
 #define BMA150_MODE_WAKE_UP	3
@@ -158,7 +146,7 @@ struct bma150_data {
  * are stated and verified by Bosch Sensortec where they are configured
  * to provide a generic sensitivity performance.
  */
-static struct bma150_cfg default_cfg __devinitdata = {
+static const struct bma150_cfg default_cfg = {
 	.any_motion_int = 1,
 	.hg_int = 1,
 	.lg_int = 1,
@@ -218,13 +206,13 @@ static int bma150_set_mode(struct bma150_data *bma150, u8 mode)
 		return error;
 
 	if (mode == BMA150_MODE_NORMAL)
-		msleep(2);
+		usleep_range(2000, 2100);
 
 	bma150->mode = mode;
 	return 0;
 }
 
-static int __devinit bma150_soft_reset(struct bma150_data *bma150)
+static int bma150_soft_reset(struct bma150_data *bma150)
 {
 	int error;
 
@@ -233,23 +221,23 @@ static int __devinit bma150_soft_reset(struct bma150_data *bma150)
 	if (error)
 		return error;
 
-	msleep(2);
+	usleep_range(2000, 2100);
 	return 0;
 }
 
-static int __devinit bma150_set_range(struct bma150_data *bma150, u8 range)
+static int bma150_set_range(struct bma150_data *bma150, u8 range)
 {
 	return bma150_set_reg_bits(bma150->client, range, BMA150_RANGE_POS,
 				BMA150_RANGE_MSK, BMA150_RANGE_REG);
 }
 
-static int __devinit bma150_set_bandwidth(struct bma150_data *bma150, u8 bw)
+static int bma150_set_bandwidth(struct bma150_data *bma150, u8 bw)
 {
 	return bma150_set_reg_bits(bma150->client, bw, BMA150_BANDWIDTH_POS,
 				BMA150_BANDWIDTH_MSK, BMA150_BANDWIDTH_REG);
 }
 
-static int __devinit bma150_set_low_g_interrupt(struct bma150_data *bma150,
+static int bma150_set_low_g_interrupt(struct bma150_data *bma150,
 					u8 enable, u8 hyst, u8 dur, u8 thres)
 {
 	int error;
@@ -273,7 +261,7 @@ static int __devinit bma150_set_low_g_interrupt(struct bma150_data *bma150,
 				BMA150_LOW_G_EN_REG);
 }
 
-static int __devinit bma150_set_high_g_interrupt(struct bma150_data *bma150,
+static int bma150_set_high_g_interrupt(struct bma150_data *bma150,
 					u8 enable, u8 hyst, u8 dur, u8 thres)
 {
 	int error;
@@ -300,7 +288,7 @@ static int __devinit bma150_set_high_g_interrupt(struct bma150_data *bma150,
 }
 
 
-static int __devinit bma150_set_any_motion_interrupt(struct bma150_data *bma150,
+static int bma150_set_any_motion_interrupt(struct bma150_data *bma150,
 						u8 enable, u8 dur, u8 thres)
 {
 	int error;
@@ -344,10 +332,9 @@ static void bma150_report_xyz(struct bma150_data *bma150)
 	y = ((0xc0 & data[2]) >> 6) | (data[3] << 2);
 	z = ((0xc0 & data[4]) >> 6) | (data[5] << 2);
 
-	/* sign extension */
-	x = (s16) (x << 6) >> 6;
-	y = (s16) (y << 6) >> 6;
-	z = (s16) (z << 6) >> 6;
+	x = sign_extend32(x, 9);
+	y = sign_extend32(y, 9);
+	z = sign_extend32(z, 9);
 
 	input_report_abs(bma150->input, ABS_X, x);
 	input_report_abs(bma150->input, ABS_Y, y);
@@ -372,7 +359,7 @@ static int bma150_open(struct bma150_data *bma150)
 	int error;
 
 	error = pm_runtime_get_sync(&bma150->client->dev);
-	if (error && error != -ENOSYS)
+	if (error < 0 && error != -ENOSYS)
 		return error;
 
 	/*
@@ -424,7 +411,7 @@ static void bma150_poll_close(struct input_polled_dev *ipoll_dev)
 	bma150_close(bma150);
 }
 
-static int __devinit bma150_initialize(struct bma150_data *bma150,
+static int bma150_initialize(struct bma150_data *bma150,
 				       const struct bma150_cfg *cfg)
 {
 	int error;
@@ -465,7 +452,7 @@ static int __devinit bma150_initialize(struct bma150_data *bma150,
 	return bma150_set_mode(bma150, BMA150_MODE_SLEEP);
 }
 
-static void __devinit bma150_init_input_device(struct bma150_data *bma150,
+static void bma150_init_input_device(struct bma150_data *bma150,
 						struct input_dev *idev)
 {
 	idev->name = BMA150_DRIVER;
@@ -479,7 +466,7 @@ static void __devinit bma150_init_input_device(struct bma150_data *bma150,
 	input_set_abs_params(idev, ABS_Z, ABSMIN_ACC_VAL, ABSMAX_ACC_VAL, 0, 0);
 }
 
-static int __devinit bma150_register_input_device(struct bma150_data *bma150)
+static int bma150_register_input_device(struct bma150_data *bma150)
 {
 	struct input_dev *idev;
 	int error;
@@ -494,17 +481,18 @@ static int __devinit bma150_register_input_device(struct bma150_data *bma150)
 	idev->close = bma150_irq_close;
 	input_set_drvdata(idev, bma150);
 
+	bma150->input = idev;
+
 	error = input_register_device(idev);
 	if (error) {
 		input_free_device(idev);
 		return error;
 	}
 
-	bma150->input = idev;
 	return 0;
 }
 
-static int __devinit bma150_register_polled_device(struct bma150_data *bma150)
+static int bma150_register_polled_device(struct bma150_data *bma150)
 {
 	struct input_polled_dev *ipoll_dev;
 	int error;
@@ -523,22 +511,23 @@ static int __devinit bma150_register_polled_device(struct bma150_data *bma150)
 
 	bma150_init_input_device(bma150, ipoll_dev->input);
 
+	bma150->input_polled = ipoll_dev;
+	bma150->input = ipoll_dev->input;
+
 	error = input_register_polled_device(ipoll_dev);
 	if (error) {
 		input_free_polled_device(ipoll_dev);
 		return error;
 	}
 
-	bma150->input_polled = ipoll_dev;
-	bma150->input = ipoll_dev->input;
-
 	return 0;
 }
 
-static int __devinit bma150_probe(struct i2c_client *client,
+static int bma150_probe(struct i2c_client *client,
 				  const struct i2c_device_id *id)
 {
-	const struct bma150_platform_data *pdata = client->dev.platform_data;
+	const struct bma150_platform_data *pdata =
+			dev_get_platdata(&client->dev);
 	const struct bma150_cfg *cfg;
 	struct bma150_data *bma150;
 	int chip_id;
@@ -613,7 +602,7 @@ err_free_mem:
 	return error;
 }
 
-static int __devexit bma150_remove(struct i2c_client *client)
+static int bma150_remove(struct i2c_client *client)
 {
 	struct bma150_data *bma150 = i2c_get_clientdata(client);
 
@@ -663,14 +652,13 @@ MODULE_DEVICE_TABLE(i2c, bma150_id);
 
 static struct i2c_driver bma150_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= BMA150_DRIVER,
 		.pm	= &bma150_pm,
 	},
 	.class		= I2C_CLASS_HWMON,
 	.id_table	= bma150_id,
 	.probe		= bma150_probe,
-	.remove		= __devexit_p(bma150_remove),
+	.remove		= bma150_remove,
 };
 
 module_i2c_driver(bma150_driver);

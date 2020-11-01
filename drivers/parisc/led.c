@@ -49,7 +49,7 @@
 #include <asm/param.h>		/* HZ */
 #include <asm/led.h>
 #include <asm/pdc.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /* The control of the LEDs and LCDs on PARISC-machines have to be done 
    completely in software. The necessary calculations are done in a work queue
@@ -172,14 +172,14 @@ static int led_proc_show(struct seq_file *m, void *v)
 
 static int led_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, led_proc_show, PDE(inode)->data);
+	return single_open(file, led_proc_show, PDE_DATA(inode));
 }
 
 
 static ssize_t led_proc_write(struct file *file, const char *buf,
 	size_t count, loff_t *pos)
 {
-	void *data = PDE(file->f_path.dentry->d_inode)->data;
+	void *data = PDE_DATA(file_inode(file));
 	char *cur, lbuf[32];
 	int d;
 
@@ -568,6 +568,9 @@ int __init register_led_driver(int model, unsigned long cmd_reg, unsigned long d
 		break;
 
 	case DISPLAY_MODEL_LASI:
+		/* Skip to register LED in QEMU */
+		if (running_on_qemu)
+			return 1;
 		LED_DATA_REG = data_reg;
 		led_func_ptr = led_LASI_driver;
 		printk(KERN_INFO "LED display at %lx registered\n", LED_DATA_REG);

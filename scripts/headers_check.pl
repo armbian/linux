@@ -1,4 +1,5 @@
-#!/usr/bin/perl -w
+#!/usr/bin/env perl
+# SPDX-License-Identifier: GPL-2.0
 #
 # headers_check.pl execute a number of trivial consistency checks
 #
@@ -18,6 +19,7 @@
 #
 # 3) Check for leaked CONFIG_ symbols
 
+use warnings;
 use strict;
 use File::Basename;
 
@@ -65,7 +67,15 @@ sub check_include
 
 sub check_declarations
 {
-	if ($line =~m/^(\s*extern|unsigned|char|short|int|long|void)\b/) {
+	# soundcard.h is what it is
+	if ($line =~ m/^void seqbuf_dump\(void\);/) {
+		return;
+	}
+	# drm headers are being C++ friendly
+	if ($line =~ m/^extern "C"/) {
+		return;
+	}
+	if ($line =~ m/^(\s*extern|unsigned|char|short|int|long|void)\b/) {
 		printf STDERR "$filename:$lineno: " .
 			      "userspace cannot reference function or " .
 			      "variable defined in the kernel\n";

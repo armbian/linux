@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __SOUND_CS5535AUDIO_H
 #define __SOUND_CS5535AUDIO_H
 
@@ -66,9 +67,9 @@ struct cs5535audio_dma_ops {
 };
 
 struct cs5535audio_dma_desc {
-	u32 addr;
-	u16 size;
-	u16 ctlreserved;
+	__le32 addr;
+	__le16 size;
+	__le16 ctlreserved;
 };
 
 struct cs5535audio_dma {
@@ -94,16 +95,13 @@ struct cs5535audio {
 	struct cs5535audio_dma dmas[NUM_CS5535AUDIO_DMAS];
 };
 
-#ifdef CONFIG_PM
-int snd_cs5535audio_suspend(struct pci_dev *pci, pm_message_t state);
-int snd_cs5535audio_resume(struct pci_dev *pci);
-#endif
+extern const struct dev_pm_ops snd_cs5535audio_pm;
 
 #ifdef CONFIG_OLPC
-void __devinit olpc_prequirks(struct snd_card *card,
-		struct snd_ac97_template *ac97);
-int __devinit olpc_quirks(struct snd_card *card, struct snd_ac97 *ac97);
-void __devexit olpc_quirks_cleanup(void);
+void olpc_prequirks(struct snd_card *card,
+		    struct snd_ac97_template *ac97);
+int olpc_quirks(struct snd_card *card, struct snd_ac97 *ac97);
+void olpc_quirks_cleanup(void);
 void olpc_analog_input(struct snd_ac97 *ac97, int on);
 void olpc_mic_bias(struct snd_ac97 *ac97, int on);
 
@@ -136,7 +134,7 @@ static inline void olpc_capture_open(struct snd_ac97 *ac97) { }
 static inline void olpc_capture_close(struct snd_ac97 *ac97) { }
 #endif
 
-int __devinit snd_cs5535audio_pcm(struct cs5535audio *cs5535audio);
+int snd_cs5535audio_pcm(struct cs5535audio *cs5535audio);
 
 #endif /* __SOUND_CS5535AUDIO_H */
 

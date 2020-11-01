@@ -11,10 +11,9 @@
 #include <linux/threads.h>
 #include <linux/cpumask.h>
 #include <linux/string.h>
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/ctype.h>
-#include <linux/init.h>
 #include <linux/hardirq.h>
 #include <linux/dmar.h>
 
@@ -22,11 +21,6 @@
 #include <asm/apic.h>
 #include <asm/ipi.h>
 #include <asm/setup.h>
-
-static int apicid_phys_pkg_id(int initial_apic_id, int index_msb)
-{
-	return hard_smp_processor_id() >> index_msb;
-}
 
 /*
  * Check the APIC IDs in bios_cpu_apicid and choose the APIC mode.
@@ -48,10 +42,8 @@ void __init default_setup_apic_routing(void)
 		}
 	}
 
-	if (is_vsmp_box()) {
-		/* need to update phys_pkg_id */
-		apic->phys_pkg_id = apicid_phys_pkg_id;
-	}
+	if (x86_platform.apic_post_init)
+		x86_platform.apic_post_init();
 }
 
 /* Same for both flat and physical. */

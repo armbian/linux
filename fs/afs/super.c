@@ -24,6 +24,8 @@
 #include <linux/parser.h>
 #include <linux/statfs.h>
 #include <linux/sched.h>
+#include <linux/nsproxy.h>
+#include <net/net_namespace.h>
 #include "internal.h"
 
 #define AFS_FS_MAGIC 0x6B414653 /* 'kAFS' */
@@ -35,6 +37,8 @@ static void afs_kill_super(struct super_block *sb);
 static struct inode *afs_alloc_inode(struct super_block *sb);
 static void afs_destroy_inode(struct inode *inode);
 static int afs_statfs(struct dentry *dentry, struct kstatfs *buf);
+static int afs_show_devname(struct seq_file *m, struct dentry *root);
+static int afs_show_options(struct seq_file *m, struct dentry *root);
 
 struct file_system_type afs_fs_type = {
 	.owner		= THIS_MODULE,
@@ -43,6 +47,7 @@ struct file_system_type afs_fs_type = {
 	.kill_sb	= afs_kill_super,
 	.fs_flags	= 0,
 };
+MODULE_ALIAS_FS("afs");
 
 static const struct super_operations afs_super_ops = {
 	.statfs		= afs_statfs,
@@ -50,7 +55,8 @@ static const struct super_operations afs_super_ops = {
 	.drop_inode	= afs_drop_inode,
 	.destroy_inode	= afs_destroy_inode,
 	.evict_inode	= afs_evict_inode,
-	.show_options	= generic_show_options,
+	.show_devname	= afs_show_devname,
+	.show_options	= afs_show_options,
 };
 
 static struct kmem_cache *afs_inode_cachep;
@@ -88,7 +94,7 @@ int __init afs_fs_init(void)
 	afs_inode_cachep = kmem_cache_create("afs_inode_cache",
 					     sizeof(struct afs_vnode),
 					     0,
-					     SLAB_HWCACHE_ALIGN,
+					     SLAB_HWCACHE_ALIGN|SLAB_ACCOUNT,
 					     afs_i_init_once);
 	if (!afs_inode_cachep) {
 		printk(KERN_NOTICE "kAFS: Failed to allocate inode cache\n");
@@ -123,8 +129,52 @@ void __exit afs_fs_exit(void)
 		BUG();
 	}
 
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(afs_inode_cachep);
 	_leave("");
+}
+
+/*
+ * Display the mount device name in /proc/mounts.
+ */
+static int afs_show_devname(struct seq_file *m, struct dentry *root)
+{
+	struct afs_super_info *as = root->d_sb->s_fs_info;
+	struct afs_volume *volume = as->volume;
+	struct afs_cell *cell = volume->cell;
+	const char *suf = "";
+	char pref = '%';
+
+	switch (volume->type) {
+	case AFSVL_RWVOL:
+		break;
+	case AFSVL_ROVOL:
+		pref = '#';
+		if (volume->type_force)
+			suf = ".readonly";
+		break;
+	case AFSVL_BACKVOL:
+		pref = '#';
+		suf = ".backup";
+		break;
+	}
+
+	seq_printf(m, "%c%s:%s%s", pref, cell->name, volume->vlocation->vldb.name, suf);
+	return 0;
+}
+
+/*
+ * Display the mount options in /proc/mounts.
+ */
+static int afs_show_options(struct seq_file *m, struct dentry *root)
+{
+	if (test_bit(AFS_VNODE_AUTOCELL, &AFS_FS_I(d_inode(root))->flags))
+		seq_puts(m, "autocell");
+	return 0;
 }
 
 /*
@@ -307,11 +357,16 @@ static int afs_fill_super(struct super_block *sb,
 	_enter("");
 
 	/* fill in the superblock */
-	sb->s_blocksize		= PAGE_CACHE_SIZE;
-	sb->s_blocksize_bits	= PAGE_CACHE_SHIFT;
+	sb->s_blocksize		= PAGE_SIZE;
+	sb->s_blocksize_bits	= PAGE_SHIFT;
+	sb->s_maxbytes		= MAX_LFS_FILESIZE;
 	sb->s_magic		= AFS_FS_MAGIC;
 	sb->s_op		= &afs_super_ops;
-	sb->s_bdi		= &as->volume->bdi;
+	sb->s_xattr		= afs_xattr_handlers;
+	ret = super_setup_bdi(sb);
+	if (ret)
+		return ret;
+	sb->s_bdi->ra_pages	= VM_MAX_READAHEAD * 1024 / PAGE_SIZE;
 	strlcpy(sb->s_id, as->volume->vlocation->vldb.name, sizeof(sb->s_id));
 
 	/* allocate the root inode and dentry */
@@ -358,6 +413,10 @@ static struct dentry *afs_mount(struct file_system_type *fs_type,
 
 	memset(&params, 0, sizeof(params));
 
+	ret = -EINVAL;
+	if (current->nsproxy->net_ns != &init_net)
+		goto error;
+
 	/* parse the options and device name */
 	if (options) {
 		ret = afs_parse_options(&params, options, &dev_name);
@@ -395,7 +454,7 @@ static struct dentry *afs_mount(struct file_system_type *fs_type,
 	as->volume = vol;
 
 	/* allocate a deviceless superblock */
-	sb = sget(fs_type, afs_test_super, afs_set_super, as);
+	sb = sget(fs_type, afs_test_super, afs_set_super, flags, as);
 	if (IS_ERR(sb)) {
 		ret = PTR_ERR(sb);
 		afs_put_volume(vol);
@@ -406,13 +465,11 @@ static struct dentry *afs_mount(struct file_system_type *fs_type,
 	if (!sb->s_root) {
 		/* initial superblock/root creation */
 		_debug("create");
-		sb->s_flags = flags;
 		ret = afs_fill_super(sb, &params);
 		if (ret < 0) {
 			deactivate_locked_super(sb);
 			goto error;
 		}
-		save_mount_options(sb, new_opts);
 		sb->s_flags |= MS_ACTIVE;
 	} else {
 		_debug("reuse");
@@ -518,7 +575,7 @@ static void afs_destroy_inode(struct inode *inode)
 static int afs_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
 	struct afs_volume_status vs;
-	struct afs_vnode *vnode = AFS_FS_I(dentry->d_inode);
+	struct afs_vnode *vnode = AFS_FS_I(d_inode(dentry));
 	struct key *key;
 	int ret;
 

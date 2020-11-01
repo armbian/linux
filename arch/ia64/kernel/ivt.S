@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/ia64/kernel/ivt.S
  *
@@ -57,8 +58,9 @@
 #include <asm/thread_info.h>
 #include <asm/unistd.h>
 #include <asm/errno.h>
+#include <asm/export.h>
 
-#if 1
+#if 0
 # define PSR_DEFAULT_BITS	psr.ac
 #else
 # define PSR_DEFAULT_BITS	0
@@ -85,6 +87,7 @@
 
 	.align 32768	// align on 32KB boundary
 	.global ia64_ivt
+	EXPORT_DATA_SYMBOL(ia64_ivt)
 ia64_ivt:
 /////////////////////////////////////////////////////////////////////////////////////////
 // 0x0000 Entry 0 (size 64 bundles) VHPT Translation (8,20,47)
@@ -146,7 +149,7 @@ ENTRY(vhpt_miss)
 (p6)	dep r17=r18,r19,3,(PAGE_SHIFT-3)	// r17=pgd_offset for region 5
 (p7)	dep r17=r18,r17,3,(PAGE_SHIFT-6)	// r17=pgd_offset for region[0-4]
 	cmp.eq p7,p6=0,r21			// unused address bits all zeroes?
-#ifdef CONFIG_PGTABLE_4
+#if CONFIG_PGTABLE_LEVELS == 4
 	shr.u r28=r22,PUD_SHIFT			// shift pud index into position
 #else
 	shr.u r18=r22,PMD_SHIFT			// shift pmd index into position
@@ -155,7 +158,7 @@ ENTRY(vhpt_miss)
 	ld8 r17=[r17]				// get *pgd (may be 0)
 	;;
 (p7)	cmp.eq p6,p7=r17,r0			// was pgd_present(*pgd) == NULL?
-#ifdef CONFIG_PGTABLE_4
+#if CONFIG_PGTABLE_LEVELS == 4
 	dep r28=r28,r17,3,(PAGE_SHIFT-3)	// r28=pud_offset(pgd,addr)
 	;;
 	shr.u r18=r22,PMD_SHIFT			// shift pmd index into position
@@ -222,13 +225,13 @@ ENTRY(vhpt_miss)
 	 */
 	ld8 r25=[r21]				// read *pte again
 	ld8 r26=[r17]				// read *pmd again
-#ifdef CONFIG_PGTABLE_4
+#if CONFIG_PGTABLE_LEVELS == 4
 	ld8 r19=[r28]				// read *pud again
 #endif
 	cmp.ne p6,p7=r0,r0
 	;;
 	cmp.ne.or.andcm p6,p7=r26,r20		// did *pmd change
-#ifdef CONFIG_PGTABLE_4
+#if CONFIG_PGTABLE_LEVELS == 4
 	cmp.ne.or.andcm p6,p7=r19,r29		// did *pud change
 #endif
 	mov r27=PAGE_SHIFT<<2
@@ -476,7 +479,7 @@ ENTRY(nested_dtlb_miss)
 (p6)	dep r17=r18,r19,3,(PAGE_SHIFT-3)	// r17=pgd_offset for region 5
 (p7)	dep r17=r18,r17,3,(PAGE_SHIFT-6)	// r17=pgd_offset for region[0-4]
 	cmp.eq p7,p6=0,r21			// unused address bits all zeroes?
-#ifdef CONFIG_PGTABLE_4
+#if CONFIG_PGTABLE_LEVELS == 4
 	shr.u r18=r22,PUD_SHIFT			// shift pud index into position
 #else
 	shr.u r18=r22,PMD_SHIFT			// shift pmd index into position
@@ -487,7 +490,7 @@ ENTRY(nested_dtlb_miss)
 (p7)	cmp.eq p6,p7=r17,r0			// was pgd_present(*pgd) == NULL?
 	dep r17=r18,r17,3,(PAGE_SHIFT-3)	// r17=p[u|m]d_offset(pgd,addr)
 	;;
-#ifdef CONFIG_PGTABLE_4
+#if CONFIG_PGTABLE_LEVELS == 4
 (p7)	ld8 r17=[r17]				// get *pud (may be 0)
 	shr.u r18=r22,PMD_SHIFT			// shift pmd index into position
 	;;
@@ -784,7 +787,7 @@ ENTRY(break_fault)
 
 (p8)	adds r28=16,r28				// A    switch cr.iip to next bundle
 (p9)	adds r8=1,r8				// A    increment ei to next slot
-#ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 	;;
 	mov b6=r30				// I0   setup syscall handler branch reg early
 #else
@@ -801,7 +804,7 @@ ENTRY(break_fault)
 	//
 ///////////////////////////////////////////////////////////////////////
 	st1 [r16]=r0				// M2|3 clear current->thread.on_ustack flag
-#ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 	MOV_FROM_ITC(p0, p14, r30, r18)		// M    get cycle for accounting
 #else
 	mov b6=r30				// I0   setup syscall handler branch reg early
@@ -817,7 +820,7 @@ ENTRY(break_fault)
 	cmp.eq p14,p0=r9,r0			// A    are syscalls being traced/audited?
 	br.call.sptk.many b7=ia64_syscall_setup	// B
 1:
-#ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 	// mov.m r30=ar.itc is called in advance, and r13 is current
 	add r16=TI_AC_STAMP+IA64_TASK_SIZE,r13	// A
 	add r17=TI_AC_LEAVE+IA64_TASK_SIZE,r13	// A
@@ -937,7 +940,6 @@ END(interrupt)
 	 *	- ar.fpsr: set to kernel settings
 	 *	-  b6: preserved (same as on entry)
 	 */
-#ifdef __IA64_ASM_PARAVIRTUALIZED_NATIVE
 GLOBAL_ENTRY(ia64_syscall_setup)
 #if PT(B6) != 0
 # error This code assumes that b6 is the first field in pt_regs.
@@ -1029,7 +1031,6 @@ GLOBAL_ENTRY(ia64_syscall_setup)
 (p10)	mov r8=-EINVAL
 	br.ret.sptk.many b7
 END(ia64_syscall_setup)
-#endif /* __IA64_ASM_PARAVIRTUALIZED_NATIVE */
 
 	.org ia64_ivt+0x3c00
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -1043,7 +1044,7 @@ END(ia64_syscall_setup)
 	DBG_FAULT(16)
 	FAULT(16)
 
-#if defined(CONFIG_VIRT_CPU_ACCOUNTING) && defined(__IA64_ASM_PARAVIRTUALIZED_NATIVE)
+#if defined(CONFIG_VIRT_CPU_ACCOUNTING_NATIVE)
 	/*
 	 * There is no particular reason for this code to be here, other than
 	 * that there happens to be space here that would go unused otherwise.

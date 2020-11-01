@@ -1,8 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_CRIS_ARCH_IRQFLAGS_H
 #define __ASM_CRIS_ARCH_IRQFLAGS_H
 
 #include <linux/types.h>
-#include <arch/ptrace.h>
+#include <asm/ptrace.h>
 
 static inline unsigned long arch_local_save_flags(void)
 {

@@ -1,12 +1,20 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_MODULE_H
 #define _ASM_X86_MODULE_H
 
 #include <asm-generic/module.h>
+#include <asm/orc_types.h>
+
+struct mod_arch_specific {
+#ifdef CONFIG_UNWINDER_ORC
+	unsigned int num_orcs;
+	int *orc_unwind_ip;
+	struct orc_entry *orc_unwind;
+#endif
+};
 
 #ifdef CONFIG_X86_64
 /* X86_64 does not define MODULE_PROC_FAMILY */
-#elif defined CONFIG_M386
-#define MODULE_PROC_FAMILY "386 "
 #elif defined CONFIG_M486
 #define MODULE_PROC_FAMILY "486 "
 #elif defined CONFIG_M586

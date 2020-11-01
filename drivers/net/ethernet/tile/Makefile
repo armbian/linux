@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the TILE on-chip networking support.
 #
 
 obj-$(CONFIG_TILE_NET) += tile_net.o
 ifdef CONFIG_TILEGX
-tile_net-objs := tilegx.o mpipe.o iorpc_mpipe.o dma_queue.o
+tile_net-y := tilegx.o
 else
-tile_net-objs := tilepro.o
+tile_net-y := tilepro.o
 endif

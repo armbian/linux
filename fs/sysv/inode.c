@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/sysv/inode.c
  *
@@ -36,14 +37,13 @@ static int sysv_sync_fs(struct super_block *sb, int wait)
 	struct sysv_sb_info *sbi = SYSV_SB(sb);
 	unsigned long time = get_seconds(), old_time;
 
-	lock_super(sb);
+	mutex_lock(&sbi->s_lock);
 
 	/*
 	 * If we are going to write out the super block,
 	 * then attach current time stamp.
 	 * But if the filesystem was marked clean, keep it clean.
 	 */
-	sb->s_dirt = 0;
 	old_time = fs32_to_cpu(sbi, *sbi->s_sb_time);
 	if (sbi->s_type == FSTYPE_SYSV4) {
 		if (*sbi->s_sb_state == cpu_to_fs32(sbi, 0x7c269d38 - old_time))
@@ -52,28 +52,18 @@ static int sysv_sync_fs(struct super_block *sb, int wait)
 		mark_buffer_dirty(sbi->s_bh2);
 	}
 
-	unlock_super(sb);
+	mutex_unlock(&sbi->s_lock);
 
 	return 0;
-}
-
-static void sysv_write_super(struct super_block *sb)
-{
-	if (!(sb->s_flags & MS_RDONLY))
-		sysv_sync_fs(sb, 1);
-	else
-		sb->s_dirt = 0;
 }
 
 static int sysv_remount(struct super_block *sb, int *flags, char *data)
 {
 	struct sysv_sb_info *sbi = SYSV_SB(sb);
-	lock_super(sb);
+
+	sync_filesystem(sb);
 	if (sbi->s_forced_ro)
 		*flags |= MS_RDONLY;
-	if (*flags & MS_RDONLY)
-		sysv_write_super(sb);
-	unlock_super(sb);
 	return 0;
 }
 
@@ -81,10 +71,7 @@ static void sysv_put_super(struct super_block *sb)
 {
 	struct sysv_sb_info *sbi = SYSV_SB(sb);
 
-	if (sb->s_dirt)
-		sysv_write_super(sb);
-
-	if (!(sb->s_flags & MS_RDONLY)) {
+	if (!sb_rdonly(sb)) {
 		/* XXX ext2 also updates the state here */
 		mark_buffer_dirty(sbi->s_bh1);
 		if (sbi->s_bh1 != sbi->s_bh2)
@@ -159,9 +146,7 @@ static inline void write3byte(struct sysv_sb_info *sbi,
 }
 
 static const struct inode_operations sysv_symlink_inode_operations = {
-	.readlink	= generic_readlink,
-	.follow_link	= page_follow_link_light,
-	.put_link	= page_put_link,
+	.get_link	= page_get_link,
 	.getattr	= sysv_getattr,
 };
 
@@ -177,6 +162,7 @@ void sysv_set_inode(struct inode *inode, dev_t rdev)
 		inode->i_mapping->a_ops = &sysv_aops;
 	} else if (S_ISLNK(inode->i_mode)) {
 		inode->i_op = &sysv_symlink_inode_operations;
+		inode_nohighmem(inode);
 		inode->i_mapping->a_ops = &sysv_aops;
 	} else
 		init_special_inode(inode, inode->i_mode, rdev);
@@ -211,8 +197,8 @@ struct inode *sysv_iget(struct super_block *sb, unsigned int ino)
 	}
 	/* SystemV FS: kludge permissions if ino==SYSV_ROOT_INO ?? */
 	inode->i_mode = fs16_to_cpu(sbi, raw_inode->i_mode);
-	inode->i_uid = (uid_t)fs16_to_cpu(sbi, raw_inode->i_uid);
-	inode->i_gid = (gid_t)fs16_to_cpu(sbi, raw_inode->i_gid);
+	i_uid_write(inode, (uid_t)fs16_to_cpu(sbi, raw_inode->i_uid));
+	i_gid_write(inode, (gid_t)fs16_to_cpu(sbi, raw_inode->i_gid));
 	set_nlink(inode, fs16_to_cpu(sbi, raw_inode->i_nlink));
 	inode->i_size = fs32_to_cpu(sbi, raw_inode->i_size);
 	inode->i_atime.tv_sec = fs32_to_cpu(sbi, raw_inode->i_atime);
@@ -265,8 +251,8 @@ static int __sysv_write_inode(struct inode *inode, int wait)
 	}
 
 	raw_inode->i_mode = cpu_to_fs16(sbi, inode->i_mode);
-	raw_inode->i_uid = cpu_to_fs16(sbi, fs_high2lowuid(inode->i_uid));
-	raw_inode->i_gid = cpu_to_fs16(sbi, fs_high2lowgid(inode->i_gid));
+	raw_inode->i_uid = cpu_to_fs16(sbi, fs_high2lowuid(i_uid_read(inode)));
+	raw_inode->i_gid = cpu_to_fs16(sbi, fs_high2lowgid(i_gid_read(inode)));
 	raw_inode->i_nlink = cpu_to_fs16(sbi, inode->i_nlink);
 	raw_inode->i_size = cpu_to_fs32(sbi, inode->i_size);
 	raw_inode->i_atime = cpu_to_fs32(sbi, inode->i_atime.tv_sec);
@@ -289,7 +275,7 @@ static int __sysv_write_inode(struct inode *inode, int wait)
                 }
         }
 	brelse(bh);
-	return 0;
+	return err;
 }
 
 int sysv_write_inode(struct inode *inode, struct writeback_control *wbc)
@@ -304,13 +290,13 @@ int sysv_sync_inode(struct inode *inode)
 
 static void sysv_evict_inode(struct inode *inode)
 {
-	truncate_inode_pages(&inode->i_data, 0);
+	truncate_inode_pages_final(&inode->i_data);
 	if (!inode->i_nlink) {
 		inode->i_size = 0;
 		sysv_truncate(inode);
 	}
 	invalidate_inode_buffers(inode);
-	end_writeback(inode);
+	clear_inode(inode);
 	if (!inode->i_nlink)
 		sysv_free_inode(inode);
 }
@@ -351,7 +337,6 @@ const struct super_operations sysv_sops = {
 	.write_inode	= sysv_write_inode,
 	.evict_inode	= sysv_evict_inode,
 	.put_super	= sysv_put_super,
-	.write_super	= sysv_write_super,
 	.sync_fs	= sysv_sync_fs,
 	.remount_fs	= sysv_remount,
 	.statfs		= sysv_statfs,
@@ -361,7 +346,7 @@ int __init sysv_init_icache(void)
 {
 	sysv_inode_cachep = kmem_cache_create("sysv_inode_cache",
 			sizeof(struct sysv_inode_info), 0,
-			SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD,
+			SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|SLAB_ACCOUNT,
 			init_once);
 	if (!sysv_inode_cachep)
 		return -ENOMEM;
@@ -370,5 +355,10 @@ int __init sysv_init_icache(void)
 
 void sysv_destroy_icache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(sysv_inode_cachep);
 }

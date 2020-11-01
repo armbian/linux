@@ -12,19 +12,36 @@
  */
 #include <linux/edac.h>
 
-#include "edac_core.h"
+#include "edac_mc.h"
 #include "edac_module.h"
 
-#define EDAC_VERSION "Ver: 2.1.0"
+#define EDAC_VERSION "Ver: 3.0.0"
 
 #ifdef CONFIG_EDAC_DEBUG
+
+static int edac_set_debug_level(const char *buf, struct kernel_param *kp)
+{
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val > 4)
+		return -EINVAL;
+
+	return param_set_int(buf, kp);
+}
+
 /* Values of 0 to 4 will generate output */
 int edac_debug_level = 2;
 EXPORT_SYMBOL_GPL(edac_debug_level);
-#endif
 
-/* scope is to module level only */
-struct workqueue_struct *edac_workqueue;
+module_param_call(edac_debug_level, edac_set_debug_level, param_get_int,
+		  &edac_debug_level, 0644);
+MODULE_PARM_DESC(edac_debug_level, "EDAC debug level: [0-4], default: 2");
+#endif
 
 /*
  * edac_op_state_to_string()
@@ -46,31 +63,37 @@ char *edac_op_state_to_string(int opstate)
 }
 
 /*
- * edac_workqueue_setup
- *	initialize the edac work queue for polling operations
+ * sysfs object: /sys/devices/system/edac
+ *	need to export to other files
  */
-static int edac_workqueue_setup(void)
+static struct bus_type edac_subsys = {
+	.name = "edac",
+	.dev_name = "edac",
+};
+
+static int edac_subsys_init(void)
 {
-	edac_workqueue = create_singlethread_workqueue("edac-poller");
-	if (edac_workqueue == NULL)
-		return -ENODEV;
-	else
-		return 0;
+	int err;
+
+	/* create the /sys/devices/system/edac directory */
+	err = subsys_system_register(&edac_subsys, NULL);
+	if (err)
+		printk(KERN_ERR "Error registering toplevel EDAC sysfs dir\n");
+
+	return err;
 }
 
-/*
- * edac_workqueue_teardown
- *	teardown the edac workqueue
- */
-static void edac_workqueue_teardown(void)
+static void edac_subsys_exit(void)
 {
-	if (edac_workqueue) {
-		flush_workqueue(edac_workqueue);
-		destroy_workqueue(edac_workqueue);
-		edac_workqueue = NULL;
-	}
+	bus_unregister(&edac_subsys);
 }
 
+/* return pointer to the 'edac' node in sysfs */
+struct bus_type *edac_get_sysfs_subsys(void)
+{
+	return &edac_subsys;
+}
+EXPORT_SYMBOL_GPL(edac_get_sysfs_subsys);
 /*
  * edac_init
  *      module initialization entry point
@@ -81,6 +104,10 @@ static int __init edac_init(void)
 
 	edac_printk(KERN_INFO, EDAC_MC, EDAC_VERSION "\n");
 
+	err = edac_subsys_init();
+	if (err)
+		return err;
+
 	/*
 	 * Harvest and clear any boot/initialization PCI parity errors
 	 *
@@ -90,27 +117,27 @@ static int __init edac_init(void)
 	 */
 	edac_pci_clear_parity_errors();
 
-	/*
-	 * now set up the mc_kset under the edac class object
-	 */
-	err = edac_sysfs_setup_mc_kset();
+	err = edac_mc_sysfs_init();
 	if (err)
-		goto error;
+		goto err_sysfs;
 
-	/* Setup/Initialize the workq for this core */
+	edac_debugfs_init();
+
 	err = edac_workqueue_setup();
 	if (err) {
-		edac_printk(KERN_ERR, EDAC_MC, "init WorkQueue failure\n");
-		goto workq_fail;
+		edac_printk(KERN_ERR, EDAC_MC, "Failure initializing workqueue\n");
+		goto err_wq;
 	}
 
 	return 0;
 
-	/* Error teardown stack */
-workq_fail:
-	edac_sysfs_teardown_mc_kset();
+err_wq:
+	edac_debugfs_exit();
+	edac_mc_sysfs_exit();
 
-error:
+err_sysfs:
+	edac_subsys_exit();
+
 	return err;
 }
 
@@ -120,26 +147,21 @@ error:
  */
 static void __exit edac_exit(void)
 {
-	debugf0("%s()\n", __func__);
+	edac_dbg(0, "\n");
 
 	/* tear down the various subsystems */
 	edac_workqueue_teardown();
-	edac_sysfs_teardown_mc_kset();
+	edac_mc_sysfs_exit();
+	edac_debugfs_exit();
+	edac_subsys_exit();
 }
 
 /*
  * Inform the kernel of our entry and exit points
  */
-module_init(edac_init);
+subsys_initcall(edac_init);
 module_exit(edac_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Doug Thompson www.softwarebitmaker.com, et al");
 MODULE_DESCRIPTION("Core library routines for EDAC reporting");
-
-/* refer to *_sysfs.c files for parameters that are exported via sysfs */
-
-#ifdef CONFIG_EDAC_DEBUG
-module_param(edac_debug_level, int, 0644);
-MODULE_PARM_DESC(edac_debug_level, "Debug level");
-#endif

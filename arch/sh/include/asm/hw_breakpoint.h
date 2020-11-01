@@ -1,7 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_HW_BREAKPOINT_H
 #define __ASM_SH_HW_BREAKPOINT_H
 
-#ifdef __KERNEL__
+#include <uapi/asm/hw_breakpoint.h>
+
 #define __ARCH_HW_BREAKPOINT_H
 
 #include <linux/kdebug.h>
@@ -66,5 +68,4 @@ extern int register_sh_ubc(struct sh_ubc *);
 
 extern struct pmu perf_ops_bp;
 
-#endif /* __KERNEL__ */
 #endif /* __ASM_SH_HW_BREAKPOINT_H */

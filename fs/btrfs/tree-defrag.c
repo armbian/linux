@@ -23,26 +23,23 @@
 #include "transaction.h"
 #include "locking.h"
 
-/* defrag all the leaves in a given btree.  If cache_only == 1, don't read
- * things from disk, otherwise read all the leaves and try to get key order to
+/*
+ * Defrag all the leaves in a given btree.
+ * Read all the leaves and try to get key order to
  * better reflect disk order
  */
 
 int btrfs_defrag_leaves(struct btrfs_trans_handle *trans,
-			struct btrfs_root *root, int cache_only)
+			struct btrfs_root *root)
 {
 	struct btrfs_path *path = NULL;
 	struct btrfs_key key;
 	int ret = 0;
 	int wret;
 	int level;
-	int is_extent = 0;
 	int next_key_ret = 0;
 	u64 last_ret = 0;
 	u64 min_trans = 0;
-
-	if (cache_only)
-		goto out;
 
 	if (root->fs_info->extent_root == root) {
 		/*
@@ -52,10 +49,7 @@ int btrfs_defrag_leaves(struct btrfs_trans_handle *trans,
 		goto out;
 	}
 
-	if (root->ref_cows == 0 && !is_extent)
-		goto out;
-
-	if (btrfs_test_opt(root, SSD))
+	if (!test_bit(BTRFS_ROOT_REF_COWS, &root->state))
 		goto out;
 
 	path = btrfs_alloc_path();
@@ -86,11 +80,8 @@ int btrfs_defrag_leaves(struct btrfs_trans_handle *trans,
 	}
 
 	path->keep_locks = 1;
-	if (cache_only)
-		min_trans = root->defrag_trans_start;
 
-	ret = btrfs_search_forward(root, &key, NULL, path,
-				   cache_only, min_trans);
+	ret = btrfs_search_forward(root, &key, path, min_trans);
 	if (ret < 0)
 		goto out;
 	if (ret > 0) {
@@ -98,6 +89,12 @@ int btrfs_defrag_leaves(struct btrfs_trans_handle *trans,
 		goto out;
 	}
 	btrfs_release_path(path);
+	/*
+	 * We don't need a lock on a leaf. btrfs_realloc_node() will lock all
+	 * leafs from path->nodes[1], so set lowest_level to 1 to avoid later
+	 * a deadlock (attempting to write lock an already write locked leaf).
+	 */
+	path->lowest_level = 1;
 	wret = btrfs_search_slot(trans, root, &key, path, 0, 1);
 
 	if (wret < 0) {
@@ -108,24 +105,38 @@ int btrfs_defrag_leaves(struct btrfs_trans_handle *trans,
 		ret = 0;
 		goto out;
 	}
-	path->slots[1] = btrfs_header_nritems(path->nodes[1]);
-	next_key_ret = btrfs_find_next_key(root, path, &key, 1, cache_only,
-					   min_trans);
+	/*
+	 * The node at level 1 must always be locked when our path has
+	 * keep_locks set and lowest_level is 1, regardless of the value of
+	 * path->slots[1].
+	 */
+	BUG_ON(path->locks[1] == 0);
 	ret = btrfs_realloc_node(trans, root,
 				 path->nodes[1], 0,
-				 cache_only, &last_ret,
+				 &last_ret,
 				 &root->defrag_progress);
 	if (ret) {
 		WARN_ON(ret == -EAGAIN);
 		goto out;
 	}
+	/*
+	 * Now that we reallocated the node we can find the next key. Note that
+	 * btrfs_find_next_key() can release our path and do another search
+	 * without COWing, this is because even with path->keep_locks = 1,
+	 * btrfs_search_slot() / ctree.c:unlock_up() does not keeps a lock on a
+	 * node when path->slots[node_level - 1] does not point to the last
+	 * item or a slot beyond the last item (ctree.c:unlock_up()). Therefore
+	 * we search for the next key after reallocating our node.
+	 */
+	path->slots[1] = btrfs_header_nritems(path->nodes[1]);
+	next_key_ret = btrfs_find_next_key(root, path, &key, 1,
+					   min_trans);
 	if (next_key_ret == 0) {
 		memcpy(&root->defrag_progress, &key, sizeof(key));
 		ret = -EAGAIN;
 	}
 out:
-	if (path)
-		btrfs_free_path(path);
+	btrfs_free_path(path);
 	if (ret == -EAGAIN) {
 		if (root->defrag_max.objectid > root->defrag_progress.objectid)
 			goto done;

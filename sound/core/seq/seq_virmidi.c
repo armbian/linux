@@ -77,13 +77,17 @@ static void snd_virmidi_init_event(struct snd_virmidi *vmidi,
  * decode input event and put to read buffer of each opened file
  */
 static int snd_virmidi_dev_receive_event(struct snd_virmidi_dev *rdev,
-					 struct snd_seq_event *ev)
+					 struct snd_seq_event *ev,
+					 bool atomic)
 {
 	struct snd_virmidi *vmidi;
 	unsigned char msg[4];
 	int len;
 
-	read_lock(&rdev->filelist_lock);
+	if (atomic)
+		read_lock(&rdev->filelist_lock);
+	else
+		down_read(&rdev->filelist_sem);
 	list_for_each_entry(vmidi, &rdev->filelist, list) {
 		if (!vmidi->trigger)
 			continue;
@@ -91,13 +95,17 @@ static int snd_virmidi_dev_receive_event(struct snd_virmidi_dev *rdev,
 			if ((ev->flags & SNDRV_SEQ_EVENT_LENGTH_MASK) != SNDRV_SEQ_EVENT_LENGTH_VARIABLE)
 				continue;
 			snd_seq_dump_var_event(ev, (snd_seq_dump_func_t)snd_rawmidi_receive, vmidi->substream);
+			snd_midi_event_reset_decode(vmidi->parser);
 		} else {
 			len = snd_midi_event_decode(vmidi->parser, msg, sizeof(msg), ev);
 			if (len > 0)
 				snd_rawmidi_receive(vmidi->substream, msg, len);
 		}
 	}
-	read_unlock(&rdev->filelist_lock);
+	if (atomic)
+		read_unlock(&rdev->filelist_lock);
+	else
+		up_read(&rdev->filelist_sem);
 
 	return 0;
 }
@@ -115,7 +123,7 @@ int snd_virmidi_receive(struct snd_rawmidi *rmidi, struct snd_seq_event *ev)
 	struct snd_virmidi_dev *rdev;
 
 	rdev = rmidi->private_data;
-	return snd_virmidi_dev_receive_event(rdev, ev);
+	return snd_virmidi_dev_receive_event(rdev, ev, true);
 }
 #endif  /*  0  */
 
@@ -130,7 +138,7 @@ static int snd_virmidi_event_input(struct snd_seq_event *ev, int direct,
 	rdev = private_data;
 	if (!(rdev->flags & SNDRV_VIRMIDI_USE))
 		return 0; /* ignored */
-	return snd_virmidi_dev_receive_event(rdev, ev);
+	return snd_virmidi_dev_receive_event(rdev, ev, atomic);
 }
 
 /*
@@ -155,21 +163,27 @@ static void snd_virmidi_output_trigger(struct snd_rawmidi_substream *substream, 
 	struct snd_virmidi *vmidi = substream->runtime->private_data;
 	int count, res;
 	unsigned char buf[32], *pbuf;
+	unsigned long flags;
+	bool check_resched = !in_atomic();
 
 	if (up) {
 		vmidi->trigger = 1;
 		if (vmidi->seq_mode == SNDRV_VIRMIDI_SEQ_DISPATCH &&
 		    !(vmidi->rdev->flags & SNDRV_VIRMIDI_SUBSCRIBE)) {
-			snd_rawmidi_transmit_ack(substream, substream->runtime->buffer_size - substream->runtime->avail);
-			return;		/* ignored */
+			while (snd_rawmidi_transmit(substream, buf,
+						    sizeof(buf)) > 0) {
+				/* ignored */
+			}
+			return;
 		}
+		spin_lock_irqsave(&substream->runtime->lock, flags);
 		if (vmidi->event.type != SNDRV_SEQ_EVENT_NONE) {
 			if (snd_seq_kernel_client_dispatch(vmidi->client, &vmidi->event, in_atomic(), 0) < 0)
-				return;
+				goto out;
 			vmidi->event.type = SNDRV_SEQ_EVENT_NONE;
 		}
 		while (1) {
-			count = snd_rawmidi_transmit_peek(substream, buf, sizeof(buf));
+			count = __snd_rawmidi_transmit_peek(substream, buf, sizeof(buf));
 			if (count <= 0)
 				break;
 			pbuf = buf;
@@ -179,16 +193,27 @@ static void snd_virmidi_output_trigger(struct snd_rawmidi_substream *substream, 
 					snd_midi_event_reset_encode(vmidi->parser);
 					continue;
 				}
-				snd_rawmidi_transmit_ack(substream, res);
+				__snd_rawmidi_transmit_ack(substream, res);
 				pbuf += res;
 				count -= res;
 				if (vmidi->event.type != SNDRV_SEQ_EVENT_NONE) {
 					if (snd_seq_kernel_client_dispatch(vmidi->client, &vmidi->event, in_atomic(), 0) < 0)
-						return;
+						goto out;
 					vmidi->event.type = SNDRV_SEQ_EVENT_NONE;
 				}
 			}
+			if (!check_resched)
+				continue;
+			/* do temporary unlock & cond_resched() for avoiding
+			 * CPU soft lockup, which may happen via a write from
+			 * a huge rawmidi buffer
+			 */
+			spin_unlock_irqrestore(&substream->runtime->lock, flags);
+			cond_resched();
+			spin_lock_irqsave(&substream->runtime->lock, flags);
 		}
+	out:
+		spin_unlock_irqrestore(&substream->runtime->lock, flags);
 	} else {
 		vmidi->trigger = 0;
 	}
@@ -202,7 +227,6 @@ static int snd_virmidi_input_open(struct snd_rawmidi_substream *substream)
 	struct snd_virmidi_dev *rdev = substream->rmidi->private_data;
 	struct snd_rawmidi_runtime *runtime = substream->runtime;
 	struct snd_virmidi *vmidi;
-	unsigned long flags;
 
 	vmidi = kzalloc(sizeof(*vmidi), GFP_KERNEL);
 	if (vmidi == NULL)
@@ -216,9 +240,11 @@ static int snd_virmidi_input_open(struct snd_rawmidi_substream *substream)
 	vmidi->client = rdev->client;
 	vmidi->port = rdev->port;	
 	runtime->private_data = vmidi;
-	write_lock_irqsave(&rdev->filelist_lock, flags);
+	down_write(&rdev->filelist_sem);
+	write_lock_irq(&rdev->filelist_lock);
 	list_add_tail(&vmidi->list, &rdev->filelist);
-	write_unlock_irqrestore(&rdev->filelist_lock, flags);
+	write_unlock_irq(&rdev->filelist_lock);
+	up_write(&rdev->filelist_sem);
 	vmidi->rdev = rdev;
 	return 0;
 }
@@ -254,9 +280,15 @@ static int snd_virmidi_output_open(struct snd_rawmidi_substream *substream)
  */
 static int snd_virmidi_input_close(struct snd_rawmidi_substream *substream)
 {
+	struct snd_virmidi_dev *rdev = substream->rmidi->private_data;
 	struct snd_virmidi *vmidi = substream->runtime->private_data;
-	snd_midi_event_free(vmidi->parser);
+
+	down_write(&rdev->filelist_sem);
+	write_lock_irq(&rdev->filelist_lock);
 	list_del(&vmidi->list);
+	write_unlock_irq(&rdev->filelist_lock);
+	up_write(&rdev->filelist_sem);
+	snd_midi_event_free(vmidi->parser);
 	substream->runtime->private_data = NULL;
 	kfree(vmidi);
 	return 0;
@@ -338,13 +370,13 @@ static int snd_virmidi_unuse(void *private_data,
  *  Register functions
  */
 
-static struct snd_rawmidi_ops snd_virmidi_input_ops = {
+static const struct snd_rawmidi_ops snd_virmidi_input_ops = {
 	.open = snd_virmidi_input_open,
 	.close = snd_virmidi_input_close,
 	.trigger = snd_virmidi_input_trigger,
 };
 
-static struct snd_rawmidi_ops snd_virmidi_output_ops = {
+static const struct snd_rawmidi_ops snd_virmidi_output_ops = {
 	.open = snd_virmidi_output_open,
 	.close = snd_virmidi_output_close,
 	.trigger = snd_virmidi_output_trigger,
@@ -446,7 +478,7 @@ static int snd_virmidi_dev_register(struct snd_rawmidi *rmidi)
 		/* should check presence of port more strictly.. */
 		break;
 	default:
-		snd_printk(KERN_ERR "seq_mode is not set: %d\n", rdev->seq_mode);
+		pr_err("ALSA: seq_virmidi: seq_mode is not set: %d\n", rdev->seq_mode);
 		return -EINVAL;
 	}
 	return 0;
@@ -468,7 +500,7 @@ static int snd_virmidi_dev_unregister(struct snd_rawmidi *rmidi)
 /*
  *
  */
-static struct snd_rawmidi_global_ops snd_virmidi_global_ops = {
+static const struct snd_rawmidi_global_ops snd_virmidi_global_ops = {
 	.dev_register = snd_virmidi_dev_register,
 	.dev_unregister = snd_virmidi_dev_unregister,
 };
@@ -509,6 +541,7 @@ int snd_virmidi_new(struct snd_card *card, int device, struct snd_rawmidi **rrmi
 	rdev->rmidi = rmidi;
 	rdev->device = device;
 	rdev->client = -1;
+	init_rwsem(&rdev->filelist_sem);
 	rwlock_init(&rdev->filelist_lock);
 	INIT_LIST_HEAD(&rdev->filelist);
 	rdev->seq_mode = SNDRV_VIRMIDI_SEQ_DISPATCH;
@@ -523,6 +556,7 @@ int snd_virmidi_new(struct snd_card *card, int device, struct snd_rawmidi **rrmi
 	*rrmidi = rmidi;
 	return 0;
 }
+EXPORT_SYMBOL(snd_virmidi_new);
 
 /*
  *  ENTRY functions
@@ -539,5 +573,3 @@ static void __exit alsa_virmidi_exit(void)
 
 module_init(alsa_virmidi_init)
 module_exit(alsa_virmidi_exit)
-
-EXPORT_SYMBOL(snd_virmidi_new);

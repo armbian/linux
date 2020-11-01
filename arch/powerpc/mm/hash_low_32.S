@@ -26,11 +26,11 @@
 #include <asm/ppc_asm.h>
 #include <asm/thread_info.h>
 #include <asm/asm-offsets.h>
+#include <asm/export.h>
 
 #ifdef CONFIG_SMP
 	.section .bss
 	.align	2
-	.globl mmu_hash_lock
 mmu_hash_lock:
 	.space	4
 #endif /* CONFIG_SMP */
@@ -184,7 +184,7 @@ _GLOBAL(add_hash_page)
 	add	r3,r3,r0		/* note create_hpte trims to 24 bits */
 
 #ifdef CONFIG_SMP
-	rlwinm	r8,r1,0,0,(31-THREAD_SHIFT) /* use cpu number to make tag */
+	CURRENT_THREAD_INFO(r8, r1)	/* use cpu number to make tag */
 	lwz	r8,TI_CPU(r8)		/* to go in mmu_hash_lock */
 	oris	r8,r8,12
 #endif /* CONFIG_SMP */
@@ -545,7 +545,7 @@ _GLOBAL(flush_hash_pages)
 #ifdef CONFIG_SMP
 	addis	r9,r7,mmu_hash_lock@ha
 	addi	r9,r9,mmu_hash_lock@l
-	rlwinm	r8,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r8, r1)
 	add	r8,r8,r7
 	lwz	r8,TI_CPU(r8)
 	oris	r8,r8,9
@@ -633,13 +633,14 @@ _GLOBAL(flush_hash_patch_B)
 	SYNC_601
 	isync
 	blr
+EXPORT_SYMBOL(flush_hash_pages)
 
 /*
  * Flush an entry from the TLB
  */
 _GLOBAL(_tlbie)
 #ifdef CONFIG_SMP
-	rlwinm	r8,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r8, r1)
 	lwz	r8,TI_CPU(r8)
 	oris	r8,r8,11
 	mfmsr	r10
@@ -677,7 +678,7 @@ _GLOBAL(_tlbie)
  */
 _GLOBAL(_tlbia)
 #if defined(CONFIG_SMP)
-	rlwinm	r8,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r8, r1)
 	lwz	r8,TI_CPU(r8)
 	oris	r8,r8,10
 	mfmsr	r10

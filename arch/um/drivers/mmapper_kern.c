@@ -17,8 +17,8 @@
 #include <linux/module.h>
 #include <linux/mm.h>
 
-#include <asm/uaccess.h>
-#include "mem_user.h"
+#include <linux/uaccess.h>
+#include <mem_user.h>
 
 /* These are set in mmapper_init, which is called at boot time */
 static unsigned long mmapper_size;

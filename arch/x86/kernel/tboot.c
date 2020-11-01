@@ -31,8 +31,9 @@
 #include <linux/pfn.h>
 #include <linux/mm.h>
 #include <linux/tboot.h>
+#include <linux/debugfs.h>
 
-#include <asm/trampoline.h>
+#include <asm/realmode.h>
 #include <asm/processor.h>
 #include <asm/bootparam.h>
 #include <asm/pgtable.h>
@@ -41,10 +42,10 @@
 #include <asm/fixmap.h>
 #include <asm/proto.h>
 #include <asm/setup.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/io.h>
 
-#include "acpi/realmode/wakeup.h"
+#include "../realmode/rm/wakeup.h"
 
 /* Global pointer to shared data; NULL means no measured launch. */
 struct tboot *tboot __read_mostly;
@@ -67,15 +68,9 @@ void __init tboot_probe(void)
 	 * also verify that it is mapped as we expect it before calling
 	 * set_fixmap(), to reduce chance of garbage value causing crash
 	 */
-	if (!e820_any_mapped(boot_params.tboot_addr,
-			     boot_params.tboot_addr, E820_RESERVED)) {
-		pr_warning("non-0 tboot_addr but it is not of type E820_RESERVED\n");
-		return;
-	}
-
-	/* only a natively booted kernel should be using TXT */
-	if (paravirt_enabled()) {
-		pr_warning("non-0 tboot_addr but pv_ops is enabled\n");
+	if (!e820__mapped_any(boot_params.tboot_addr,
+			     boot_params.tboot_addr, E820_TYPE_RESERVED)) {
+		pr_warning("non-0 tboot_addr but it is not of type E820_TYPE_RESERVED\n");
 		return;
 	}
 
@@ -123,22 +118,37 @@ static int map_tboot_page(unsigned long vaddr, unsigned long pfn,
 			  pgprot_t prot)
 {
 	pgd_t *pgd;
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
 
 	pgd = pgd_offset(&tboot_mm, vaddr);
-	pud = pud_alloc(&tboot_mm, pgd, vaddr);
+	p4d = p4d_alloc(&tboot_mm, pgd, vaddr);
+	if (!p4d)
+		return -1;
+	pud = pud_alloc(&tboot_mm, p4d, vaddr);
 	if (!pud)
 		return -1;
 	pmd = pmd_alloc(&tboot_mm, pud, vaddr);
 	if (!pmd)
 		return -1;
-	pte = pte_alloc_map(&tboot_mm, NULL, pmd, vaddr);
+	pte = pte_alloc_map(&tboot_mm, pmd, vaddr);
 	if (!pte)
 		return -1;
 	set_pte_at(&tboot_mm, vaddr, pte, pfn_pte(pfn, prot));
 	pte_unmap(pte);
+
+	/*
+	 * PTI poisons low addresses in the kernel page tables in the
+	 * name of making them unusable for userspace.  To execute
+	 * code at such a low address, the poison must be cleared.
+	 *
+	 * Note: 'pgd' actually gets set in p4d_alloc() _or_
+	 * pud_alloc() depending on 4/5-level paging.
+	 */
+	pgd->pgd &= ~_PAGE_NX;
+
 	return 0;
 }
 
@@ -193,15 +203,16 @@ static int tboot_setup_sleep(void)
 
 	tboot->num_mac_regions = 0;
 
-	for (i = 0; i < e820.nr_map; i++) {
-		if ((e820.map[i].type != E820_RAM)
-		 && (e820.map[i].type != E820_RESERVED_KERN))
+	for (i = 0; i < e820_table->nr_entries; i++) {
+		if ((e820_table->entries[i].type != E820_TYPE_RAM)
+		 && (e820_table->entries[i].type != E820_TYPE_RESERVED_KERN))
 			continue;
 
-		add_mac_region(e820.map[i].addr, e820.map[i].size);
+		add_mac_region(e820_table->entries[i].addr, e820_table->entries[i].size);
 	}
 
-	tboot->acpi_sinfo.kernel_s3_resume_vector = acpi_wakeup_address;
+	tboot->acpi_sinfo.kernel_s3_resume_vector =
+		real_mode_header->wakeup_start;
 
 	return 0;
 }
@@ -299,6 +310,15 @@ static int tboot_sleep(u8 sleep_state, u32 pm1a_control, u32 pm1b_control)
 	return 0;
 }
 
+static int tboot_extended_sleep(u8 sleep_state, u32 val_a, u32 val_b)
+{
+	if (!tboot_enabled())
+		return 0;
+
+	pr_warning("tboot is not able to suspend on platforms with reduced hardware sleep (ACPIv5)");
+	return -ENODEV;
+}
+
 static atomic_t ap_wfs_count;
 
 static int tboot_wait_for_aps(int num_aps)
@@ -318,24 +338,82 @@ static int tboot_wait_for_aps(int num_aps)
 	return !(atomic_read((atomic_t *)&tboot->num_in_wfs) == num_aps);
 }
 
-static int __cpuinit tboot_cpu_callback(struct notifier_block *nfb,
-			unsigned long action, void *hcpu)
+static int tboot_dying_cpu(unsigned int cpu)
 {
-	switch (action) {
-	case CPU_DYING:
-		atomic_inc(&ap_wfs_count);
-		if (num_online_cpus() == 1)
-			if (tboot_wait_for_aps(atomic_read(&ap_wfs_count)))
-				return NOTIFY_BAD;
-		break;
+	atomic_inc(&ap_wfs_count);
+	if (num_online_cpus() == 1) {
+		if (tboot_wait_for_aps(atomic_read(&ap_wfs_count)))
+			return -EBUSY;
 	}
-	return NOTIFY_OK;
+	return 0;
 }
 
-static struct notifier_block tboot_cpu_notifier __cpuinitdata =
+#ifdef CONFIG_DEBUG_FS
+
+#define TBOOT_LOG_UUID	{ 0x26, 0x25, 0x19, 0xc0, 0x30, 0x6b, 0xb4, 0x4d, \
+			  0x4c, 0x84, 0xa3, 0xe9, 0x53, 0xb8, 0x81, 0x74 }
+
+#define TBOOT_SERIAL_LOG_ADDR	0x60000
+#define TBOOT_SERIAL_LOG_SIZE	0x08000
+#define LOG_MAX_SIZE_OFF	16
+#define LOG_BUF_OFF		24
+
+static uint8_t tboot_log_uuid[16] = TBOOT_LOG_UUID;
+
+static ssize_t tboot_log_read(struct file *file, char __user *user_buf, size_t count, loff_t *ppos)
 {
-	.notifier_call = tboot_cpu_callback,
+	void __iomem *log_base;
+	u8 log_uuid[16];
+	u32 max_size;
+	void *kbuf;
+	int ret = -EFAULT;
+
+	log_base = ioremap_nocache(TBOOT_SERIAL_LOG_ADDR, TBOOT_SERIAL_LOG_SIZE);
+	if (!log_base)
+		return ret;
+
+	memcpy_fromio(log_uuid, log_base, sizeof(log_uuid));
+	if (memcmp(&tboot_log_uuid, log_uuid, sizeof(log_uuid)))
+		goto err_iounmap;
+
+	max_size = readl(log_base + LOG_MAX_SIZE_OFF);
+	if (*ppos >= max_size) {
+		ret = 0;
+		goto err_iounmap;
+	}
+
+	if (*ppos + count > max_size)
+		count = max_size - *ppos;
+
+	kbuf = kmalloc(count, GFP_KERNEL);
+	if (!kbuf) {
+		ret = -ENOMEM;
+		goto err_iounmap;
+	}
+
+	memcpy_fromio(kbuf, log_base + LOG_BUF_OFF + *ppos, count);
+	if (copy_to_user(user_buf, kbuf, count))
+		goto err_kfree;
+
+	*ppos += count;
+
+	ret = count;
+
+err_kfree:
+	kfree(kbuf);
+
+err_iounmap:
+	iounmap(log_base);
+
+	return ret;
+}
+
+static const struct file_operations tboot_log_fops = {
+	.read	= tboot_log_read,
+	.llseek	= default_llseek,
 };
+
+#endif /* CONFIG_DEBUG_FS */
 
 static __init int tboot_late_init(void)
 {
@@ -345,9 +423,15 @@ static __init int tboot_late_init(void)
 	tboot_create_trampoline();
 
 	atomic_set(&ap_wfs_count, 0);
-	register_hotcpu_notifier(&tboot_cpu_notifier);
+	cpuhp_setup_state(CPUHP_AP_X86_TBOOT_DYING, "x86/tboot:dying", NULL,
+			  tboot_dying_cpu);
+#ifdef CONFIG_DEBUG_FS
+	debugfs_create_file("tboot_log", S_IRUSR,
+			arch_debugfs_dir, NULL, &tboot_log_fops);
+#endif
 
 	acpi_os_set_prepare_sleep(&tboot_sleep);
+	acpi_os_set_prepare_extended_sleep(&tboot_extended_sleep);
 	return 0;
 }
 
@@ -440,6 +524,9 @@ int tboot_force_iommu(void)
 {
 	if (!tboot_enabled())
 		return 0;
+
+	if (intel_iommu_tboot_noforce)
+		return 1;
 
 	if (no_iommu || swiotlb || dmar_disabled)
 		pr_warning("Forcing Intel-IOMMU to enabled\n");

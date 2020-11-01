@@ -74,8 +74,7 @@ extern cvmx_helper_link_info_t __cvmx_helper_xaui_link_get(int ipd_port);
  * Configure an IPD/PKO port for the specified link state. This
  * function does not influence auto negotiation at the PHY level.
  * The passed link state must always match the link state returned
- * by cvmx_helper_link_get(). It is normally best to use
- * cvmx_helper_link_autoconf() instead.
+ * by cvmx_helper_link_get().
  *
  * @ipd_port:  IPD/PKO port to configure
  * @link_info: The new link state
@@ -92,9 +91,9 @@ extern int __cvmx_helper_xaui_link_set(int ipd_port,
  *
  * @ipd_port: IPD/PKO port to loopback.
  * @enable_internal:
- *                 Non zero if you want internal loopback
+ *		   Non zero if you want internal loopback
  * @enable_external:
- *                 Non zero if you want external loopback
+ *		   Non zero if you want external loopback
  *
  * Returns Zero on success, negative on failure.
  */

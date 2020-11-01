@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __SH_INTC_H
 #define __SH_INTC_H
 
@@ -133,7 +134,6 @@ struct intc_desc symbol __initdata = {					\
 }
 
 int register_intc_controller(struct intc_desc *desc);
-void reserve_intc_vectors(struct intc_vect *vectors, unsigned int nr_vecs);
 int intc_set_priority(unsigned int irq, unsigned int prio);
 int intc_irq_lookup(const char *chipname, intc_enum enum_id);
 void intc_finalize(void);

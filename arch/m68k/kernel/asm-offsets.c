@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * This program is used to generate definitions needed by
  * assembly language modules.
@@ -77,7 +78,7 @@ int main(void)
 	DEFINE(BIR_SIZE, offsetof(struct bi_record, size));
 	DEFINE(BIR_DATA, offsetof(struct bi_record, data));
 
-	/* offsets into font_desc (drivers/video/console/font.h) */
+	/* offsets into the font_desc struct */
 	DEFINE(FONT_DESC_IDX, offsetof(struct font_desc, idx));
 	DEFINE(FONT_DESC_NAME, offsetof(struct font_desc, name));
 	DEFINE(FONT_DESC_WIDTH, offsetof(struct font_desc, width));
@@ -98,6 +99,9 @@ int main(void)
 	DEFINE(CIABBASE, &ciab);
 	DEFINE(C_PRA, offsetof(struct CIA, pra));
 	DEFINE(ZTWOBASE, zTwoBase);
+
+	/* enum m68k_fixup_type */
+	DEFINE(M68K_FIXUP_MEMOFFSET, m68k_fixup_memoffset);
 #endif
 
 	return 0;

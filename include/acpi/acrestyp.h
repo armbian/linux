@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2011, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -48,7 +48,7 @@
  * Definitions for Resource Attributes
  */
 typedef u16 acpi_rs_length;	/* Resource Length field is fixed at 16 bits */
-typedef u32 acpi_rsdesc_size;	/* Max Resource Descriptor size is (Length+3) = (64_k-1)+3 */
+typedef u32 acpi_rsdesc_size;	/* Max Resource Descriptor size is (Length+3) = (64K-1)+3 */
 
 /*
  * Memory Attributes
@@ -102,8 +102,11 @@ typedef u32 acpi_rsdesc_size;	/* Max Resource Descriptor size is (Length+3) = (6
 
 #define ACPI_EXCLUSIVE                  (u8) 0x00
 #define ACPI_SHARED                     (u8) 0x01
-#define ACPI_EXCLUSIVE_AND_WAKE         (u8) 0x02
-#define ACPI_SHARED_AND_WAKE            (u8) 0x03
+
+/* Wake */
+
+#define ACPI_NOT_WAKE_CAPABLE           (u8) 0x00
+#define ACPI_WAKE_CAPABLE               (u8) 0x01
 
 /*
  * DMA Attributes
@@ -171,6 +174,7 @@ struct acpi_resource_irq {
 	u8 triggering;
 	u8 polarity;
 	u8 sharable;
+	u8 wake_capable;
 	u8 interrupt_count;
 	u8 interrupts[1];
 };
@@ -285,6 +289,11 @@ union acpi_resource_attribute {
 	u8 type_specific;
 };
 
+struct acpi_resource_label {
+	u16 string_length;
+	char *string_ptr;
+};
+
 struct acpi_resource_source {
 	u8 index;
 	u16 string_length;
@@ -301,43 +310,51 @@ struct acpi_resource_source {
 	u8                                      max_address_fixed; \
 	union acpi_resource_attribute           info;
 
-struct acpi_resource_address {
-ACPI_RESOURCE_ADDRESS_COMMON};
-
-struct acpi_resource_address16 {
-	ACPI_RESOURCE_ADDRESS_COMMON u16 granularity;
+struct acpi_address16_attribute {
+	u16 granularity;
 	u16 minimum;
 	u16 maximum;
 	u16 translation_offset;
 	u16 address_length;
-	struct acpi_resource_source resource_source;
 };
 
-struct acpi_resource_address32 {
-	ACPI_RESOURCE_ADDRESS_COMMON u32 granularity;
+struct acpi_address32_attribute {
+	u32 granularity;
 	u32 minimum;
 	u32 maximum;
 	u32 translation_offset;
 	u32 address_length;
-	struct acpi_resource_source resource_source;
 };
 
-struct acpi_resource_address64 {
-	ACPI_RESOURCE_ADDRESS_COMMON u64 granularity;
-	u64 minimum;
-	u64 maximum;
-	u64 translation_offset;
-	u64 address_length;
-	struct acpi_resource_source resource_source;
-};
-
-struct acpi_resource_extended_address64 {
-	ACPI_RESOURCE_ADDRESS_COMMON u8 revision_iD;
+struct acpi_address64_attribute {
 	u64 granularity;
 	u64 minimum;
 	u64 maximum;
 	u64 translation_offset;
 	u64 address_length;
+};
+
+struct acpi_resource_address {
+ACPI_RESOURCE_ADDRESS_COMMON};
+
+struct acpi_resource_address16 {
+	ACPI_RESOURCE_ADDRESS_COMMON struct acpi_address16_attribute address;
+	struct acpi_resource_source resource_source;
+};
+
+struct acpi_resource_address32 {
+	ACPI_RESOURCE_ADDRESS_COMMON struct acpi_address32_attribute address;
+	struct acpi_resource_source resource_source;
+};
+
+struct acpi_resource_address64 {
+	ACPI_RESOURCE_ADDRESS_COMMON struct acpi_address64_attribute address;
+	struct acpi_resource_source resource_source;
+};
+
+struct acpi_resource_extended_address64 {
+	ACPI_RESOURCE_ADDRESS_COMMON u8 revision_ID;
+	struct acpi_address64_attribute address;
 	u64 type_specific;
 };
 
@@ -346,6 +363,7 @@ struct acpi_resource_extended_irq {
 	u8 triggering;
 	u8 polarity;
 	u8 sharable;
+	u8 wake_capable;
 	u8 interrupt_count;
 	struct acpi_resource_source resource_source;
 	u32 interrupts[1];
@@ -365,6 +383,7 @@ struct acpi_resource_gpio {
 	u8 producer_consumer;	/* For values, see Producer/Consumer above */
 	u8 pin_config;
 	u8 sharable;		/* For values, see Interrupt Attributes above */
+	u8 wake_capable;	/* For values, see Interrupt Attributes above */
 	u8 io_restriction;
 	u8 triggering;		/* For values, see Interrupt Attributes above */
 	u8 polarity;		/* For values, see Interrupt Attributes above */
@@ -403,6 +422,7 @@ struct acpi_resource_gpio {
 	u8                                      type; \
 	u8                                      producer_consumer;   /* For values, see Producer/Consumer above */\
 	u8                                      slave_mode; \
+	u8                                      connection_sharing; \
 	u8                                      type_revision_id; \
 	u16                                     type_data_length; \
 	u16                                     vendor_length; \
@@ -519,6 +539,81 @@ struct acpi_resource_uart_serialbus {
 #define ACPI_UART_CLEAR_TO_SEND                 (1<<6)
 #define ACPI_UART_REQUEST_TO_SEND               (1<<7)
 
+struct acpi_resource_pin_function {
+	u8 revision_id;
+	u8 pin_config;
+	u8 sharable;		/* For values, see Interrupt Attributes above */
+	u16 function_number;
+	u16 pin_table_length;
+	u16 vendor_length;
+	struct acpi_resource_source resource_source;
+	u16 *pin_table;
+	u8 *vendor_data;
+};
+
+struct acpi_resource_pin_config {
+	u8 revision_id;
+	u8 producer_consumer;	/* For values, see Producer/Consumer above */
+	u8 sharable;		/* For values, see Interrupt Attributes above */
+	u8 pin_config_type;
+	u32 pin_config_value;
+	u16 pin_table_length;
+	u16 vendor_length;
+	struct acpi_resource_source resource_source;
+	u16 *pin_table;
+	u8 *vendor_data;
+};
+
+/* Values for pin_config_type field above */
+
+#define ACPI_PIN_CONFIG_DEFAULT                 0
+#define ACPI_PIN_CONFIG_BIAS_PULL_UP            1
+#define ACPI_PIN_CONFIG_BIAS_PULL_DOWN          2
+#define ACPI_PIN_CONFIG_BIAS_DEFAULT            3
+#define ACPI_PIN_CONFIG_BIAS_DISABLE            4
+#define ACPI_PIN_CONFIG_BIAS_HIGH_IMPEDANCE     5
+#define ACPI_PIN_CONFIG_BIAS_BUS_HOLD           6
+#define ACPI_PIN_CONFIG_DRIVE_OPEN_DRAIN        7
+#define ACPI_PIN_CONFIG_DRIVE_OPEN_SOURCE       8
+#define ACPI_PIN_CONFIG_DRIVE_PUSH_PULL         9
+#define ACPI_PIN_CONFIG_DRIVE_STRENGTH          10
+#define ACPI_PIN_CONFIG_SLEW_RATE               11
+#define ACPI_PIN_CONFIG_INPUT_DEBOUNCE          12
+#define ACPI_PIN_CONFIG_INPUT_SCHMITT_TRIGGER   13
+
+struct acpi_resource_pin_group {
+	u8 revision_id;
+	u8 producer_consumer;	/* For values, see Producer/Consumer above */
+	u16 pin_table_length;
+	u16 vendor_length;
+	u16 *pin_table;
+	struct acpi_resource_label resource_label;
+	u8 *vendor_data;
+};
+
+struct acpi_resource_pin_group_function {
+	u8 revision_id;
+	u8 producer_consumer;	/* For values, see Producer/Consumer above */
+	u8 sharable;		/* For values, see Interrupt Attributes above */
+	u16 function_number;
+	u16 vendor_length;
+	struct acpi_resource_source resource_source;
+	struct acpi_resource_label resource_source_label;
+	u8 *vendor_data;
+};
+
+struct acpi_resource_pin_group_config {
+	u8 revision_id;
+	u8 producer_consumer;	/* For values, see Producer/Consumer above */
+	u8 sharable;		/* For values, see Interrupt Attributes above */
+	u8 pin_config_type;	/* For values, see pin_config_type above */
+	u32 pin_config_value;
+	u16 vendor_length;
+	struct acpi_resource_source resource_source;
+	struct acpi_resource_label resource_source_label;
+	u8 *vendor_data;
+};
+
 /* ACPI_RESOURCE_TYPEs */
 
 #define ACPI_RESOURCE_TYPE_IRQ                  0
@@ -541,7 +636,12 @@ struct acpi_resource_uart_serialbus {
 #define ACPI_RESOURCE_TYPE_GPIO                 17	/* ACPI 5.0 */
 #define ACPI_RESOURCE_TYPE_FIXED_DMA            18	/* ACPI 5.0 */
 #define ACPI_RESOURCE_TYPE_SERIAL_BUS           19	/* ACPI 5.0 */
-#define ACPI_RESOURCE_TYPE_MAX                  19
+#define ACPI_RESOURCE_TYPE_PIN_FUNCTION         20	/* ACPI 6.2 */
+#define ACPI_RESOURCE_TYPE_PIN_CONFIG           21	/* ACPI 6.2 */
+#define ACPI_RESOURCE_TYPE_PIN_GROUP            22	/* ACPI 6.2 */
+#define ACPI_RESOURCE_TYPE_PIN_GROUP_FUNCTION   23	/* ACPI 6.2 */
+#define ACPI_RESOURCE_TYPE_PIN_GROUP_CONFIG     24	/* ACPI 6.2 */
+#define ACPI_RESOURCE_TYPE_MAX                  24
 
 /* Master union for resource descriptors */
 
@@ -569,6 +669,11 @@ union acpi_resource_data {
 	struct acpi_resource_spi_serialbus spi_serial_bus;
 	struct acpi_resource_uart_serialbus uart_serial_bus;
 	struct acpi_resource_common_serialbus common_serial_bus;
+	struct acpi_resource_pin_function pin_function;
+	struct acpi_resource_pin_config pin_config;
+	struct acpi_resource_pin_group pin_group;
+	struct acpi_resource_pin_group_function pin_group_function;
+	struct acpi_resource_pin_group_config pin_group_config;
 
 	/* Common fields */
 
@@ -591,7 +696,10 @@ struct acpi_resource {
 #define ACPI_RS_SIZE_MIN                    (u32) ACPI_ROUND_UP_TO_NATIVE_WORD (12)
 #define ACPI_RS_SIZE(type)                  (u32) (ACPI_RS_SIZE_NO_DATA + sizeof (type))
 
-#define ACPI_NEXT_RESOURCE(res)             (struct acpi_resource *)((u8 *) res + res->length)
+/* Macro for walking resource templates with multiple descriptors */
+
+#define ACPI_NEXT_RESOURCE(res) \
+	ACPI_ADD_PTR (struct acpi_resource, (res), (res)->length)
 
 struct acpi_pci_routing_table {
 	u32 length;

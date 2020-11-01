@@ -52,7 +52,7 @@
 #include <asm/string.h>
 #include <asm/io.h>
 #include <linux/atomic.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/wait.h>
 
 #include "firestream.h"
@@ -168,7 +168,7 @@ static char *res_strings[] = {
 	"reserved 14", 
 	"Unrecognized cell", 
 	"reserved 16", 
-	"reassemby abort: AAL5 abort", 
+	"reassembly abort: AAL5 abort", 
 	"packet purged", 
 	"packet ageing timeout", 
 	"channel ageing timeout", 
@@ -181,13 +181,17 @@ static char *res_strings[] = {
 	"reserved 27", 
 	"reserved 28", 
 	"reserved 29", 
-	"reserved 30", 
+	"reserved 30", /* FIXME: The strings between 30-40 might be wrong. */
 	"reassembly abort: no buffers", 
 	"receive buffer overflow", 
 	"change in GFC", 
 	"receive buffer full", 
 	"low priority discard - no receive descriptor", 
 	"low priority discard - missing end of packet", 
+	"reserved 37",
+	"reserved 38",
+	"reserved 39",
+	"reseverd 40",
 	"reserved 41", 
 	"reserved 42", 
 	"reserved 43", 
@@ -252,7 +256,7 @@ struct reginit_item {
 };
 
 
-static struct reginit_item PHY_NTC_INIT[] __devinitdata = {
+static struct reginit_item PHY_NTC_INIT[] = {
 	{ PHY_CLEARALL, 0x40 }, 
 	{ 0x12,  0x0001 },
 	{ 0x13,  0x7605 },
@@ -736,8 +740,8 @@ static void process_txdone_queue (struct fs_dev *dev, struct queue *q)
       
 			skb = td->skb;
 			if (skb == FS_VCC (ATM_SKB(skb)->vcc)->last_skb) {
-				wake_up_interruptible (& FS_VCC (ATM_SKB(skb)->vcc)->close_wait);
 				FS_VCC (ATM_SKB(skb)->vcc)->last_skb = NULL;
+				wake_up_interruptible (& FS_VCC (ATM_SKB(skb)->vcc)->close_wait);
 			}
 			td->dev->ntxpckts--;
 
@@ -891,7 +895,7 @@ static int fs_open(struct atm_vcc *atm_vcc)
 	/* XXX handle qos parameters (rate limiting) ? */
 
 	vcc = kmalloc(sizeof(struct fs_vcc), GFP_KERNEL);
-	fs_dprintk (FS_DEBUG_ALLOC, "Alloc VCC: %p(%Zd)\n", vcc, sizeof(struct fs_vcc));
+	fs_dprintk (FS_DEBUG_ALLOC, "Alloc VCC: %p(%zd)\n", vcc, sizeof(struct fs_vcc));
 	if (!vcc) {
 		clear_bit(ATM_VF_ADDR, &atm_vcc->flags);
 		return -ENOMEM;
@@ -923,6 +927,7 @@ static int fs_open(struct atm_vcc *atm_vcc)
 			}
 			if (!to) {
 				printk ("No more free channels for FS50..\n");
+				kfree(vcc);
 				return -EBUSY;
 			}
 			vcc->channo = dev->channo;
@@ -933,6 +938,7 @@ static int fs_open(struct atm_vcc *atm_vcc)
 			if (((DO_DIRECTION(rxtp) && dev->atm_vccs[vcc->channo])) ||
 			    ( DO_DIRECTION(txtp) && test_bit (vcc->channo, dev->tx_inuse))) {
 				printk ("Channel is in use for FS155.\n");
+				kfree(vcc);
 				return -EBUSY;
 			}
 		}
@@ -942,10 +948,11 @@ static int fs_open(struct atm_vcc *atm_vcc)
 
 	if (DO_DIRECTION (txtp)) {
 		tc = kmalloc (sizeof (struct fs_transmit_config), GFP_KERNEL);
-		fs_dprintk (FS_DEBUG_ALLOC, "Alloc tc: %p(%Zd)\n",
+		fs_dprintk (FS_DEBUG_ALLOC, "Alloc tc: %p(%zd)\n",
 			    tc, sizeof (struct fs_transmit_config));
 		if (!tc) {
 			fs_dprintk (FS_DEBUG_OPEN, "fs: can't alloc transmit_config.\n");
+			kfree(vcc);
 			return -ENOMEM;
 		}
 
@@ -1123,7 +1130,7 @@ static void fs_close(struct atm_vcc *atm_vcc)
 		   this sleep_on, we'll lose any reference to these packets. Memory leak!
 		   On the other hand, it's awfully convenient that we can abort a "close" that
 		   is taking too long. Maybe just use non-interruptible sleep on? -- REW */
-		interruptible_sleep_on (& vcc->close_wait);
+		wait_event_interruptible(vcc->close_wait, !vcc->last_skb);
 	}
 
 	txtp = &atm_vcc->qos.txtp;
@@ -1181,7 +1188,7 @@ static int fs_send (struct atm_vcc *atm_vcc, struct sk_buff *skb)
 	vcc->last_skb = skb;
 
 	td = kmalloc (sizeof (struct FS_BPENTRY), GFP_ATOMIC);
-	fs_dprintk (FS_DEBUG_ALLOC, "Alloc transd: %p(%Zd)\n", td, sizeof (struct FS_BPENTRY));
+	fs_dprintk (FS_DEBUG_ALLOC, "Alloc transd: %p(%zd)\n", td, sizeof (struct FS_BPENTRY));
 	if (!td) {
 		/* Oops out of mem */
 		return -ENOMEM;
@@ -1295,7 +1302,7 @@ static const struct atmdev_ops ops = {
 };
 
 
-static void __devinit undocumented_pci_fix (struct pci_dev *pdev)
+static void undocumented_pci_fix(struct pci_dev *pdev)
 {
 	u32 tint;
 
@@ -1319,13 +1326,13 @@ static void __devinit undocumented_pci_fix (struct pci_dev *pdev)
  *                              PHY routines                              *
  **************************************************************************/
 
-static void __devinit write_phy (struct fs_dev *dev, int regnum, int val)
+static void write_phy(struct fs_dev *dev, int regnum, int val)
 {
 	submit_command (dev,  &dev->hp_txq, QE_CMD_PRP_WR | QE_CMD_IMM_INQ,
 			regnum, val, 0);
 }
 
-static int __devinit init_phy (struct fs_dev *dev, struct reginit_item *reginit)
+static int init_phy(struct fs_dev *dev, struct reginit_item *reginit)
 {
 	int i;
 
@@ -1381,7 +1388,7 @@ static void reset_chip (struct fs_dev *dev)
 	}
 }
 
-static void __devinit *aligned_kmalloc (int size, gfp_t flags, int alignment)
+static void *aligned_kmalloc(int size, gfp_t flags, int alignment)
 {
 	void  *t;
 
@@ -1398,8 +1405,8 @@ static void __devinit *aligned_kmalloc (int size, gfp_t flags, int alignment)
 	return NULL;
 }
 
-static int __devinit init_q (struct fs_dev *dev, 
-			  struct queue *txq, int queue, int nentries, int is_rq)
+static int init_q(struct fs_dev *dev, struct queue *txq, int queue,
+		  int nentries, int is_rq)
 {
 	int sz = nentries * sizeof (struct FS_QENTRY);
 	struct FS_QENTRY *p;
@@ -1434,8 +1441,8 @@ static int __devinit init_q (struct fs_dev *dev,
 }
 
 
-static int __devinit init_fp (struct fs_dev *dev, 
-			   struct freepool *fp, int queue, int bufsize, int nr_buffers)
+static int init_fp(struct fs_dev *dev, struct freepool *fp, int queue,
+		   int bufsize, int nr_buffers)
 {
 	func_enter ();
 
@@ -1488,7 +1495,7 @@ static void top_off_fp (struct fs_dev *dev, struct freepool *fp,
 		fs_dprintk (FS_DEBUG_ALLOC, "Alloc rec-skb: %p(%d)\n", skb, fp->bufsize);
 		if (!skb) break;
 		ne = kmalloc (sizeof (struct FS_BPENTRY), gfp_flags);
-		fs_dprintk (FS_DEBUG_ALLOC, "Alloc rec-d: %p(%Zd)\n", ne, sizeof (struct FS_BPENTRY));
+		fs_dprintk (FS_DEBUG_ALLOC, "Alloc rec-d: %p(%zd)\n", ne, sizeof (struct FS_BPENTRY));
 		if (!ne) {
 			fs_dprintk (FS_DEBUG_ALLOC, "Free rec-skb: %p\n", skb);
 			dev_kfree_skb_any (skb);
@@ -1528,7 +1535,7 @@ static void top_off_fp (struct fs_dev *dev, struct freepool *fp,
 	fs_dprintk (FS_DEBUG_QUEUE, "Added %d entries. \n", n);
 }
 
-static void __devexit free_queue (struct fs_dev *dev, struct queue *txq)
+static void free_queue(struct fs_dev *dev, struct queue *txq)
 {
 	func_enter ();
 
@@ -1544,7 +1551,7 @@ static void __devexit free_queue (struct fs_dev *dev, struct queue *txq)
 	func_exit ();
 }
 
-static void __devexit free_freepool (struct fs_dev *dev, struct freepool *fp)
+static void free_freepool(struct fs_dev *dev, struct freepool *fp)
 {
 	func_enter ();
 
@@ -1662,7 +1669,7 @@ static void fs_poll (unsigned long data)
 }
 #endif
 
-static int __devinit fs_init (struct fs_dev *dev)
+static int fs_init(struct fs_dev *dev)
 {
 	struct pci_dev  *pci_dev;
 	int isr, to;
@@ -1799,7 +1806,7 @@ static int __devinit fs_init (struct fs_dev *dev)
 	}
 	dev->atm_vccs = kcalloc (dev->nchannels, sizeof (struct atm_vcc *),
 				 GFP_KERNEL);
-	fs_dprintk (FS_DEBUG_ALLOC, "Alloc atmvccs: %p(%Zd)\n",
+	fs_dprintk (FS_DEBUG_ALLOC, "Alloc atmvccs: %p(%zd)\n",
 		    dev->atm_vccs, dev->nchannels * sizeof (struct atm_vcc *));
 
 	if (!dev->atm_vccs) {
@@ -1897,8 +1904,8 @@ unmap:
 	return 1;
 }
 
-static int __devinit firestream_init_one (struct pci_dev *pci_dev,
-				       const struct pci_device_id *ent) 
+static int firestream_init_one(struct pci_dev *pci_dev,
+			       const struct pci_device_id *ent)
 {
 	struct atm_dev *atm_dev;
 	struct fs_dev *fs_dev;
@@ -1907,7 +1914,7 @@ static int __devinit firestream_init_one (struct pci_dev *pci_dev,
 		goto err_out;
 
 	fs_dev = kzalloc (sizeof (struct fs_dev), GFP_KERNEL);
-	fs_dprintk (FS_DEBUG_ALLOC, "Alloc fs-dev: %p(%Zd)\n",
+	fs_dprintk (FS_DEBUG_ALLOC, "Alloc fs-dev: %p(%zd)\n",
 		    fs_dev, sizeof (struct fs_dev));
 	if (!fs_dev)
 		goto err_out;
@@ -1934,7 +1941,7 @@ static int __devinit firestream_init_one (struct pci_dev *pci_dev,
 	return -ENODEV;
 }
 
-static void __devexit firestream_remove_one (struct pci_dev *pdev)
+static void firestream_remove_one(struct pci_dev *pdev)
 {
 	int i;
 	struct fs_dev *dev, *nxtdev;
@@ -2000,7 +2007,7 @@ static void __devexit firestream_remove_one (struct pci_dev *pdev)
 
 		fs_dprintk (FS_DEBUG_CLEANUP, "Freeing irq%d.\n", dev->irq);
 		free_irq (dev->irq, dev);
-		del_timer (&dev->timer);
+		del_timer_sync (&dev->timer);
 
 		atm_dev_deregister(dev->atm_dev);
 		free_queue (dev, &dev->hp_txq);
@@ -2026,7 +2033,7 @@ static void __devexit firestream_remove_one (struct pci_dev *pdev)
 	func_exit ();
 }
 
-static struct pci_device_id firestream_pci_tbl[] = {
+static const struct pci_device_id firestream_pci_tbl[] = {
 	{ PCI_VDEVICE(FUJITSU_ME, PCI_DEVICE_ID_FUJITSU_FS50), FS_IS50},
 	{ PCI_VDEVICE(FUJITSU_ME, PCI_DEVICE_ID_FUJITSU_FS155), FS_IS155},
 	{ 0, }
@@ -2038,7 +2045,7 @@ static struct pci_driver firestream_driver = {
 	.name		= "firestream",
 	.id_table	= firestream_pci_tbl,
 	.probe		= firestream_init_one,
-	.remove		= __devexit_p(firestream_remove_one),
+	.remove		= firestream_remove_one,
 };
 
 static int __init firestream_init_module (void)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/errno.h>
 #include <linux/miscdevice.h>	/* for misc_register, and SYNTH_MINOR */
 #include <linux/types.h>
@@ -13,16 +14,16 @@
 static int misc_registered;
 static int dev_opened;
 
-static ssize_t speakup_file_write(struct file *fp, const char *buffer,
-		   size_t nbytes, loff_t *ppos)
+static ssize_t speakup_file_write(struct file *fp, const char __user *buffer,
+				  size_t nbytes, loff_t *ppos)
 {
 	size_t count = nbytes;
-	const char *ptr = buffer;
+	const char __user *ptr = buffer;
 	size_t bytes;
 	unsigned long flags;
 	u_char buf[256];
 
-	if (synth == NULL)
+	if (!synth)
 		return -ENODEV;
 	while (count > 0) {
 		bytes = min(count, sizeof(buf));
@@ -30,22 +31,22 @@ static ssize_t speakup_file_write(struct file *fp, const char *buffer,
 			return -EFAULT;
 		count -= bytes;
 		ptr += bytes;
-		spk_lock(flags);
+		spin_lock_irqsave(&speakup_info.spinlock, flags);
 		synth_write(buf, bytes);
-		spk_unlock(flags);
+		spin_unlock_irqrestore(&speakup_info.spinlock, flags);
 	}
-	return (ssize_t) nbytes;
+	return (ssize_t)nbytes;
 }
 
-static ssize_t speakup_file_read(struct file *fp, char *buf, size_t nbytes,
-	loff_t *ppos)
+static ssize_t speakup_file_read(struct file *fp, char __user *buf,
+				 size_t nbytes, loff_t *ppos)
 {
 	return 0;
 }
 
 static int speakup_file_open(struct inode *ip, struct file *fp)
 {
-	if (synth == NULL)
+	if (!synth)
 		return -ENODEV;
 	if (xchg(&dev_opened, 1))
 		return -EBUSY;
@@ -76,9 +77,9 @@ void speakup_register_devsynth(void)
 	if (misc_registered != 0)
 		return;
 /* zero it so if register fails, deregister will not ref invalid ptrs */
-	if (misc_register(&synth_device))
+	if (misc_register(&synth_device)) {
 		pr_warn("Couldn't initialize miscdevice /dev/synth.\n");
-	else {
+	} else {
 		pr_info("initialized device: /dev/synth, node (MAJOR %d, MINOR %d)\n",
 			MISC_MAJOR, SYNTH_MINOR);
 		misc_registered = 1;

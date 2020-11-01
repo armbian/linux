@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  arch/um/kernel/elf_aux.c
  *
@@ -9,9 +10,9 @@
  */
 #include <elf.h>
 #include <stddef.h>
-#include "init.h"
-#include "elf_user.h"
-#include "mem_user.h"
+#include <init.h>
+#include <elf_user.h>
+#include <mem_user.h>
 
 typedef Elf32_auxv_t elf_auxv_t;
 

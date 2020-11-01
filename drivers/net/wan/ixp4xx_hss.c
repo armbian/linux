@@ -261,7 +261,7 @@ struct port {
 	struct hss_plat_info *plat;
 	buffer_t *rx_buff_tab[RX_DESCS], *tx_buff_tab[TX_DESCS];
 	struct desc *desc_tab;	/* coherent */
-	u32 desc_tab_phys;
+	dma_addr_t desc_tab_phys;
 	unsigned int id;
 	unsigned int clock_type, clock_rate, loopback;
 	unsigned int initialized, carrier;
@@ -861,7 +861,7 @@ static int hss_hdlc_xmit(struct sk_buff *skb, struct net_device *dev)
 		dev->stats.tx_dropped++;
 		return NETDEV_TX_OK;
 	}
-	memcpy_swab32(mem, (u32 *)((int)skb->data & ~3), bytes / 4);
+	memcpy_swab32(mem, (u32 *)((uintptr_t)skb->data & ~3), bytes / 4);
 	dev_kfree_skb(skb);
 #endif
 
@@ -969,10 +969,12 @@ static int init_hdlc_queues(struct port *port)
 {
 	int i;
 
-	if (!ports_open)
-		if (!(dma_pool = dma_pool_create(DRV_NAME, NULL,
-						 POOL_ALLOC_SIZE, 32, 0)))
+	if (!ports_open) {
+		dma_pool = dma_pool_create(DRV_NAME, &port->netdev->dev,
+					   POOL_ALLOC_SIZE, 32, 0);
+		if (!dma_pool)
 			return -ENOMEM;
+	}
 
 	if (!(port->desc_tab = dma_pool_alloc(dma_pool, GFP_KERNEL,
 					      &port->desc_tab_phys)))
@@ -1319,12 +1321,11 @@ static int hss_hdlc_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 static const struct net_device_ops hss_hdlc_ops = {
 	.ndo_open       = hss_hdlc_open,
 	.ndo_stop       = hss_hdlc_close,
-	.ndo_change_mtu = hdlc_change_mtu,
 	.ndo_start_xmit = hdlc_start_xmit,
 	.ndo_do_ioctl   = hss_hdlc_ioctl,
 };
 
-static int __devinit hss_init_one(struct platform_device *pdev)
+static int hss_init_one(struct platform_device *pdev)
 {
 	struct port *port;
 	struct net_device *dev;
@@ -1363,7 +1364,7 @@ static int __devinit hss_init_one(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, port);
 
-	netdev_info(dev, "HSS-%i\n", port->id);
+	netdev_info(dev, "initialized\n");
 	return 0;
 
 err_free_netdev:
@@ -1375,14 +1376,13 @@ err_free:
 	return err;
 }
 
-static int __devexit hss_remove_one(struct platform_device *pdev)
+static int hss_remove_one(struct platform_device *pdev)
 {
 	struct port *port = platform_get_drvdata(pdev);
 
 	unregister_hdlc_device(port->netdev);
 	free_netdev(port->netdev);
 	npe_release(port->npe);
-	platform_set_drvdata(pdev, NULL);
 	kfree(port);
 	return 0;
 }

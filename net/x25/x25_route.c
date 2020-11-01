@@ -55,7 +55,7 @@ static int x25_add_route(struct x25_address *address, unsigned int sigdigits,
 
 	rt->sigdigits = sigdigits;
 	rt->dev       = dev;
-	atomic_set(&rt->refcnt, 1);
+	refcount_set(&rt->refcnt, 1);
 
 	list_add(&rt->node, &x25_route_list);
 	rc = 0;
@@ -66,7 +66,7 @@ out:
 
 /**
  * __x25_remove_route - remove route from x25_route_list
- * @rt - route to remove
+ * @rt: route to remove
  *
  * Remove route from x25_route_list. If it was there.
  * Caller must hold x25_route_list_lock.

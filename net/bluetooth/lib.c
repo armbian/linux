@@ -26,39 +26,20 @@
 
 #define pr_fmt(fmt) "Bluetooth: " fmt
 
-#include <linux/module.h>
-
-#include <linux/kernel.h>
-#include <linux/stddef.h>
-#include <linux/string.h>
-#include <asm/errno.h>
+#include <linux/export.h>
 
 #include <net/bluetooth/bluetooth.h>
 
-void baswap(bdaddr_t *dst, bdaddr_t *src)
+void baswap(bdaddr_t *dst, const bdaddr_t *src)
 {
-	unsigned char *d = (unsigned char *) dst;
-	unsigned char *s = (unsigned char *) src;
+	const unsigned char *s = (const unsigned char *)src;
+	unsigned char *d = (unsigned char *)dst;
 	unsigned int i;
 
 	for (i = 0; i < 6; i++)
 		d[i] = s[5 - i];
 }
 EXPORT_SYMBOL(baswap);
-
-char *batostr(bdaddr_t *ba)
-{
-	static char str[2][18];
-	static int i = 1;
-
-	i ^= 1;
-	sprintf(str[i], "%2.2X:%2.2X:%2.2X:%2.2X:%2.2X:%2.2X",
-		ba->b[5], ba->b[4], ba->b[3],
-		ba->b[2], ba->b[1], ba->b[0]);
-
-	return str[i];
-}
-EXPORT_SYMBOL(batostr);
 
 /* Bluetooth error codes to Unix errno mapping */
 int bt_to_errno(__u16 code)
@@ -77,6 +58,7 @@ int bt_to_errno(__u16 code)
 		return EIO;
 
 	case 0x04:
+	case 0x3c:
 		return EHOSTDOWN;
 
 	case 0x05:
@@ -153,40 +135,66 @@ int bt_to_errno(__u16 code)
 }
 EXPORT_SYMBOL(bt_to_errno);
 
-int bt_info(const char *format, ...)
+void bt_info(const char *format, ...)
 {
 	struct va_format vaf;
 	va_list args;
-	int r;
 
 	va_start(args, format);
 
 	vaf.fmt = format;
 	vaf.va = &args;
 
-	r = pr_info("%pV", &vaf);
+	pr_info("%pV", &vaf);
 
 	va_end(args);
-
-	return r;
 }
 EXPORT_SYMBOL(bt_info);
 
-int bt_err(const char *format, ...)
+void bt_warn(const char *format, ...)
 {
 	struct va_format vaf;
 	va_list args;
-	int r;
 
 	va_start(args, format);
 
 	vaf.fmt = format;
 	vaf.va = &args;
 
-	r = pr_err("%pV", &vaf);
+	pr_warn("%pV", &vaf);
 
 	va_end(args);
+}
+EXPORT_SYMBOL(bt_warn);
 
-	return r;
+void bt_err(const char *format, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, format);
+
+	vaf.fmt = format;
+	vaf.va = &args;
+
+	pr_err("%pV", &vaf);
+
+	va_end(args);
 }
 EXPORT_SYMBOL(bt_err);
+
+void bt_err_ratelimited(const char *format, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, format);
+
+	vaf.fmt = format;
+	vaf.va = &args;
+
+	pr_err_ratelimited("%pV", &vaf);
+
+	va_end(args);
+}
+EXPORT_SYMBOL(bt_err_ratelimited);

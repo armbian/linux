@@ -33,8 +33,8 @@
  * Each of the descriptors is 64 bytes in size (8*64 = 512 bytes in a set).
  */
 
-#define MAX_CPUS_PER_UVHUB		64
-#define MAX_CPUS_PER_SOCKET		32
+#define MAX_CPUS_PER_UVHUB		128
+#define MAX_CPUS_PER_SOCKET		64
 #define ADP_SZ				64 /* hardware-provided max. */
 #define UV_CPUS_PER_AS			32 /* hardware-provided max. */
 #define ITEMS_PER_DESC			8
@@ -49,14 +49,12 @@
 #define UV_NET_ENDPOINT_INTD		(is_uv1_hub() ?			\
 			UV1_NET_ENDPOINT_INTD : UV2_NET_ENDPOINT_INTD)
 #define UV_DESC_PSHIFT			49
-#define UV_PAYLOADQ_PNODE_SHIFT		49
+#define UV_PAYLOADQ_GNODE_SHIFT		49
 #define UV_PTC_BASENAME			"sgi_uv/ptc_statistics"
 #define UV_BAU_BASENAME			"sgi_uv/bau_tunables"
 #define UV_BAU_TUNABLES_DIR		"sgi_uv"
 #define UV_BAU_TUNABLES_FILE		"bau_tunables"
 #define WHITESPACE			" \t\n"
-#define uv_mmask			((1UL << uv_hub_info->m_val) - 1)
-#define uv_physnodeaddr(x)		((__pa((unsigned long)(x)) & uv_mmask))
 #define cpubit_isset(cpu, bau_local_cpumask) \
 	test_bit((cpu), (bau_local_cpumask).bits)
 
@@ -73,6 +71,7 @@
 #define UV_INTD_SOFT_ACK_TIMEOUT_PERIOD	(is_uv1_hub() ?			\
 		UV1_INTD_SOFT_ACK_TIMEOUT_PERIOD :			\
 		UV2_INTD_SOFT_ACK_TIMEOUT_PERIOD)
+/* assuming UV3 is the same */
 
 #define BAU_MISC_CONTROL_MULT_MASK	3
 
@@ -93,6 +92,8 @@
 #define SOFTACK_MSHIFT UVH_LB_BAU_MISC_CONTROL_ENABLE_INTD_SOFT_ACK_MODE_SHFT
 #define SOFTACK_PSHIFT UVH_LB_BAU_MISC_CONTROL_INTD_SOFT_ACK_TIMEOUT_PERIOD_SHFT
 #define SOFTACK_TIMEOUT_PERIOD UV_INTD_SOFT_ACK_TIMEOUT_PERIOD
+#define PREFETCH_HINT_SHFT UV3H_LB_BAU_MISC_CONTROL_ENABLE_INTD_PREFETCH_HINT_SHFT
+#define SB_STATUS_SHFT UV3H_LB_BAU_MISC_CONTROL_ENABLE_EXTENDED_SB_STATUS_SHFT
 #define write_gmmr	uv_write_global_mmr64
 #define write_lmmr	uv_write_local_mmr
 #define read_lmmr	uv_read_local_mmr
@@ -140,6 +141,9 @@
 #define IPI_RESET_LIMIT			1
 /* after this # consecutive successes, bump up the throttle if it was lowered */
 #define COMPLETE_THRESHOLD		5
+/* after this # of giveups (fall back to kernel IPI's) disable the use of
+   the BAU for a period of time */
+#define GIVEUP_LIMIT			100
 
 #define UV_LB_SUBNODEID			0x10
 
@@ -166,7 +170,6 @@
 #define FLUSH_RETRY_TIMEOUT		2
 #define FLUSH_GIVEUP			3
 #define FLUSH_COMPLETE			4
-#define FLUSH_RETRY_BUSYBUG		5
 
 /*
  * tuning the action when the numalink network is extremely delayed
@@ -175,12 +178,21 @@
 						   microseconds */
 #define CONGESTED_REPS			10	/* long delays averaged over
 						   this many broadcasts */
-#define CONGESTED_PERIOD		30	/* time for the bau to be
+#define DISABLED_PERIOD			10	/* time for the bau to be
 						   disabled, in seconds */
 /* see msg_type: */
 #define MSG_NOOP			0
 #define MSG_REGULAR			1
 #define MSG_RETRY			2
+
+#define BAU_DESC_QUALIFIER		0x534749
+
+enum uv_bau_version {
+	UV_BAU_V1 = 1,
+	UV_BAU_V2,
+	UV_BAU_V3,
+	UV_BAU_V4,
+};
 
 /*
  * Distribution: 32 bytes (256 bits) (bytes 0-0x1f of descriptor)
@@ -219,20 +231,32 @@ struct bau_local_cpumask {
  *   the s/w ack bit vector  ]
  */
 
-/*
- * The payload is software-defined for INTD transactions
+/**
+ * struct uv1_2_3_bau_msg_payload - defines payload for INTD transactions
+ * @address:		Signifies a page or all TLB's of the cpu
+ * @sending_cpu:	CPU from which the message originates
+ * @acknowledge_count:	CPUs on the destination Hub that received the interrupt
  */
-struct bau_msg_payload {
-	unsigned long	address;		/* signifies a page or all
-						   TLB's of the cpu */
-	/* 64 bits */
-	unsigned short	sending_cpu;		/* filled in by sender */
-	/* 16 bits */
-	unsigned short	acknowledge_count;	/* filled in by destination */
-	/* 16 bits */
-	unsigned int	reserved1:32;		/* not usable */
+struct uv1_2_3_bau_msg_payload {
+	u64 address;
+	u16 sending_cpu;
+	u16 acknowledge_count;
 };
 
+/**
+ * struct uv4_bau_msg_payload - defines payload for INTD transactions
+ * @address:		Signifies a page or all TLB's of the cpu
+ * @sending_cpu:	CPU from which the message originates
+ * @acknowledge_count:	CPUs on the destination Hub that received the interrupt
+ * @qualifier:		Set by source to verify origin of INTD broadcast
+ */
+struct uv4_bau_msg_payload {
+	u64 address;
+	u16 sending_cpu;
+	u16 acknowledge_count;
+	u32 reserved:8;
+	u32 qualifier:24;
+};
 
 /*
  * UV1 Message header:  16 bytes (128 bits) (bytes 0x30-0x3f of descriptor)
@@ -320,8 +344,9 @@ struct uv1_bau_msg_header {
 /*
  * UV2 Message header:  16 bytes (128 bits) (bytes 0x30-0x3f of descriptor)
  * see figure 9-2 of harp_sys.pdf
+ * assuming UV3 is the same
  */
-struct uv2_bau_msg_header {
+struct uv2_3_bau_msg_header {
 	unsigned int	base_dest_nasid:15;	/* nasid of the first bit */
 	/* bits 14:0 */				/* in uvhub map */
 	unsigned int	dest_subnodeid:5;	/* must be 0x10, for the LB */
@@ -393,10 +418,13 @@ struct bau_desc {
 	 */
 	union bau_msg_header {
 		struct uv1_bau_msg_header	uv1_hdr;
-		struct uv2_bau_msg_header	uv2_hdr;
+		struct uv2_3_bau_msg_header	uv2_3_hdr;
 	} header;
 
-	struct bau_msg_payload			payload;
+	union bau_payload_header {
+		struct uv1_2_3_bau_msg_payload	uv1_2_3;
+		struct uv4_bau_msg_payload	uv4;
+	} payload;
 };
 /* UV1:
  *   -payload--    ---------header------
@@ -520,6 +548,12 @@ struct ptc_stats {
 	unsigned long	s_uv2_wars;		/* uv2 workaround, perm. busy */
 	unsigned long	s_uv2_wars_hw;		/* uv2 workaround, hiwater */
 	unsigned long	s_uv2_war_waits;	/* uv2 workaround, long waits */
+	unsigned long	s_overipilimit;		/* over the ipi reset limit */
+	unsigned long	s_giveuplimit;		/* disables, over giveup limit*/
+	unsigned long	s_enters;		/* entries to the driver */
+	unsigned long	s_ipifordisabled;	/* fall back to IPI; disabled */
+	unsigned long	s_plugged;		/* plugged by h/w bug*/
+	unsigned long	s_congested;		/* giveup on long wait */
 	/* destination statistics */
 	unsigned long	d_alltlb;		/* times all tlb's on this
 						   cpu were flushed */
@@ -567,8 +601,12 @@ struct uvhub_desc {
 	struct socket_desc	socket[2];
 };
 
-/*
- * one per-cpu; to locate the software tables
+/**
+ * struct bau_control
+ * @status_mmr: location of status mmr, determined by uvhub_cpu
+ * @status_index: index of ERR|BUSY bits in status mmr, determined by uvhub_cpu
+ *
+ * Per-cpu control struct containing CPU topology information and BAU tuneables.
  */
 struct bau_control {
 	struct bau_desc		*descriptor_base;
@@ -586,8 +624,10 @@ struct bau_control {
 	int			timeout_tries;
 	int			ipi_attempts;
 	int			conseccompletes;
-	int			baudisabled;
-	int			set_bau_off;
+	u64			status_mmr;
+	int			status_index;
+	bool			nobau;
+	short			baudisabled;
 	short			cpu;
 	short			osnode;
 	short			uvhub_cpu;
@@ -596,14 +636,16 @@ struct bau_control {
 	short			cpus_in_socket;
 	short			cpus_in_uvhub;
 	short			partition_base_pnode;
-	short			using_desc; /* an index, like uvhub_cpu */
-	unsigned int		inuse_map;
+	short			busy;       /* all were busy (war) */
 	unsigned short		message_number;
 	unsigned short		uvhub_quiesce;
 	short			socket_acknowledge_count[DEST_Q_SIZE];
 	cycles_t		send_message;
+	cycles_t		period_end;
+	cycles_t		period_time;
 	spinlock_t		uvhub_lock;
 	spinlock_t		queue_lock;
+	spinlock_t		disable_lock;
 	/* tunables */
 	int			max_concurr;
 	int			max_concurr_const;
@@ -614,17 +656,25 @@ struct bau_control {
 	int			complete_threshold;
 	int			cong_response_us;
 	int			cong_reps;
-	int			cong_period;
-	unsigned long		clocks_per_100_usec;
-	cycles_t		period_time;
+	cycles_t		disabled_period;
+	int			period_giveups;
+	int			giveup_limit;
 	long			period_requests;
 	struct hub_and_pnode	*thp;
 };
 
-static inline unsigned long read_mmr_uv2_status(void)
-{
-	return read_lmmr(UV2H_LB_BAU_SB_ACTIVATION_STATUS_2);
-}
+/* Abstracted BAU functions */
+struct bau_operations {
+	unsigned long	(*read_l_sw_ack)(void);
+	unsigned long	(*read_g_sw_ack)(int pnode);
+	unsigned long	(*bau_gpa_to_offset)(unsigned long vaddr);
+	void		(*write_l_sw_ack)(unsigned long mmr);
+	void		(*write_g_sw_ack)(int pnode, unsigned long mmr);
+	void		(*write_payload_first)(int pnode, unsigned long mmr);
+	void		(*write_payload_last)(int pnode, unsigned long mmr);
+	int		(*wait_completion)(struct bau_desc*,
+				struct bau_control*, long try);
+};
 
 static inline void write_mmr_data_broadcast(int pnode, unsigned long mmr_image)
 {
@@ -644,6 +694,16 @@ static inline void write_mmr_activation(unsigned long index)
 static inline void write_gmmr_activation(int pnode, unsigned long mmr_image)
 {
 	write_gmmr(pnode, UVH_LB_BAU_SB_ACTIVATION_CONTROL, mmr_image);
+}
+
+static inline void write_mmr_proc_payload_first(int pnode, unsigned long mmr_image)
+{
+	write_gmmr(pnode, UV4H_LB_PROC_INTD_QUEUE_FIRST, mmr_image);
+}
+
+static inline void write_mmr_proc_payload_last(int pnode, unsigned long mmr_image)
+{
+	write_gmmr(pnode, UV4H_LB_PROC_INTD_QUEUE_LAST, mmr_image);
 }
 
 static inline void write_mmr_payload_first(int pnode, unsigned long mmr_image)
@@ -691,6 +751,26 @@ static inline unsigned long read_gmmr_sw_ack(int pnode)
 	return read_gmmr(pnode, UVH_LB_BAU_INTD_SOFTWARE_ACKNOWLEDGE);
 }
 
+static inline void write_mmr_proc_sw_ack(unsigned long mr)
+{
+	uv_write_local_mmr(UV4H_LB_PROC_INTD_SOFT_ACK_CLEAR, mr);
+}
+
+static inline void write_gmmr_proc_sw_ack(int pnode, unsigned long mr)
+{
+	write_gmmr(pnode, UV4H_LB_PROC_INTD_SOFT_ACK_CLEAR, mr);
+}
+
+static inline unsigned long read_mmr_proc_sw_ack(void)
+{
+	return read_lmmr(UV4H_LB_PROC_INTD_SOFT_ACK_PENDING);
+}
+
+static inline unsigned long read_gmmr_proc_sw_ack(int pnode)
+{
+	return read_gmmr(pnode, UV4H_LB_PROC_INTD_SOFT_ACK_PENDING);
+}
+
 static inline void write_mmr_data_config(int pnode, unsigned long mr)
 {
 	uv_write_global_mmr64(pnode, UVH_BAU_DATA_CONFIG, mr);
@@ -721,6 +801,9 @@ static inline void bau_cpubits_clear(struct bau_local_cpumask *dstp, int nbits)
 }
 
 extern void uv_bau_message_intr1(void);
+#ifdef CONFIG_TRACING
+#define trace_uv_bau_message_intr1 uv_bau_message_intr1
+#endif
 extern void uv_bau_timeout_intr1(void);
 
 struct atomic_short {
@@ -747,7 +830,11 @@ static inline int atomic_read_short(const struct atomic_short *v)
  */
 static inline int atom_asr(short i, struct atomic_short *v)
 {
-	return i + xadd(&v->counter, i);
+	short __i = i;
+	asm volatile(LOCK_PREFIX "xaddw %0, %1"
+			: "+r" (i), "+m" (v->counter)
+			: : "memory");
+	return i + __i;
 }
 
 /*

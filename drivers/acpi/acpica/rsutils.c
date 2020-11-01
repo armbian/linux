@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -53,8 +53,8 @@ ACPI_MODULE_NAME("rsutils")
  *
  * FUNCTION:    acpi_rs_decode_bitmask
  *
- * PARAMETERS:  Mask            - Bitmask to decode
- *              List            - Where the converted list is returned
+ * PARAMETERS:  mask            - Bitmask to decode
+ *              list            - Where the converted list is returned
  *
  * RETURN:      Count of bits set (length of list)
  *
@@ -86,8 +86,8 @@ u8 acpi_rs_decode_bitmask(u16 mask, u8 * list)
  *
  * FUNCTION:    acpi_rs_encode_bitmask
  *
- * PARAMETERS:  List            - List of values to encode
- *              Count           - Length of list
+ * PARAMETERS:  list            - List of values to encode
+ *              count           - Length of list
  *
  * RETURN:      Encoded bitmask
  *
@@ -108,15 +108,15 @@ u16 acpi_rs_encode_bitmask(u8 * list, u8 count)
 		mask |= (0x1 << list[i]);
 	}
 
-	return mask;
+	return (mask);
 }
 
 /*******************************************************************************
  *
  * FUNCTION:    acpi_rs_move_data
  *
- * PARAMETERS:  Destination         - Pointer to the destination descriptor
- *              Source              - Pointer to the source descriptor
+ * PARAMETERS:  destination         - Pointer to the destination descriptor
+ *              source              - Pointer to the source descriptor
  *              item_count          - How many items to move
  *              move_type           - Byte width
  *
@@ -147,7 +147,8 @@ acpi_rs_move_data(void *destination, void *source, u16 item_count, u8 move_type)
 		case ACPI_RSC_MOVE_GPIO_RES:
 		case ACPI_RSC_MOVE_SERIAL_VEN:
 		case ACPI_RSC_MOVE_SERIAL_RES:
-			ACPI_MEMCPY(destination, source, item_count);
+
+			memcpy(destination, source, item_count);
 			return;
 
 			/*
@@ -157,21 +158,25 @@ acpi_rs_move_data(void *destination, void *source, u16 item_count, u8 move_type)
 			 */
 		case ACPI_RSC_MOVE16:
 		case ACPI_RSC_MOVE_GPIO_PIN:
+
 			ACPI_MOVE_16_TO_16(&ACPI_CAST_PTR(u16, destination)[i],
 					   &ACPI_CAST_PTR(u16, source)[i]);
 			break;
 
 		case ACPI_RSC_MOVE32:
+
 			ACPI_MOVE_32_TO_32(&ACPI_CAST_PTR(u32, destination)[i],
 					   &ACPI_CAST_PTR(u32, source)[i]);
 			break;
 
 		case ACPI_RSC_MOVE64:
+
 			ACPI_MOVE_64_TO_64(&ACPI_CAST_PTR(u64, destination)[i],
 					   &ACPI_CAST_PTR(u64, source)[i]);
 			break;
 
 		default:
+
 			return;
 		}
 	}
@@ -183,7 +188,7 @@ acpi_rs_move_data(void *destination, void *source, u16 item_count, u8 move_type)
  *
  * PARAMETERS:  total_length        - Length of the AML descriptor, including
  *                                    the header and length fields.
- *              Aml                 - Pointer to the raw AML descriptor
+ *              aml                 - Pointer to the raw AML descriptor
  *
  * RETURN:      None
  *
@@ -216,14 +221,13 @@ acpi_rs_set_resource_length(acpi_rsdesc_size total_length,
 		ACPI_MOVE_16_TO_16(&aml->large_header.resource_length,
 				   &resource_length);
 	} else {
-		/* Small descriptor -- bits 2:0 of byte 0 contain the length */
-
+		/*
+		 * Small descriptor -- bits 2:0 of byte 0 contain the length
+		 * Clear any existing length, preserving descriptor type bits
+		 */
 		aml->small_header.descriptor_type = (u8)
-
-		    /* Clear any existing length, preserving descriptor type bits */
-		    ((aml->small_header.
-		      descriptor_type & ~ACPI_RESOURCE_NAME_SMALL_LENGTH_MASK)
-
+		    ((aml->small_header.descriptor_type &
+		      ~ACPI_RESOURCE_NAME_SMALL_LENGTH_MASK)
 		     | resource_length);
 	}
 }
@@ -235,7 +239,7 @@ acpi_rs_set_resource_length(acpi_rsdesc_size total_length,
  * PARAMETERS:  descriptor_type     - Byte to be inserted as the type
  *              total_length        - Length of the AML descriptor, including
  *                                    the header and length fields.
- *              Aml                 - Pointer to the raw AML descriptor
+ *              aml                 - Pointer to the raw AML descriptor
  *
  * RETURN:      None
  *
@@ -265,8 +269,8 @@ acpi_rs_set_resource_header(u8 descriptor_type,
  *
  * FUNCTION:    acpi_rs_strcpy
  *
- * PARAMETERS:  Destination         - Pointer to the destination string
- *              Source              - Pointer to the source string
+ * PARAMETERS:  destination         - Pointer to the destination string
+ *              source              - Pointer to the source string
  *
  * RETURN:      String length, including NULL terminator
  *
@@ -300,7 +304,7 @@ static u16 acpi_rs_strcpy(char *destination, char *source)
  *              minimum_length      - Minimum length of the descriptor (minus
  *                                    any optional fields)
  *              resource_source     - Where the resource_source is returned
- *              Aml                 - Pointer to the raw AML descriptor
+ *              aml                 - Pointer to the raw AML descriptor
  *              string_ptr          - (optional) where to store the actual
  *                                    resource_source string
  *
@@ -328,13 +332,13 @@ acpi_rs_get_resource_source(acpi_rs_length resource_length,
 	aml_resource_source = ACPI_ADD_PTR(u8, aml, minimum_length);
 
 	/*
-	 * resource_source is present if the length of the descriptor is longer than
-	 * the minimum length.
+	 * resource_source is present if the length of the descriptor is longer
+	 * than the minimum length.
 	 *
 	 * Note: Some resource descriptors will have an additional null, so
 	 * we add 1 to the minimum length.
 	 */
-	if (total_length > (acpi_rsdesc_size) (minimum_length + 1)) {
+	if (total_length > (acpi_rsdesc_size)(minimum_length + 1)) {
 
 		/* Get the resource_source_index */
 
@@ -358,11 +362,13 @@ acpi_rs_get_resource_source(acpi_rs_length resource_length,
 		 *
 		 * Zero the entire area of the buffer.
 		 */
-		total_length = (u32)
-		ACPI_STRLEN(ACPI_CAST_PTR(char, &aml_resource_source[1])) + 1;
-		total_length = (u32) ACPI_ROUND_UP_TO_NATIVE_WORD(total_length);
+		total_length =
+		    (u32)strlen(ACPI_CAST_PTR(char, &aml_resource_source[1])) +
+		    1;
 
-		ACPI_MEMSET(resource_source->string_ptr, 0, total_length);
+		total_length = (u32)ACPI_ROUND_UP_TO_NATIVE_WORD(total_length);
+
+		memset(resource_source->string_ptr, 0, total_length);
 
 		/* Copy the resource_source string to the destination */
 
@@ -371,7 +377,7 @@ acpi_rs_get_resource_source(acpi_rs_length resource_length,
 				   ACPI_CAST_PTR(char,
 						 &aml_resource_source[1]));
 
-		return ((acpi_rs_length) total_length);
+		return ((acpi_rs_length)total_length);
 	}
 
 	/* resource_source is not present */
@@ -386,7 +392,7 @@ acpi_rs_get_resource_source(acpi_rs_length resource_length,
  *
  * FUNCTION:    acpi_rs_set_resource_source
  *
- * PARAMETERS:  Aml                 - Pointer to the raw AML descriptor
+ * PARAMETERS:  aml                 - Pointer to the raw AML descriptor
  *              minimum_length      - Minimum length of the descriptor (minus
  *                                    any optional fields)
  *              resource_source     - Internal resource_source
@@ -400,9 +406,9 @@ acpi_rs_get_resource_source(acpi_rs_length resource_length,
  ******************************************************************************/
 
 acpi_rsdesc_size
-acpi_rs_set_resource_source(union aml_resource * aml,
+acpi_rs_set_resource_source(union aml_resource *aml,
 			    acpi_rs_length minimum_length,
-			    struct acpi_resource_source * resource_source)
+			    struct acpi_resource_source *resource_source)
 {
 	u8 *aml_resource_source;
 	acpi_rsdesc_size descriptor_length;
@@ -425,15 +431,15 @@ acpi_rs_set_resource_source(union aml_resource * aml,
 
 		/* Copy the resource_source string */
 
-		ACPI_STRCPY(ACPI_CAST_PTR(char, &aml_resource_source[1]),
-			    resource_source->string_ptr);
+		strcpy(ACPI_CAST_PTR(char, &aml_resource_source[1]),
+		       resource_source->string_ptr);
 
 		/*
 		 * Add the length of the string (+ 1 for null terminator) to the
 		 * final descriptor length
 		 */
-		descriptor_length +=
-		    ((acpi_rsdesc_size) resource_source->string_length + 1);
+		descriptor_length += ((acpi_rsdesc_size)
+				      resource_source->string_length + 1);
 	}
 
 	/* Return the new total length of the AML descriptor */
@@ -445,7 +451,7 @@ acpi_rs_set_resource_source(union aml_resource * aml,
  *
  * FUNCTION:    acpi_rs_get_prt_method_data
  *
- * PARAMETERS:  Node            - Device node
+ * PARAMETERS:  node            - Device node
  *              ret_buffer      - Pointer to a buffer structure for the
  *                                results
  *
@@ -460,8 +466,8 @@ acpi_rs_set_resource_source(union aml_resource * aml,
  ******************************************************************************/
 
 acpi_status
-acpi_rs_get_prt_method_data(struct acpi_namespace_node * node,
-			    struct acpi_buffer * ret_buffer)
+acpi_rs_get_prt_method_data(struct acpi_namespace_node *node,
+			    struct acpi_buffer *ret_buffer)
 {
 	union acpi_operand_object *obj_desc;
 	acpi_status status;
@@ -472,8 +478,9 @@ acpi_rs_get_prt_method_data(struct acpi_namespace_node * node,
 
 	/* Execute the method, no parameters */
 
-	status = acpi_ut_evaluate_object(node, METHOD_NAME__PRT,
-					 ACPI_BTYPE_PACKAGE, &obj_desc);
+	status =
+	    acpi_ut_evaluate_object(node, METHOD_NAME__PRT, ACPI_BTYPE_PACKAGE,
+				    &obj_desc);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
 	}
@@ -494,7 +501,7 @@ acpi_rs_get_prt_method_data(struct acpi_namespace_node * node,
  *
  * FUNCTION:    acpi_rs_get_crs_method_data
  *
- * PARAMETERS:  Node            - Device node
+ * PARAMETERS:  node            - Device node
  *              ret_buffer      - Pointer to a buffer structure for the
  *                                results
  *
@@ -521,8 +528,9 @@ acpi_rs_get_crs_method_data(struct acpi_namespace_node *node,
 
 	/* Execute the method, no parameters */
 
-	status = acpi_ut_evaluate_object(node, METHOD_NAME__CRS,
-					 ACPI_BTYPE_BUFFER, &obj_desc);
+	status =
+	    acpi_ut_evaluate_object(node, METHOD_NAME__CRS, ACPI_BTYPE_BUFFER,
+				    &obj_desc);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
 	}
@@ -534,7 +542,7 @@ acpi_rs_get_crs_method_data(struct acpi_namespace_node *node,
 	 */
 	status = acpi_rs_create_resource_list(obj_desc, ret_buffer);
 
-	/* On exit, we must delete the object returned by evaluate_object */
+	/* On exit, we must delete the object returned by evaluateObject */
 
 	acpi_ut_remove_reference(obj_desc);
 	return_ACPI_STATUS(status);
@@ -544,7 +552,7 @@ acpi_rs_get_crs_method_data(struct acpi_namespace_node *node,
  *
  * FUNCTION:    acpi_rs_get_prs_method_data
  *
- * PARAMETERS:  Node            - Device node
+ * PARAMETERS:  node            - Device node
  *              ret_buffer      - Pointer to a buffer structure for the
  *                                results
  *
@@ -558,7 +566,6 @@ acpi_rs_get_crs_method_data(struct acpi_namespace_node *node,
  *
  ******************************************************************************/
 
-#ifdef ACPI_FUTURE_USAGE
 acpi_status
 acpi_rs_get_prs_method_data(struct acpi_namespace_node *node,
 			    struct acpi_buffer *ret_buffer)
@@ -572,8 +579,9 @@ acpi_rs_get_prs_method_data(struct acpi_namespace_node *node,
 
 	/* Execute the method, no parameters */
 
-	status = acpi_ut_evaluate_object(node, METHOD_NAME__PRS,
-					 ACPI_BTYPE_BUFFER, &obj_desc);
+	status =
+	    acpi_ut_evaluate_object(node, METHOD_NAME__PRS, ACPI_BTYPE_BUFFER,
+				    &obj_desc);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
 	}
@@ -585,18 +593,17 @@ acpi_rs_get_prs_method_data(struct acpi_namespace_node *node,
 	 */
 	status = acpi_rs_create_resource_list(obj_desc, ret_buffer);
 
-	/* On exit, we must delete the object returned by evaluate_object */
+	/* On exit, we must delete the object returned by evaluateObject */
 
 	acpi_ut_remove_reference(obj_desc);
 	return_ACPI_STATUS(status);
 }
-#endif				/*  ACPI_FUTURE_USAGE  */
 
 /*******************************************************************************
  *
  * FUNCTION:    acpi_rs_get_aei_method_data
  *
- * PARAMETERS:  Node            - Device node
+ * PARAMETERS:  node            - Device node
  *              ret_buffer      - Pointer to a buffer structure for the
  *                                results
  *
@@ -623,8 +630,9 @@ acpi_rs_get_aei_method_data(struct acpi_namespace_node *node,
 
 	/* Execute the method, no parameters */
 
-	status = acpi_ut_evaluate_object(node, METHOD_NAME__AEI,
-					 ACPI_BTYPE_BUFFER, &obj_desc);
+	status =
+	    acpi_ut_evaluate_object(node, METHOD_NAME__AEI, ACPI_BTYPE_BUFFER,
+				    &obj_desc);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
 	}
@@ -636,7 +644,7 @@ acpi_rs_get_aei_method_data(struct acpi_namespace_node *node,
 	 */
 	status = acpi_rs_create_resource_list(obj_desc, ret_buffer);
 
-	/* On exit, we must delete the object returned by evaluate_object */
+	/* On exit, we must delete the object returned by evaluateObject */
 
 	acpi_ut_remove_reference(obj_desc);
 	return_ACPI_STATUS(status);
@@ -646,8 +654,8 @@ acpi_rs_get_aei_method_data(struct acpi_namespace_node *node,
  *
  * FUNCTION:    acpi_rs_get_method_data
  *
- * PARAMETERS:  Handle          - Handle to the containing object
- *              Path            - Path to method, relative to Handle
+ * PARAMETERS:  handle          - Handle to the containing object
+ *              path            - Path to method, relative to Handle
  *              ret_buffer      - Pointer to a buffer structure for the
  *                                results
  *
@@ -663,7 +671,7 @@ acpi_rs_get_aei_method_data(struct acpi_namespace_node *node,
 
 acpi_status
 acpi_rs_get_method_data(acpi_handle handle,
-			char *path, struct acpi_buffer *ret_buffer)
+			const char *path, struct acpi_buffer *ret_buffer)
 {
 	union acpi_operand_object *obj_desc;
 	acpi_status status;
@@ -675,7 +683,9 @@ acpi_rs_get_method_data(acpi_handle handle,
 	/* Execute the method, no parameters */
 
 	status =
-	    acpi_ut_evaluate_object(handle, path, ACPI_BTYPE_BUFFER, &obj_desc);
+	    acpi_ut_evaluate_object(ACPI_CAST_PTR
+				    (struct acpi_namespace_node, handle), path,
+				    ACPI_BTYPE_BUFFER, &obj_desc);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
 	}
@@ -697,7 +707,7 @@ acpi_rs_get_method_data(acpi_handle handle,
  *
  * FUNCTION:    acpi_rs_set_srs_method_data
  *
- * PARAMETERS:  Node            - Device node
+ * PARAMETERS:  node            - Device node
  *              in_buffer       - Pointer to a buffer structure of the
  *                                parameter
  *
@@ -732,7 +742,7 @@ acpi_rs_set_srs_method_data(struct acpi_namespace_node *node,
 	}
 
 	info->prefix_node = node;
-	info->pathname = METHOD_NAME__SRS;
+	info->relative_pathname = METHOD_NAME__SRS;
 	info->parameters = args;
 	info->flags = ACPI_IGNORE_RETURN_VALUE;
 
@@ -744,7 +754,7 @@ acpi_rs_set_srs_method_data(struct acpi_namespace_node *node,
 	 * Convert the linked list into a byte stream
 	 */
 	buffer.length = ACPI_ALLOCATE_LOCAL_BUFFER;
-	status = acpi_rs_create_aml_resources(in_buffer->pointer, &buffer);
+	status = acpi_rs_create_aml_resources(in_buffer, &buffer);
 	if (ACPI_FAILURE(status)) {
 		goto cleanup;
 	}
@@ -775,7 +785,7 @@ acpi_rs_set_srs_method_data(struct acpi_namespace_node *node,
 
 	acpi_ut_remove_reference(args[0]);
 
-      cleanup:
+cleanup:
 	ACPI_FREE(info);
 	return_ACPI_STATUS(status);
 }

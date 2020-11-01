@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*---------------------------------------------------------------------------+
  |  errors.c                                                                 |
  |                                                                           |
@@ -19,7 +20,7 @@
 
 #include <linux/signal.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "fpu_emu.h"
 #include "fpu_system.h"
@@ -302,7 +303,7 @@ static struct {
 	      0x242  in div_Xsig.S
  */
 
-asmlinkage void FPU_exception(int n)
+asmlinkage __visible void FPU_exception(int n)
 {
 	int i, int_type;
 
@@ -330,11 +331,6 @@ asmlinkage void FPU_exception(int n)
 
 	RE_ENTRANT_CHECK_OFF;
 	if ((~control_word & n & CW_Exceptions) || (n == EX_INTERNAL)) {
-#ifdef PRINT_MESSAGES
-		/* My message from the sponsor */
-		printk(FPU_VERSION " " __DATE__ " (C) W. Metzenthen.\n");
-#endif /* PRINT_MESSAGES */
-
 		/* Get a name string for error reporting */
 		for (i = 0; exception_names[i].type; i++)
 			if ((exception_names[i].type & n) ==
@@ -497,7 +493,7 @@ int real_2op_NaN(FPU_REG const *b, u_char tagb,
 
 /* Invalid arith operation on Valid registers */
 /* Returns < 0 if the exception is unmasked */
-asmlinkage int arith_invalid(int deststnr)
+asmlinkage __visible int arith_invalid(int deststnr)
 {
 
 	EXCEPTION(EX_Invalid);
@@ -512,7 +508,7 @@ asmlinkage int arith_invalid(int deststnr)
 }
 
 /* Divide a finite number by zero */
-asmlinkage int FPU_divide_by_zero(int deststnr, u_char sign)
+asmlinkage __visible int FPU_divide_by_zero(int deststnr, u_char sign)
 {
 	FPU_REG *dest = &st(deststnr);
 	int tag = TAG_Valid;
@@ -544,7 +540,7 @@ int set_precision_flag(int flags)
 }
 
 /* This may be called often, so keep it lean */
-asmlinkage void set_precision_flag_up(void)
+asmlinkage __visible void set_precision_flag_up(void)
 {
 	if (control_word & CW_Precision)
 		partial_status |= (SW_Precision | SW_C1);	/* The masked response */
@@ -553,7 +549,7 @@ asmlinkage void set_precision_flag_up(void)
 }
 
 /* This may be called often, so keep it lean */
-asmlinkage void set_precision_flag_down(void)
+asmlinkage __visible void set_precision_flag_down(void)
 {
 	if (control_word & CW_Precision) {	/* The masked response */
 		partial_status &= ~SW_C1;
@@ -562,7 +558,7 @@ asmlinkage void set_precision_flag_down(void)
 		EXCEPTION(EX_Precision);
 }
 
-asmlinkage int denormal_operand(void)
+asmlinkage __visible int denormal_operand(void)
 {
 	if (control_word & CW_Denormal) {	/* The masked response */
 		partial_status |= SW_Denorm_Op;
@@ -573,7 +569,7 @@ asmlinkage int denormal_operand(void)
 	}
 }
 
-asmlinkage int arith_overflow(FPU_REG *dest)
+asmlinkage __visible int arith_overflow(FPU_REG *dest)
 {
 	int tag = TAG_Valid;
 
@@ -601,7 +597,7 @@ asmlinkage int arith_overflow(FPU_REG *dest)
 
 }
 
-asmlinkage int arith_underflow(FPU_REG *dest)
+asmlinkage __visible int arith_underflow(FPU_REG *dest)
 {
 	int tag = TAG_Valid;
 

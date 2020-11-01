@@ -1,12 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_TRAPS_H
 #define __ASM_SH_TRAPS_H
 
 #include <linux/compiler.h>
 
 #ifdef CONFIG_SUPERH32
-# include "traps_32.h"
+# include <asm/traps_32.h>
 #else
-# include "traps_64.h"
+# include <asm/traps_64.h>
 #endif
 
 BUILD_TRAP_HANDLER(address_error);

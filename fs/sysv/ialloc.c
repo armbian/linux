@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/sysv/ialloc.c
  *
@@ -118,7 +119,7 @@ void sysv_free_inode(struct inode * inode)
 		       "%s\n", inode->i_sb->s_id);
 		return;
 	}
-	lock_super(sb);
+	mutex_lock(&sbi->s_lock);
 	count = fs16_to_cpu(sbi, *sbi->s_sb_fic_count);
 	if (count < sbi->s_fic_size) {
 		*sv_sb_fic_inode(sb,count++) = cpu_to_fs16(sbi, ino);
@@ -128,7 +129,7 @@ void sysv_free_inode(struct inode * inode)
 	dirty_sb(sb);
 	memset(raw_inode, 0, sizeof(struct sysv_inode));
 	mark_buffer_dirty(bh);
-	unlock_super(sb);
+	mutex_unlock(&sbi->s_lock);
 	brelse(bh);
 }
 
@@ -147,13 +148,13 @@ struct inode * sysv_new_inode(const struct inode * dir, umode_t mode)
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 
-	lock_super(sb);
+	mutex_lock(&sbi->s_lock);
 	count = fs16_to_cpu(sbi, *sbi->s_sb_fic_count);
 	if (count == 0 || (*sv_sb_fic_inode(sb,count-1) == 0)) {
 		count = refill_free_cache(sb);
 		if (count == 0) {
 			iput(inode);
-			unlock_super(sb);
+			mutex_unlock(&sbi->s_lock);
 			return ERR_PTR(-ENOSPC);
 		}
 	}
@@ -164,7 +165,7 @@ struct inode * sysv_new_inode(const struct inode * dir, umode_t mode)
 	dirty_sb(sb);
 	inode_init_owner(inode, dir, mode);
 	inode->i_ino = fs16_to_cpu(sbi, ino);
-	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME_SEC;
+	inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
 	inode->i_blocks = 0;
 	memset(SYSV_I(inode)->i_data, 0, sizeof(SYSV_I(inode)->i_data));
 	SYSV_I(inode)->i_dir_start_lookup = 0;
@@ -174,7 +175,7 @@ struct inode * sysv_new_inode(const struct inode * dir, umode_t mode)
 	sysv_write_inode(inode, &wbc);	/* ensure inode not allocated again */
 	mark_inode_dirty(inode);	/* cleared by sysv_write_inode() */
 	/* That's it. */
-	unlock_super(sb);
+	mutex_unlock(&sbi->s_lock);
 	return inode;
 }
 
@@ -185,7 +186,7 @@ unsigned long sysv_count_free_inodes(struct super_block * sb)
 	struct sysv_inode * raw_inode;
 	int ino, count, sb_count;
 
-	lock_super(sb);
+	mutex_lock(&sbi->s_lock);
 
 	sb_count = fs16_to_cpu(sbi, *sbi->s_sb_total_free_inodes);
 
@@ -213,14 +214,14 @@ unsigned long sysv_count_free_inodes(struct super_block * sb)
 	if (count != sb_count)
 		goto Einval;
 out:
-	unlock_super(sb);
+	mutex_unlock(&sbi->s_lock);
 	return count;
 
 Einval:
 	printk("sysv_count_free_inodes: "
 		"free inode count was %d, correcting to %d\n",
 		sb_count, count);
-	if (!(sb->s_flags & MS_RDONLY)) {
+	if (!sb_rdonly(sb)) {
 		*sbi->s_sb_total_free_inodes = cpu_to_fs16(SYSV_SB(sb), count);
 		dirty_sb(sb);
 	}

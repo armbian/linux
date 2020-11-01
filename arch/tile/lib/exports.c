@@ -18,37 +18,30 @@
 
 /* arch/tile/lib/usercopy.S */
 #include <linux/uaccess.h>
-EXPORT_SYMBOL(__get_user_1);
-EXPORT_SYMBOL(__get_user_2);
-EXPORT_SYMBOL(__get_user_4);
-EXPORT_SYMBOL(__get_user_8);
-EXPORT_SYMBOL(__put_user_1);
-EXPORT_SYMBOL(__put_user_2);
-EXPORT_SYMBOL(__put_user_4);
-EXPORT_SYMBOL(__put_user_8);
-EXPORT_SYMBOL(strnlen_user_asm);
-EXPORT_SYMBOL(strncpy_from_user_asm);
 EXPORT_SYMBOL(clear_user_asm);
 EXPORT_SYMBOL(flush_user_asm);
-EXPORT_SYMBOL(inv_user_asm);
 EXPORT_SYMBOL(finv_user_asm);
 
 /* arch/tile/kernel/entry.S */
 #include <linux/kernel.h>
 #include <asm/processor.h>
 EXPORT_SYMBOL(current_text_addr);
-EXPORT_SYMBOL(dump_stack);
 
 /* arch/tile/kernel/head.S */
 EXPORT_SYMBOL(empty_zero_page);
 
+#ifdef CONFIG_FUNCTION_TRACER
+/* arch/tile/kernel/mcount_64.S */
+#include <asm/ftrace.h>
+EXPORT_SYMBOL(__mcount);
+#endif /* CONFIG_FUNCTION_TRACER */
+
 /* arch/tile/lib/, various memcpy files */
 EXPORT_SYMBOL(memcpy);
-EXPORT_SYMBOL(__copy_to_user_inatomic);
-EXPORT_SYMBOL(__copy_from_user_inatomic);
-EXPORT_SYMBOL(__copy_from_user_zeroing);
+EXPORT_SYMBOL(raw_copy_to_user);
+EXPORT_SYMBOL(raw_copy_from_user);
 #ifdef __tilegx__
-EXPORT_SYMBOL(__copy_in_user_inatomic);
+EXPORT_SYMBOL(raw_copy_in_user);
 #endif
 
 /* hypervisor glue */
@@ -63,6 +56,8 @@ EXPORT_SYMBOL(hv_dev_poll_cancel);
 EXPORT_SYMBOL(hv_dev_close);
 EXPORT_SYMBOL(hv_sysconf);
 EXPORT_SYMBOL(hv_confstr);
+EXPORT_SYMBOL(hv_get_rtc);
+EXPORT_SYMBOL(hv_set_rtc);
 
 /* libgcc.a */
 uint32_t __udivsi3(uint32_t dividend, uint32_t divisor);
@@ -81,7 +76,11 @@ uint64_t __umoddi3(uint64_t dividend, uint64_t divisor);
 EXPORT_SYMBOL(__umoddi3);
 int64_t __moddi3(int64_t dividend, int64_t divisor);
 EXPORT_SYMBOL(__moddi3);
-#ifndef __tilegx__
+#ifdef __tilegx__
+typedef int TItype __attribute__((mode(TI)));
+TItype __multi3(TItype a, TItype b);
+EXPORT_SYMBOL(__multi3);  /* required for gcc 7 and later */
+#else
 int64_t __muldi3(int64_t, int64_t);
 EXPORT_SYMBOL(__muldi3);
 uint64_t __lshrdi3(uint64_t, unsigned int);

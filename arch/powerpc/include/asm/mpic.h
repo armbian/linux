@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_MPIC_H
 #define _ASM_POWERPC_MPIC_H
 #ifdef __KERNEL__
@@ -34,10 +35,6 @@
 #define		MPIC_GREG_GCONF_BASE_MASK		0x000fffff
 #define		MPIC_GREG_GCONF_MCK			0x08000000
 #define MPIC_GREG_GLOBAL_CONF_1		0x00030
-#define		MPIC_GREG_GLOBAL_CONF_1_SIE		0x08000000
-#define		MPIC_GREG_GLOBAL_CONF_1_CLK_RATIO_MASK	0x70000000
-#define		MPIC_GREG_GLOBAL_CONF_1_CLK_RATIO(r)	\
-			(((r) << 28) & MPIC_GREG_GLOBAL_CONF_1_CLK_RATIO_MASK)
 #define MPIC_GREG_VENDOR_0		0x00040
 #define MPIC_GREG_VENDOR_1		0x00050
 #define MPIC_GREG_VENDOR_2		0x00060
@@ -63,6 +60,7 @@
  */
 #define MPIC_TIMER_BASE			0x01100
 #define MPIC_TIMER_STRIDE		0x40
+#define MPIC_TIMER_GROUP_STRIDE		0x1000
 
 #define MPIC_TIMER_CURRENT_CNT		0x00000
 #define MPIC_TIMER_BASE_CNT		0x00010
@@ -110,9 +108,15 @@
 #define 	MPIC_VECPRI_SENSE_MASK			0x00400000
 #define MPIC_IRQ_DESTINATION		0x00010
 
+#define MPIC_FSL_BRR1			0x00000
+#define 	MPIC_FSL_BRR1_VER			0x0000ffff
+
 #define MPIC_MAX_IRQ_SOURCES	2048
 #define MPIC_MAX_CPUS		32
 #define MPIC_MAX_ISU		32
+
+#define MPIC_MAX_ERR      32
+#define MPIC_FSL_ERR_INT  16
 
 /*
  * Tsi108 implementation of MPIC has many differences from the original one
@@ -266,6 +270,7 @@ struct mpic
 	struct irq_chip		hc_ipi;
 #endif
 	struct irq_chip		hc_tm;
+	struct irq_chip		hc_err;
 	const char		*name;
 	/* Flags */
 	unsigned int		flags;
@@ -279,6 +284,8 @@ struct mpic
 	/* vector numbers used for internal sources (ipi/timers) */
 	unsigned int		ipi_vecs[4];
 	unsigned int		timer_vecs[8];
+	/* vector numbers used for FSL MPIC error interrupts */
+	unsigned int		err_int_vecs[MPIC_MAX_ERR];
 
 	/* Spurious vector to program into unused sources */
 	unsigned int		spurious_vec;
@@ -296,10 +303,14 @@ struct mpic
 	phys_addr_t paddr;
 
 	/* The various ioremap'ed bases */
+	struct mpic_reg_bank	thiscpuregs;
 	struct mpic_reg_bank	gregs;
 	struct mpic_reg_bank	tmregs;
 	struct mpic_reg_bank	cpuregs[MPIC_MAX_CPUS];
 	struct mpic_reg_bank	isus[MPIC_MAX_ISU];
+
+	/* ioremap'ed base for error interrupt registers */
+	u32 __iomem	*err_regs;
 
 	/* Protected sources */
 	unsigned long		*protected;
@@ -324,6 +335,8 @@ struct mpic
 	struct mpic_irq_save	*save_data;
 #endif
 };
+
+extern struct bus_type mpic_subsys;
 
 /*
  * MPIC flags (passed to mpic_alloc)
@@ -365,6 +378,11 @@ struct mpic
 #define MPIC_NO_RESET			0x00004000
 /* Freescale MPIC (compatible includes "fsl,mpic") */
 #define MPIC_FSL			0x00008000
+/* Freescale MPIC supports EIMR (error interrupt mask register).
+ * This flag is set for MPIC version >= 4.1 (version determined
+ * from the BRR1 register).
+*/
+#define MPIC_FSL_HAS_EIMR		0x00010000
 
 /* MPIC HW modification ID */
 #define MPIC_REGSET_MASK		0xf0000000
@@ -373,6 +391,16 @@ struct mpic
 
 #define	MPIC_REGSET_STANDARD		MPIC_REGSET(0)	/* Original MPIC */
 #define	MPIC_REGSET_TSI108		MPIC_REGSET(1)	/* Tsi108/109 PIC */
+
+/* Get the version of primary MPIC */
+#ifdef CONFIG_MPIC
+extern u32 fsl_mpic_primary_get_version(void);
+#else
+static inline u32 fsl_mpic_primary_get_version(void)
+{
+	return 0;
+}
+#endif
 
 /* Allocate the controller structure and setup the linux irq descs
  * for the range if interrupts passed in. No HW initialization is
@@ -464,12 +492,6 @@ extern unsigned int mpic_get_irq(void);
 extern unsigned int mpic_get_coreint_irq(void);
 /* Fetch Machine Check interrupt from primary mpic */
 extern unsigned int mpic_get_mcirq(void);
-
-/* Set the EPIC clock ratio */
-void mpic_set_clk_ratio(struct mpic *mpic, u32 clock_ratio);
-
-/* Enable/Disable EPIC serial interrupt mode */
-void mpic_set_serial_int(struct mpic *mpic, int enable);
 
 #endif /* __KERNEL__ */
 #endif	/* _ASM_POWERPC_MPIC_H */

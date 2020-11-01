@@ -16,10 +16,11 @@
 #include <linux/platform_device.h>
 
 #include <mach/hardware.h>
-#include <plat/mmc.h>
-#include <plat/board-sx1.h>
+#include "board-sx1.h"
 
-#if defined(CONFIG_MMC_OMAP) || defined(CONFIG_MMC_OMAP_MODULE)
+#include "mmc.h"
+
+#if IS_ENABLED(CONFIG_MMC_OMAP)
 
 static int mmc_set_power(struct device *dev, int slot, int power_on,
 				int vdd)

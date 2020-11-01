@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * ARCS hardware/memory inventory/configuration and system ID definitions.
  */
@@ -12,7 +13,7 @@ typedef enum configclass {
 	SystemClass,
 	ProcessorClass,
 	CacheClass,
-#ifndef	_NT_PROM
+#ifndef _NT_PROM
 	MemoryClass,
 	AdapterClass,
 	ControllerClass,
@@ -34,7 +35,7 @@ typedef enum configtype {
 	SecondaryICache,
 	SecondaryDCache,
 	SecondaryCache,
-#ifndef	_NT_PROM
+#ifndef _NT_PROM
 	Memory,
 #endif
 	EISAAdapter,
@@ -93,7 +94,7 @@ typedef enum {
 } IDENTIFIERFLAG;
 
 #ifndef NULL			/* for GetChild(NULL); */
-#define	NULL	0
+#define NULL	0
 #endif
 
 union key_u {
@@ -119,13 +120,13 @@ union key_u {
 #define SGI_ARCS_REV	10			/* rev .10, 3/04/92 */
 #endif
 
-typedef struct component {
+typedef struct {
 	CONFIGCLASS	Class;
 	CONFIGTYPE	Type;
 	IDENTIFIERFLAG	Flags;
 	USHORT		Version;
 	USHORT		Revision;
-	ULONG 		Key;
+	ULONG		Key;
 	ULONG		AffinityMask;
 	ULONG		ConfigurationDataSize;
 	ULONG		IdentifierLength;
@@ -140,7 +141,7 @@ struct cfgdata {
 };
 
 /* System ID */
-typedef struct systemid {
+typedef struct {
 	CHAR VendorId[8];
 	CHAR ProductId[8];
 } SYSTEMID;
@@ -149,7 +150,7 @@ typedef struct systemid {
 typedef enum memorytype {
 	ExceptionBlock,
 	SPBPage,			/* ARCS == SystemParameterBlock */
-#ifndef	_NT_PROM
+#ifndef _NT_PROM
 	FreeContiguous,
 	FreeMemory,
 	BadMemory,
@@ -166,7 +167,7 @@ typedef enum memorytype {
 #endif	/* _NT_PROM */
 } MEMORYTYPE;
 
-typedef struct memorydescriptor {
+typedef struct {
 	MEMORYTYPE	Type;
 	LONG		BasePage;
 	LONG		PageCount;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/filesystems.c
  *
@@ -14,7 +15,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /*
  * Handling of filesystem drivers list.
@@ -33,9 +34,10 @@ static struct file_system_type *file_systems;
 static DEFINE_RWLOCK(file_systems_lock);
 
 /* WARNING: This can be used only if we _already_ own a reference */
-void get_filesystem(struct file_system_type *fs)
+struct file_system_type *get_filesystem(struct file_system_type *fs)
 {
 	__module_get(fs->owner);
+	return fs;
 }
 
 void put_filesystem(struct file_system_type *fs)
@@ -46,9 +48,9 @@ void put_filesystem(struct file_system_type *fs)
 static struct file_system_type **find_filesystem(const char *name, unsigned len)
 {
 	struct file_system_type **p;
-	for (p=&file_systems; *p; p=&(*p)->next)
-		if (strlen((*p)->name) == len &&
-		    strncmp((*p)->name, name, len) == 0)
+	for (p = &file_systems; *p; p = &(*p)->next)
+		if (strncmp((*p)->name, name, len) == 0 &&
+		    !(*p)->name[len])
 			break;
 	return p;
 }
@@ -121,10 +123,11 @@ int unregister_filesystem(struct file_system_type * fs)
 
 EXPORT_SYMBOL(unregister_filesystem);
 
+#ifdef CONFIG_SYSFS_SYSCALL
 static int fs_index(const char __user * __name)
 {
 	struct file_system_type * tmp;
-	char * name;
+	struct filename *name;
 	int err, index;
 
 	name = getname(__name);
@@ -135,7 +138,7 @@ static int fs_index(const char __user * __name)
 	err = -EINVAL;
 	read_lock(&file_systems_lock);
 	for (tmp=file_systems, index=0 ; tmp ; tmp=tmp->next, index++) {
-		if (strcmp(tmp->name,name) == 0) {
+		if (strcmp(tmp->name, name->name) == 0) {
 			err = index;
 			break;
 		}
@@ -199,6 +202,7 @@ SYSCALL_DEFINE3(sysfs, int, option, unsigned long, arg1, unsigned long, arg2)
 	}
 	return retval;
 }
+#endif
 
 int __init get_filesystem_list(char *buf)
 {
@@ -273,8 +277,12 @@ struct file_system_type *get_fs_type(const char *name)
 	int len = dot ? dot - name : strlen(name);
 
 	fs = __get_fs_type(name, len);
-	if (!fs && (request_module("%.*s", len, name) == 0))
+	if (!fs && (request_module("fs-%.*s", len, name) == 0)) {
 		fs = __get_fs_type(name, len);
+		if (!fs)
+			pr_warn_once("request_module fs-%.*s succeeded, but still no fs?\n",
+				     len, name);
+	}
 
 	if (dot && fs && !(fs->fs_flags & FS_HAS_SUBTYPE)) {
 		put_filesystem(fs);

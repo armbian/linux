@@ -2,7 +2,7 @@
  *  Copyright (C) 2010, Lars-Peter Clausen <lars@metafoo.de>
  *
  *  This program is free software; you can redistribute it and/or modify it
- *  under  the terms of the GNU General  Public License as published by the
+ *  under  the terms of the GNU General	 Public License as published by the
  *  Free Software Foundation;  either version 2 of the License, or (at your
  *  option) any later version.
  *
@@ -12,6 +12,7 @@
  *
  */
 
+#include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/pm.h>
@@ -20,6 +21,9 @@
 
 #include <asm/mach-jz4740/base.h>
 #include <asm/mach-jz4740/timer.h>
+
+#include "reset.h"
+#include "clock.h"
 
 static void jz4740_halt(void)
 {
@@ -53,27 +57,8 @@ static void jz4740_restart(char *command)
 	jz4740_halt();
 }
 
-#define JZ_REG_RTC_CTRL		0x00
-#define JZ_REG_RTC_HIBERNATE	0x20
-
-#define JZ_RTC_CTRL_WRDY	BIT(7)
-
-static void jz4740_power_off(void)
-{
-	void __iomem *rtc_base = ioremap(JZ4740_RTC_BASE_ADDR, 0x24);
-	uint32_t ctrl;
-
-	do {
-		ctrl = readl(rtc_base + JZ_REG_RTC_CTRL);
-	} while (!(ctrl & JZ_RTC_CTRL_WRDY));
-
-	writel(1, rtc_base + JZ_REG_RTC_HIBERNATE);
-	jz4740_halt();
-}
-
 void jz4740_reset_init(void)
 {
 	_machine_restart = jz4740_restart;
 	_machine_halt = jz4740_halt;
-	pm_power_off = jz4740_power_off;
 }

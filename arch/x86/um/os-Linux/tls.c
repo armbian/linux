@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <errno.h>
 #include <linux/unistd.h>
 
@@ -5,7 +6,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#include "sysdep/tls.h"
+#include <sysdep/tls.h>
 
 #ifndef PTRACE_GET_THREAD_AREA
 #define PTRACE_GET_THREAD_AREA 25
@@ -37,7 +38,7 @@ void check_host_supports_tls(int *supports_tls, int *tls_min)
 				continue;
 			else if (errno == ENOSYS)
 				*supports_tls = 0;
-				return;
+			return;
 		}
 	}
 

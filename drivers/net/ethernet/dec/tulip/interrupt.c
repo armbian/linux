@@ -76,6 +76,12 @@ int tulip_refill_rx(struct net_device *dev)
 
 			mapping = pci_map_single(tp->pdev, skb->data, PKT_BUF_SZ,
 						 PCI_DMA_FROMDEVICE);
+			if (dma_mapping_error(&tp->pdev->dev, mapping)) {
+				dev_kfree_skb(skb);
+				tp->rx_buffers[entry].skb = NULL;
+				break;
+			}
+
 			tp->rx_buffers[entry].mapping = mapping;
 
 			tp->rx_ring[entry].buffer1 = cpu_to_le32(mapping);
@@ -212,9 +218,9 @@ int tulip_poll(struct napi_struct *napi, int budget)
                                                         pkt_len);
                                        skb_put(skb, pkt_len);
 #else
-                                       memcpy(skb_put(skb, pkt_len),
-                                              tp->rx_buffers[entry].skb->data,
-                                              pkt_len);
+                                       skb_put_data(skb,
+                                                    tp->rx_buffers[entry].skb->data,
+                                                    pkt_len);
 #endif
                                        pci_dma_sync_single_for_device(tp->pdev,
 								      tp->rx_buffers[entry].mapping,
@@ -313,8 +319,8 @@ int tulip_poll(struct napi_struct *napi, int budget)
 
          /* Remove us from polling list and enable RX intr. */
 
-         napi_complete(napi);
-         iowrite32(tulip_tbl[tp->chip_id].valid_intrs, tp->base_addr+CSR7);
+	napi_complete_done(napi, work_done);
+	iowrite32(tulip_tbl[tp->chip_id].valid_intrs, tp->base_addr+CSR7);
 
          /* The last op happens after poll completion. Which means the following:
           * 1. it can race with disabling irqs in irq handler
@@ -349,7 +355,7 @@ int tulip_poll(struct napi_struct *napi, int budget)
           * before we did napi_complete(). See? We would lose it. */
 
          /* remove ourselves from the polling list */
-         napi_complete(napi);
+         napi_complete_done(napi, work_done);
 
          return work_done;
 }
@@ -438,9 +444,9 @@ static int tulip_rx(struct net_device *dev)
 						 pkt_len);
 				skb_put(skb, pkt_len);
 #else
-				memcpy(skb_put(skb, pkt_len),
-				       tp->rx_buffers[entry].skb->data,
-				       pkt_len);
+				skb_put_data(skb,
+					     tp->rx_buffers[entry].skb->data,
+					     pkt_len);
 #endif
 				pci_dma_sync_single_for_device(tp->pdev,
 							       tp->rx_buffers[entry].mapping,

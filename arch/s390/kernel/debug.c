@@ -1,5 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *  arch/s390/kernel/debug.c
  *   S/390 debug facility
  *
  *    Copyright IBM Corp. 1999, 2012
@@ -20,8 +20,8 @@
 #include <linux/ctype.h>
 #include <linux/string.h>
 #include <linux/sysctl.h>
-#include <asm/uaccess.h>
-#include <linux/module.h>
+#include <linux/uaccess.h>
+#include <linux/export.h>
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/debugfs.h>
@@ -111,6 +111,7 @@ struct debug_view debug_raw_view = {
 	NULL,
 	NULL
 };
+EXPORT_SYMBOL(debug_raw_view);
 
 struct debug_view debug_hex_ascii_view = {
 	"hex_ascii",
@@ -120,6 +121,7 @@ struct debug_view debug_hex_ascii_view = {
 	NULL,
 	NULL
 };
+EXPORT_SYMBOL(debug_hex_ascii_view);
 
 static struct debug_view debug_level_view = {
 	"level",
@@ -156,6 +158,7 @@ struct debug_view debug_sprintf_view = {
 	NULL,
 	NULL
 };
+EXPORT_SYMBOL(debug_sprintf_view);
 
 /* used by dump analysis tools to determine version of debug feature */
 static unsigned int __used debug_feature_version = __DEBUG_FEATURE_VERSION;
@@ -275,7 +278,7 @@ debug_info_alloc(const char *name, int pages_per_area, int nr_areas,
 	memset(rc->views, 0, DEBUG_MAX_VIEWS * sizeof(struct debug_view *));
 	memset(rc->debugfs_entries, 0 ,DEBUG_MAX_VIEWS *
 		sizeof(struct dentry*));
-	atomic_set(&(rc->ref_count), 0);
+	refcount_set(&(rc->ref_count), 0);
 
 	return rc;
 
@@ -359,7 +362,7 @@ debug_info_create(const char *name, int pages_per_area, int nr_areas,
         debug_area_last = rc;
         rc->next = NULL;
 
-	debug_info_get(rc);
+	refcount_set(&rc->ref_count, 1);
 out:
 	return rc;
 }
@@ -414,7 +417,7 @@ static void
 debug_info_get(debug_info_t * db_info)
 {
 	if (db_info)
-		atomic_inc(&db_info->ref_count);
+		refcount_inc(&db_info->ref_count);
 }
 
 /*
@@ -429,7 +432,7 @@ debug_info_put(debug_info_t *db_info)
 
 	if (!db_info)
 		return;
-	if (atomic_dec_and_test(&db_info->ref_count)) {
+	if (refcount_dec_and_test(&db_info->ref_count)) {
 		for (i = 0; i < DEBUG_MAX_VIEWS; i++) {
 			if (!db_info->views[i])
 				continue;
@@ -609,7 +612,7 @@ debug_open(struct inode *inode, struct file *file)
 	debug_info_t *debug_info, *debug_info_snapshot;
 
 	mutex_lock(&debug_mutex);
-	debug_info = file->f_path.dentry->d_inode->i_private;
+	debug_info = file_inode(file)->i_private;
 	/* find debug view */
 	for (i = 0; i < DEBUG_MAX_VIEWS; i++) {
 		if (!debug_info->views[i])
@@ -697,8 +700,7 @@ debug_info_t *debug_register_mode(const char *name, int pages_per_area,
 	/* Since debugfs currently does not support uid/gid other than root, */
 	/* we do not allow gid/uid != 0 until we get support for that. */
 	if ((uid != 0) || (gid != 0))
-		pr_warning("Root becomes the owner of all s390dbf files "
-			   "in sysfs\n");
+		pr_warn("Root becomes the owner of all s390dbf files in sysfs\n");
 	BUG_ON(!initialized);
 	mutex_lock(&debug_mutex);
 
@@ -731,6 +733,7 @@ debug_info_t *debug_register(const char *name, int pages_per_area,
 	return debug_register_mode(name, pages_per_area, nr_areas, buf_size,
 				   S_IRUSR | S_IWUSR, 0, 0);
 }
+EXPORT_SYMBOL(debug_register);
 
 /*
  * debug_unregister:
@@ -749,6 +752,7 @@ debug_unregister(debug_info_t * id)
 out:
 	return;
 }
+EXPORT_SYMBOL(debug_unregister);
 
 /*
  * debug_set_size:
@@ -811,7 +815,7 @@ debug_set_level(debug_info_t* id, int new_level)
         }
 	spin_unlock_irqrestore(&id->lock,flags);
 }
-
+EXPORT_SYMBOL(debug_set_level);
 
 /*
  * proceed_active_entry:
@@ -863,7 +867,8 @@ static inline void
 debug_finish_entry(debug_info_t * id, debug_entry_t* active, int level,
 			int exception)
 {
-	active->id.stck = get_clock();
+	active->id.stck = get_tod_clock_fast() -
+		*(unsigned long long *) &tod_clock_base[1];
 	active->id.fields.cpuid = smp_processor_id();
 	active->caller = __builtin_return_address(0);
 	active->id.fields.exception = exception;
@@ -885,7 +890,7 @@ static int debug_active=1;
  * if debug_active is already off
  */
 static int
-s390dbf_procactive(ctl_table *table, int write,
+s390dbf_procactive(struct ctl_table *table, int write,
                      void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	if (!write || debug_stoppable || !debug_active)
@@ -931,7 +936,7 @@ debug_stop_all(void)
 	if (debug_stoppable)
 		debug_active = 0;
 }
-
+EXPORT_SYMBOL(debug_stop_all);
 
 void debug_set_critical(void)
 {
@@ -964,6 +969,7 @@ debug_event_common(debug_info_t * id, int level, const void *buf, int len)
 
 	return active;
 }
+EXPORT_SYMBOL(debug_event_common);
 
 /*
  * debug_exception_common:
@@ -991,6 +997,7 @@ debug_entry_t
 
 	return active;
 }
+EXPORT_SYMBOL(debug_exception_common);
 
 /*
  * counts arguments in format string for sprintf view
@@ -1013,7 +1020,7 @@ debug_count_numargs(char *string)
  */
 
 debug_entry_t*
-debug_sprintf_event(debug_info_t* id, int level,char *string,...)
+__debug_sprintf_event(debug_info_t *id, int level, char *string, ...)
 {
 	va_list   ap;
 	int numargs,idx;
@@ -1021,8 +1028,6 @@ debug_sprintf_event(debug_info_t* id, int level,char *string,...)
 	debug_sprintf_entry_t *curr_event;
 	debug_entry_t *active;
 
-	if((!id) || (level > id->level))
-		return NULL;
 	if (!debug_active || !id->areas)
 		return NULL;
 	numargs=debug_count_numargs(string);
@@ -1044,13 +1049,14 @@ debug_sprintf_event(debug_info_t* id, int level,char *string,...)
 
 	return active;
 }
+EXPORT_SYMBOL(__debug_sprintf_event);
 
 /*
  * debug_sprintf_exception:
  */
 
 debug_entry_t*
-debug_sprintf_exception(debug_info_t* id, int level,char *string,...)
+__debug_sprintf_exception(debug_info_t *id, int level, char *string, ...)
 {
 	va_list   ap;
 	int numargs,idx;
@@ -1058,8 +1064,6 @@ debug_sprintf_exception(debug_info_t* id, int level,char *string,...)
 	debug_sprintf_entry_t *curr_event;
 	debug_entry_t *active;
 
-	if((!id) || (level > id->level))
-		return NULL;
 	if (!debug_active || !id->areas)
 		return NULL;
 
@@ -1082,25 +1086,7 @@ debug_sprintf_exception(debug_info_t* id, int level,char *string,...)
 
 	return active;
 }
-
-/*
- * debug_init:
- * - is called exactly once to initialize the debug feature
- */
-
-static int
-__init debug_init(void)
-{
-	int rc = 0;
-
-	s390dbf_sysctl_header = register_sysctl_table(s390dbf_dir_table);
-	mutex_lock(&debug_mutex);
-	debug_debugfs_root_entry = debugfs_create_dir(DEBUG_DIR_ROOT,NULL);
-	initialized = 1;
-	mutex_unlock(&debug_mutex);
-
-	return rc;
-}
+EXPORT_SYMBOL(__debug_sprintf_exception);
 
 /*
  * debug_register_view:
@@ -1138,16 +1124,18 @@ debug_register_view(debug_info_t * id, struct debug_view *view)
 	if (i == DEBUG_MAX_VIEWS) {
 		pr_err("Registering view %s/%s would exceed the maximum "
 		       "number of views %i\n", id->name, view->name, i);
-		debugfs_remove(pde);
 		rc = -1;
 	} else {
 		id->views[i] = view;
 		id->debugfs_entries[i] = pde;
 	}
 	spin_unlock_irqrestore(&id->lock, flags);
+	if (rc)
+		debugfs_remove(pde);
 out:
 	return rc;
 }
+EXPORT_SYMBOL(debug_register_view);
 
 /*
  * debug_unregister_view:
@@ -1156,9 +1144,9 @@ out:
 int
 debug_unregister_view(debug_info_t * id, struct debug_view *view)
 {
-	int rc = 0;
-	int i;
+	struct dentry *dentry = NULL;
 	unsigned long flags;
+	int i, rc = 0;
 
 	if (!id)
 		goto out;
@@ -1170,13 +1158,16 @@ debug_unregister_view(debug_info_t * id, struct debug_view *view)
 	if (i == DEBUG_MAX_VIEWS)
 		rc = -1;
 	else {
-		debugfs_remove(id->debugfs_entries[i]);
+		dentry = id->debugfs_entries[i];
 		id->views[i] = NULL;
+		id->debugfs_entries[i] = NULL;
 	}
 	spin_unlock_irqrestore(&id->lock, flags);
+	debugfs_remove(dentry);
 out:
 	return rc;
 }
+EXPORT_SYMBOL(debug_unregister_view);
 
 static inline char *
 debug_get_user_string(const char __user *user_buf, size_t user_len)
@@ -1317,8 +1308,7 @@ debug_input_level_fn(debug_info_t * id, struct debug_view *view,
 		new_level = debug_get_uint(str);
 	}
 	if(new_level < 0) {
-		pr_warning("%s is not a valid level for a debug "
-			   "feature\n", str);
+		pr_warn("%s is not a valid level for a debug feature\n", str);
 		rc = -EINVAL;
 	} else {
 		debug_set_level(id, new_level);
@@ -1467,25 +1457,28 @@ int
 debug_dflt_header_fn(debug_info_t * id, struct debug_view *view,
 			 int area, debug_entry_t * entry, char *out_buf)
 {
-	struct timespec time_spec;
+	unsigned long base, sec, usec;
 	char *except_str;
 	unsigned long caller;
 	int rc = 0;
 	unsigned int level;
 
 	level = entry->id.fields.level;
-	stck_to_timespec(entry->id.stck, &time_spec);
+	base = (*(unsigned long *) &tod_clock_base[0]) >> 4;
+	sec = (entry->id.stck >> 12) + base - (TOD_UNIX_EPOCH >> 12);
+	usec = do_div(sec, USEC_PER_SEC);
 
 	if (entry->id.fields.exception)
 		except_str = "*";
 	else
 		except_str = "-";
-	caller = ((unsigned long) entry->caller) & PSW_ADDR_INSN;
-	rc += sprintf(out_buf, "%02i %011lu:%06lu %1u %1s %02i %p  ",
-		      area, time_spec.tv_sec, time_spec.tv_nsec / 1000, level,
-		      except_str, entry->id.fields.cpuid, (void *) caller);
+	caller = (unsigned long) entry->caller;
+	rc += sprintf(out_buf, "%02i %011ld:%06lu %1u %1s %02i %p  ",
+		      area, sec, usec, level, except_str,
+		      entry->id.fields.cpuid, (void *)caller);
 	return rc;
 }
+EXPORT_SYMBOL(debug_dflt_header_fn);
 
 /*
  * prints debug data sprintf-formated:
@@ -1534,33 +1527,16 @@ out:
 }
 
 /*
- * clean up module
+ * debug_init:
+ * - is called exactly once to initialize the debug feature
  */
-static void __exit debug_exit(void)
+static int __init debug_init(void)
 {
-	debugfs_remove(debug_debugfs_root_entry);
-	unregister_sysctl_table(s390dbf_sysctl_header);
-	return;
+	s390dbf_sysctl_header = register_sysctl_table(s390dbf_dir_table);
+	mutex_lock(&debug_mutex);
+	debug_debugfs_root_entry = debugfs_create_dir(DEBUG_DIR_ROOT, NULL);
+	initialized = 1;
+	mutex_unlock(&debug_mutex);
+	return 0;
 }
-
-/*
- * module definitions
- */
 postcore_initcall(debug_init);
-module_exit(debug_exit);
-MODULE_LICENSE("GPL");
-
-EXPORT_SYMBOL(debug_register);
-EXPORT_SYMBOL(debug_unregister); 
-EXPORT_SYMBOL(debug_set_level);
-EXPORT_SYMBOL(debug_stop_all);
-EXPORT_SYMBOL(debug_register_view);
-EXPORT_SYMBOL(debug_unregister_view);
-EXPORT_SYMBOL(debug_event_common);
-EXPORT_SYMBOL(debug_exception_common);
-EXPORT_SYMBOL(debug_hex_ascii_view);
-EXPORT_SYMBOL(debug_raw_view);
-EXPORT_SYMBOL(debug_dflt_header_fn);
-EXPORT_SYMBOL(debug_sprintf_view);
-EXPORT_SYMBOL(debug_sprintf_exception);
-EXPORT_SYMBOL(debug_sprintf_event);

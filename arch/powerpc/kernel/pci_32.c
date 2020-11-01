@@ -11,6 +11,7 @@
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/bootmem.h>
+#include <linux/syscalls.h>
 #include <linux/irq.h>
 #include <linux/list.h>
 #include <linux/of.h>
@@ -24,7 +25,7 @@
 #include <asm/pci-bridge.h>
 #include <asm/ppc-pci.h>
 #include <asm/byteorder.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/machdep.h>
 
 #undef DEBUG
@@ -32,6 +33,8 @@
 unsigned long isa_io_base     = 0;
 unsigned long pci_dram_offset = 0;
 int pcibios_assign_bus_offset = 1;
+EXPORT_SYMBOL(isa_io_base);
+EXPORT_SYMBOL(pci_dram_offset);
 
 void pcibios_make_OF_bus_map(void);
 
@@ -77,8 +80,8 @@ make_one_node_map(struct device_node* node, u8 pci_bus)
 		return;
 	bus_range = of_get_property(node, "bus-range", &len);
 	if (bus_range == NULL || len < 2 * sizeof(int)) {
-		printk(KERN_WARNING "Can't get bus-range for %s, "
-		       "assuming it starts at 0\n", node->full_name);
+		printk(KERN_WARNING "Can't get bus-range for %pOF, "
+		       "assuming it starts at 0\n", node);
 		pci_to_OF_bus_map[pci_bus] = 0;
 	} else
 		pci_to_OF_bus_map[pci_bus] = bus_range[0];
@@ -199,21 +202,19 @@ pci_create_OF_bus_map(void)
 	struct property* of_prop;
 	struct device_node *dn;
 
-	of_prop = (struct property*) alloc_bootmem(sizeof(struct property) + 256);
-	if (!of_prop)
-		return;
+	of_prop = memblock_virt_alloc(sizeof(struct property) + 256, 0);
 	dn = of_find_node_by_path("/");
 	if (dn) {
 		memset(of_prop, -1, sizeof(struct property) + 256);
 		of_prop->name = "pci-OF-bus-map";
 		of_prop->length = 256;
 		of_prop->value = &of_prop[1];
-		prom_add_property(dn, of_prop);
+		of_add_property(dn, of_prop);
 		of_node_put(dn);
 	}
 }
 
-void __devinit pcibios_setup_phb_io_space(struct pci_controller *hose)
+void pcibios_setup_phb_io_space(struct pci_controller *hose)
 {
 	unsigned long io_offset;
 	struct resource *res = &hose->io_resource;
@@ -295,7 +296,7 @@ long sys_pciconfig_iobase(long which, unsigned long bus, unsigned long devfn)
 	case IOBASE_BRIDGE_NUMBER:
 		return (long)hose->first_busno;
 	case IOBASE_MEMORY:
-		return (long)hose->pci_mem_offset;
+		return (long)hose->mem_offset[0];
 	case IOBASE_IO:
 		return (long)hose->io_base_phys;
 	case IOBASE_ISA_IO:

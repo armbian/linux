@@ -115,13 +115,13 @@ struct uac2_input_terminal_descriptor {
 	__u8 bDescriptorType;
 	__u8 bDescriptorSubtype;
 	__u8 bTerminalID;
-	__u16 wTerminalType;
+	__le16 wTerminalType;
 	__u8 bAssocTerminal;
 	__u8 bCSourceID;
 	__u8 bNrChannels;
-	__u32 bmChannelConfig;
+	__le32 bmChannelConfig;
 	__u8 iChannelNames;
-	__u16 bmControls;
+	__le16 bmControls;
 	__u8 iTerminal;
 } __attribute__((packed));
 
@@ -132,11 +132,11 @@ struct uac2_output_terminal_descriptor {
 	__u8 bDescriptorType;
 	__u8 bDescriptorSubtype;
 	__u8 bTerminalID;
-	__u16 wTerminalType;
+	__le16 wTerminalType;
 	__u8 bAssocTerminal;
 	__u8 bSourceID;
 	__u8 bCSourceID;
-	__u16 bmControls;
+	__le16 bmControls;
 	__u8 iTerminal;
 } __attribute__((packed));
 
@@ -164,11 +164,13 @@ struct uac2_as_header_descriptor {
 	__u8 bTerminalLink;
 	__u8 bmControls;
 	__u8 bFormatType;
-	__u32 bmFormats;
+	__le32 bmFormats;
 	__u8 bNrChannels;
-	__u32 bmChannelConfig;
+	__le32 bmChannelConfig;
 	__u8 iChannelNames;
 } __attribute__((packed));
+
+#define UAC2_FORMAT_TYPE_I_RAW_DATA	(1 << 31)
 
 /* 4.10.1.2 Class-Specific AS Isochronous Audio Data Endpoint Descriptor */
 

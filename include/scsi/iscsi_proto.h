@@ -74,7 +74,7 @@ static inline int iscsi_sna_gte(u32 n1, u32 n2)
 #define zero_data(p) {p[0]=0;p[1]=0;p[2]=0;}
 
 /* initiator tags; opaque for target */
-typedef uint32_t __bitwise__ itt_t;
+typedef uint32_t __bitwise itt_t;
 /* below makes sense only for initiator that created this tag */
 #define build_itt(itt, age) ((__force itt_t)\
 	((itt) | ((age) << ISCSI_AGE_SHIFT)))
@@ -660,6 +660,8 @@ struct iscsi_reject {
 #define ISCSI_MAX_MAX_BURST_LEN			16777215
 
 #define ISCSI_DEF_TIME2WAIT			2
+
+#define ISCSI_NAME_LEN				224
 
 /************************* RFC 3720 End *****************************/
 

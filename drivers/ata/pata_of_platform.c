@@ -14,8 +14,15 @@
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/ata_platform.h>
+#include <linux/libata.h>
 
-static int __devinit pata_of_platform_probe(struct platform_device *ofdev)
+#define DRV_NAME "pata_of_platform"
+
+static struct scsi_host_template pata_platform_sht = {
+	ATA_PIO_SHT(DRV_NAME),
+};
+
+static int pata_of_platform_probe(struct platform_device *ofdev)
 {
 	int ret;
 	struct device_node *dn = ofdev->dev.of_node;
@@ -25,7 +32,6 @@ static int __devinit pata_of_platform_probe(struct platform_device *ofdev)
 	unsigned int reg_shift = 0;
 	int pio_mode = 0;
 	int pio_mask;
-	const u32 *prop;
 
 	ret = of_address_to_resource(dn, 0, &io_res);
 	if (ret) {
@@ -34,33 +40,18 @@ static int __devinit pata_of_platform_probe(struct platform_device *ofdev)
 		return -EINVAL;
 	}
 
-	if (of_device_is_compatible(dn, "electra-ide")) {
-		/* Altstatus is really at offset 0x3f6 from the primary window
-		 * on electra-ide. Adjust ctl_res and io_res accordingly.
-		 */
-		ctl_res = io_res;
-		ctl_res.start = ctl_res.start+0x3f6;
-		io_res.end = ctl_res.start-1;
-	} else {
-		ret = of_address_to_resource(dn, 1, &ctl_res);
-		if (ret) {
-			dev_err(&ofdev->dev, "can't get CTL address from "
-				"device tree\n");
-			return -EINVAL;
-		}
+	ret = of_address_to_resource(dn, 1, &ctl_res);
+	if (ret) {
+		dev_err(&ofdev->dev, "can't get CTL address from "
+			"device tree\n");
+		return -EINVAL;
 	}
 
 	irq_res = platform_get_resource(ofdev, IORESOURCE_IRQ, 0);
-	if (irq_res)
-		irq_res->flags = 0;
 
-	prop = of_get_property(dn, "reg-shift", NULL);
-	if (prop)
-		reg_shift = be32_to_cpup(prop);
+	of_property_read_u32(dn, "reg-shift", &reg_shift);
 
-	prop = of_get_property(dn, "pio-mode", NULL);
-	if (prop) {
-		pio_mode = be32_to_cpup(prop);
+	if (!of_property_read_u32(dn, "pio-mode", &pio_mode)) {
 		if (pio_mode > 6) {
 			dev_err(&ofdev->dev, "invalid pio-mode\n");
 			return -EINVAL;
@@ -73,29 +64,22 @@ static int __devinit pata_of_platform_probe(struct platform_device *ofdev)
 	pio_mask |= (1 << pio_mode) - 1;
 
 	return __pata_platform_probe(&ofdev->dev, &io_res, &ctl_res, irq_res,
-				     reg_shift, pio_mask);
+				     reg_shift, pio_mask, &pata_platform_sht);
 }
 
-static int __devexit pata_of_platform_remove(struct platform_device *ofdev)
-{
-	return __pata_platform_remove(&ofdev->dev);
-}
-
-static struct of_device_id pata_of_platform_match[] = {
+static const struct of_device_id pata_of_platform_match[] = {
 	{ .compatible = "ata-generic", },
-	{ .compatible = "electra-ide", },
-	{},
+	{ },
 };
 MODULE_DEVICE_TABLE(of, pata_of_platform_match);
 
 static struct platform_driver pata_of_platform_driver = {
 	.driver = {
-		.name = "pata_of_platform",
-		.owner = THIS_MODULE,
+		.name = DRV_NAME,
 		.of_match_table = pata_of_platform_match,
 	},
 	.probe		= pata_of_platform_probe,
-	.remove		= __devexit_p(pata_of_platform_remove),
+	.remove		= ata_platform_remove_one,
 };
 
 module_platform_driver(pata_of_platform_driver);

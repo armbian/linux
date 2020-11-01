@@ -29,7 +29,6 @@
 #include <linux/fcntl.h>
 #include <linux/hdlc.h>
 #include <linux/in.h>
-#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/jiffies.h>
@@ -40,7 +39,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include "hd64572.h"
 
 #define NAPI_WEIGHT		16
@@ -342,7 +341,7 @@ static int sca_poll(struct napi_struct *napi, int budget)
 		received = sca_rx_done(port, budget);
 
 	if (received < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, received);
 		enable_intr(port);
 	}
 
@@ -605,8 +604,7 @@ static netdev_tx_t sca_xmit(struct sk_buff *skb, struct net_device *dev)
 }
 
 
-static u32 __devinit sca_detect_ram(card_t *card, u8 __iomem *rambase,
-				    u32 ramsize)
+static u32 sca_detect_ram(card_t *card, u8 __iomem *rambase, u32 ramsize)
 {
 	/* Round RAM size to 32 bits, fill from end to start */
 	u32 i = ramsize &= ~3;
@@ -625,7 +623,7 @@ static u32 __devinit sca_detect_ram(card_t *card, u8 __iomem *rambase,
 }
 
 
-static void __devinit sca_init(card_t *card, int wait_states)
+static void sca_init(card_t *card, int wait_states)
 {
 	sca_out(wait_states, WCRL, card); /* Wait Control */
 	sca_out(wait_states, WCRM, card);

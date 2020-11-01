@@ -212,7 +212,7 @@ ssize_t i2400mu_bus_bm_cmd_send(struct i2400m *i2400m,
 	}
 	if (result != cmd_size) {		/* all was transferred? */
 		dev_err(dev, "boot-mode cmd %d: incomplete transfer "
-			"(%zu vs %zu submitted)\n",  opcode, result, cmd_size);
+			"(%zd vs %zu submitted)\n",  opcode, result, cmd_size);
 		result = -EIO;
 		goto error_cmd_size;
 	}
@@ -237,7 +237,7 @@ void __i2400mu_bm_notif_cb(struct urb *urb)
  *
  * @i2400m: device descriptor
  * @urb: urb to use
- * @completion: completion varible to complete when done
+ * @completion: completion variable to complete when done
  *
  * Data is always read to i2400m->bm_ack_buf
  */
@@ -354,6 +354,7 @@ out:
 		usb_autopm_put_interface(i2400mu->usb_iface);
 	d_fnend(8, dev, "(i2400m %p ack %p size %zu) = %ld\n",
 		i2400m, ack, ack_size, (long) result);
+	usb_put_urb(&notif_urb);
 	return result;
 
 error_exceeded:

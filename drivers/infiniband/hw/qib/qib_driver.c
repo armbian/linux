@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2013 Intel Corporation. All rights reserved.
  * Copyright (c) 2006, 2007, 2008, 2009 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
@@ -38,6 +39,7 @@
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
 #include <linux/module.h>
+#include <linux/prefetch.h>
 
 #include "qib.h"
 
@@ -45,7 +47,7 @@
  * The size has to be longer than this string, so we can append
  * board/chip information to it in the init code.
  */
-const char ib_qib_version[] = QIB_IDSTR "\n";
+const char ib_qib_version[] = QIB_DRIVER_VERSION "\n";
 
 DEFINE_SPINLOCK(qib_devs_lock);
 LIST_HEAD(qib_dev_list);
@@ -62,8 +64,8 @@ MODULE_PARM_DESC(compat_ddr_negotiate,
 		 "Attempt pre-IBTA 1.2 DDR speed negotiation");
 
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_AUTHOR("QLogic <support@qlogic.com>");
-MODULE_DESCRIPTION("QLogic IB driver");
+MODULE_AUTHOR("Intel <ibsupport@intel.com>");
+MODULE_DESCRIPTION("Intel IB driver");
 
 /*
  * QIB_PIO_MAXIBHDR is the max IB header size allowed for in our
@@ -83,8 +85,24 @@ const char *qib_get_unit_name(int unit)
 {
 	static char iname[16];
 
-	snprintf(iname, sizeof iname, "infinipath%u", unit);
+	snprintf(iname, sizeof(iname), "infinipath%u", unit);
 	return iname;
+}
+
+const char *qib_get_card_name(struct rvt_dev_info *rdi)
+{
+	struct qib_ibdev *ibdev = container_of(rdi, struct qib_ibdev, rdi);
+	struct qib_devdata *dd = container_of(ibdev,
+					      struct qib_devdata, verbs_dev);
+	return qib_get_unit_name(dd->unit);
+}
+
+struct pci_dev *qib_get_pci_dev(struct rvt_dev_info *rdi)
+{
+	struct qib_ibdev *ibdev = container_of(rdi, struct qib_ibdev, rdi);
+	struct qib_devdata *dd = container_of(ibdev,
+					      struct qib_devdata, verbs_dev);
+	return dd->pcidev;
 }
 
 /*
@@ -300,10 +318,12 @@ static u32 qib_rcv_hdrerr(struct qib_ctxtdata *rcd, struct qib_pportdata *ppd,
 		ret = 1;
 	else if (eflags == QLOGIC_IB_RHF_H_TIDERR) {
 		/* For TIDERR and RC QPs premptively schedule a NAK */
-		struct qib_ib_header *hdr = (struct qib_ib_header *) rhdr;
-		struct qib_other_headers *ohdr = NULL;
+		struct ib_header *hdr = (struct ib_header *)rhdr;
+		struct ib_other_headers *ohdr = NULL;
 		struct qib_ibport *ibp = &ppd->ibport_data;
-		struct qib_qp *qp = NULL;
+		struct qib_devdata *dd = ppd->dd;
+		struct rvt_dev_info *rdi = &dd->verbs_dev.rdi;
+		struct rvt_qp *qp = NULL;
 		u32 tlen = qib_hdrget_length_in_bytes(rhf_addr);
 		u16 lid  = be16_to_cpu(hdr->lrh[1]);
 		int lnh = be16_to_cpu(hdr->lrh[0]) & 3;
@@ -316,7 +336,7 @@ static u32 qib_rcv_hdrerr(struct qib_ctxtdata *rcd, struct qib_pportdata *ppd,
 		if (tlen < 24)
 			goto drop;
 
-		if (lid < QIB_MULTICAST_LID_BASE) {
+		if (lid < be16_to_cpu(IB_MULTICAST_LID_BASE)) {
 			lid &= ~((1 << ppd->lmc) - 1);
 			if (unlikely(lid != ppd->lid))
 				goto drop;
@@ -343,12 +363,16 @@ static u32 qib_rcv_hdrerr(struct qib_ctxtdata *rcd, struct qib_pportdata *ppd,
 		psn = be32_to_cpu(ohdr->bth[2]);
 
 		/* Get the destination QP number. */
-		qp_num = be32_to_cpu(ohdr->bth[1]) & QIB_QPN_MASK;
+		qp_num = be32_to_cpu(ohdr->bth[1]) & RVT_QPN_MASK;
 		if (qp_num != QIB_MULTICAST_QPN) {
 			int ruc_res;
-			qp = qib_lookup_qpn(ibp, qp_num);
-			if (!qp)
+
+			rcu_read_lock();
+			qp = rvt_lookup_qpn(rdi, &ibp->rvp, qp_num);
+			if (!qp) {
+				rcu_read_unlock();
 				goto drop;
+			}
 
 			/*
 			 * Handle only RC QPs - for other QP types drop error
@@ -357,9 +381,9 @@ static u32 qib_rcv_hdrerr(struct qib_ctxtdata *rcd, struct qib_pportdata *ppd,
 			spin_lock(&qp->r_lock);
 
 			/* Check for valid receive state. */
-			if (!(ib_qib_state_ops[qp->state] &
-			      QIB_PROCESS_RECV_OK)) {
-				ibp->n_pkt_drops++;
+			if (!(ib_rvt_state_ops[qp->state] &
+			      RVT_PROCESS_RECV_OK)) {
+				ibp->rvp.n_pkt_drops++;
 				goto unlock;
 			}
 
@@ -379,7 +403,7 @@ static u32 qib_rcv_hdrerr(struct qib_ctxtdata *rcd, struct qib_pportdata *ppd,
 				    IB_OPCODE_RC_RDMA_READ_RESPONSE_FIRST) {
 					diff = qib_cmp24(psn, qp->r_psn);
 					if (!qp->r_nak_state && diff >= 0) {
-						ibp->n_rc_seqnak++;
+						ibp->rvp.n_rc_seqnak++;
 						qp->r_nak_state =
 							IB_NAK_PSN_ERROR;
 						/* Use the expected PSN. */
@@ -394,9 +418,8 @@ static u32 qib_rcv_hdrerr(struct qib_ctxtdata *rcd, struct qib_pportdata *ppd,
 						 */
 						if (list_empty(&qp->rspwait)) {
 							qp->r_flags |=
-								QIB_R_RSP_NAK;
-							atomic_inc(
-								&qp->refcount);
+								RVT_R_RSP_NAK;
+							rvt_get_qp(qp);
 							list_add_tail(
 							 &qp->rspwait,
 							 &rcd->qp_wait_list);
@@ -415,12 +438,7 @@ static u32 qib_rcv_hdrerr(struct qib_ctxtdata *rcd, struct qib_pportdata *ppd,
 
 unlock:
 			spin_unlock(&qp->r_lock);
-			/*
-			 * Notify qib_destroy_qp() if it is waiting
-			 * for us to finish.
-			 */
-			if (atomic_dec_and_test(&qp->refcount))
-				wake_up(&qp->wait);
+			rcu_read_unlock();
 		} /* Unicast QP */
 	} /* Valid packet with TIDErr */
 
@@ -452,12 +470,13 @@ u32 qib_kreceive(struct qib_ctxtdata *rcd, u32 *llic, u32 *npkts)
 	u32 eflags, etype, tlen, i = 0, updegr = 0, crcs = 0;
 	int last;
 	u64 lval;
-	struct qib_qp *qp, *nqp;
+	struct rvt_qp *qp, *nqp;
 
 	l = rcd->head;
 	rhf_addr = (__le32 *) rcd->rcvhdrq + l + dd->rhf_offset;
 	if (dd->flags & QIB_NODMA_RTAIL) {
 		u32 seq = qib_hdrget_seq(rhf_addr);
+
 		if (seq != rcd->seq_cnt)
 			goto bail;
 		hdrqtail = 0;
@@ -481,8 +500,10 @@ u32 qib_kreceive(struct qib_ctxtdata *rcd, u32 *llic, u32 *npkts)
 			etail = qib_hdrget_index(rhf_addr);
 			updegr = 1;
 			if (tlen > sizeof(*hdr) ||
-			    etype >= RCVHQ_RCV_TYPE_NON_KD)
+			    etype >= RCVHQ_RCV_TYPE_NON_KD) {
 				ebuf = qib_get_egrbuf(rcd, etail);
+				prefetch_range(ebuf, tlen - sizeof(*hdr));
+			}
 		}
 		if (!eflags) {
 			u16 lrh_len = be16_to_cpu(hdr->lrh[2]) << 2;
@@ -542,18 +563,8 @@ move_along:
 			updegr = 0;
 		}
 	}
-	/*
-	 * Notify qib_destroy_qp() if it is waiting
-	 * for lookaside_qp to finish.
-	 */
-	if (rcd->lookaside_qp) {
-		if (atomic_dec_and_test(&rcd->lookaside_qp->refcount))
-			wake_up(&rcd->lookaside_qp->wait);
-		rcd->lookaside_qp = NULL;
-	}
 
 	rcd->head = l;
-	rcd->pkt_count += i;
 
 	/*
 	 * Iterate over all QPs waiting to respond.
@@ -561,22 +572,21 @@ move_along:
 	 */
 	list_for_each_entry_safe(qp, nqp, &rcd->qp_wait_list, rspwait) {
 		list_del_init(&qp->rspwait);
-		if (qp->r_flags & QIB_R_RSP_NAK) {
-			qp->r_flags &= ~QIB_R_RSP_NAK;
+		if (qp->r_flags & RVT_R_RSP_NAK) {
+			qp->r_flags &= ~RVT_R_RSP_NAK;
 			qib_send_rc_ack(qp);
 		}
-		if (qp->r_flags & QIB_R_RSP_SEND) {
+		if (qp->r_flags & RVT_R_RSP_SEND) {
 			unsigned long flags;
 
-			qp->r_flags &= ~QIB_R_RSP_SEND;
+			qp->r_flags &= ~RVT_R_RSP_SEND;
 			spin_lock_irqsave(&qp->s_lock, flags);
-			if (ib_qib_state_ops[qp->state] &
-					QIB_PROCESS_OR_FLUSH_SEND)
+			if (ib_rvt_state_ops[qp->state] &
+					RVT_PROCESS_OR_FLUSH_SEND)
 				qib_schedule_send(qp);
 			spin_unlock_irqrestore(&qp->s_lock, flags);
 		}
-		if (atomic_dec_and_test(&qp->refcount))
-			wake_up(&qp->wait);
+		rvt_put_qp(qp);
 	}
 
 bail:
@@ -647,6 +657,7 @@ bail:
 int qib_set_lid(struct qib_pportdata *ppd, u32 lid, u8 lmc)
 {
 	struct qib_devdata *dd = ppd->dd;
+
 	ppd->lid = lid;
 	ppd->lmc = lmc;
 
@@ -761,8 +772,9 @@ int qib_reset_device(int unit)
 	qib_devinfo(dd->pcidev, "Reset on unit %u requested\n", unit);
 
 	if (!dd->kregbase || !(dd->flags & QIB_PRESENT)) {
-		qib_devinfo(dd->pcidev, "Invalid unit number %u or "
-			    "not initialized or not present\n", unit);
+		qib_devinfo(dd->pcidev,
+			"Invalid unit number %u or not initialized or not present\n",
+			unit);
 		ret = -ENXIO;
 		goto bail;
 	}
@@ -799,11 +811,13 @@ int qib_reset_device(int unit)
 	else
 		ret = -EAGAIN;
 	if (ret)
-		qib_dev_err(dd, "Reinitialize unit %u after "
-			    "reset failed with %d\n", unit, ret);
+		qib_dev_err(dd,
+			"Reinitialize unit %u after reset failed with %d\n",
+			unit, ret);
 	else
-		qib_devinfo(dd->pcidev, "Reinitialized unit %u after "
-			    "resetting\n", unit);
+		qib_devinfo(dd->pcidev,
+			"Reinitialized unit %u after resetting\n",
+			unit);
 
 bail:
 	return ret;

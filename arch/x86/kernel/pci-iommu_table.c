@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/dma-mapping.h>
 #include <asm/iommu_table.h>
 #include <linux/string.h>
@@ -72,7 +73,7 @@ void __init check_iommu_entries(struct iommu_table_entry *start,
 	}
 }
 #else
-inline void check_iommu_entries(struct iommu_table_entry *start,
+void __init check_iommu_entries(struct iommu_table_entry *start,
 				       struct iommu_table_entry *finish)
 {
 }

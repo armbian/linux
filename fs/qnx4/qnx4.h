@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/fs.h>
 #include <linux/qnx4_fs.h>
 
@@ -10,8 +11,6 @@
 #endif
 
 struct qnx4_sb_info {
-	struct buffer_head	*sb_buf;	/* superblock buffer */
-	struct qnx4_super_block	*sb;		/* our superblock */
 	unsigned int		Version;	/* may be useful */
 	struct qnx4_inode_entry	*BitMap;	/* useful */
 };
@@ -23,7 +22,7 @@ struct qnx4_inode_info {
 };
 
 extern struct inode *qnx4_iget(struct super_block *, unsigned long);
-extern struct dentry *qnx4_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd);
+extern struct dentry *qnx4_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags);
 extern unsigned long qnx4_count_free_blocks(struct super_block *sb);
 extern unsigned long qnx4_block_map(struct inode *inode, long iblock);
 

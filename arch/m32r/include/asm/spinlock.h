@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_M32R_SPINLOCK_H
 #define _ASM_M32R_SPINLOCK_H
 
@@ -13,6 +14,8 @@
 #include <linux/atomic.h>
 #include <asm/dcache_clear.h>
 #include <asm/page.h>
+#include <asm/barrier.h>
+#include <asm/processor.h>
 
 /*
  * Your basic SMP spinlocks, allowing only a single CPU anywhere
@@ -27,8 +30,6 @@
 
 #define arch_spin_is_locked(x)		(*(volatile int *)(&(x)->slock) <= 0)
 #define arch_spin_lock_flags(lock, flags) arch_spin_lock(lock)
-#define arch_spin_unlock_wait(x) \
-		do { cpu_relax(); } while (arch_spin_is_locked(x))
 
 /**
  * arch_spin_trylock - Try spin lock and return a result

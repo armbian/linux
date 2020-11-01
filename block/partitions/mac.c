@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  fs/partitions/mac.c
  *
@@ -67,6 +68,10 @@ int mac_partition(struct parsed_partitions *state)
 		put_dev_sector(sect);
 		return 0;
 	}
+
+	if (blocks_in_map >= state->limit)
+		blocks_in_map = state->limit - 1;
+
 	strlcat(state->pp_buf, " [mac]", PAGE_SIZE);
 	for (slot = 1; slot <= blocks_in_map; ++slot) {
 		int pos = slot * secsize;
@@ -81,7 +86,7 @@ int mac_partition(struct parsed_partitions *state)
 			be32_to_cpu(part->start_block) * (secsize/512),
 			be32_to_cpu(part->block_count) * (secsize/512));
 
-		if (!strnicmp(part->type, "Linux_RAID", 10))
+		if (!strncasecmp(part->type, "Linux_RAID", 10))
 			state->parts[slot].flags = ADDPART_FLAG_RAID;
 #ifdef CONFIG_PPC_PMAC
 		/*
@@ -100,7 +105,7 @@ int mac_partition(struct parsed_partitions *state)
 				goodness++;
 
 			if (strcasecmp(part->type, "Apple_UNIX_SVR2") == 0
-			    || (strnicmp(part->type, "Linux", 5) == 0
+			    || (strncasecmp(part->type, "Linux", 5) == 0
 			        && strcasecmp(part->type, "Linux_swap") != 0)) {
 				int i, l;
 
@@ -109,13 +114,13 @@ int mac_partition(struct parsed_partitions *state)
 				if (strcmp(part->name, "/") == 0)
 					goodness++;
 				for (i = 0; i <= l - 4; ++i) {
-					if (strnicmp(part->name + i, "root",
+					if (strncasecmp(part->name + i, "root",
 						     4) == 0) {
 						goodness += 2;
 						break;
 					}
 				}
-				if (strnicmp(part->name, "swap", 4) == 0)
+				if (strncasecmp(part->name, "swap", 4) == 0)
 					goodness--;
 			}
 

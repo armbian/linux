@@ -11,12 +11,6 @@ config UBIFS_FS
 	help
 	  UBIFS is a file system for flash devices which works on top of UBI.
 
-config UBIFS_FS_XATTR
-	bool "Extended attributes support"
-	depends on UBIFS_FS
-	help
-	  This option enables support of extended attributes.
-
 config UBIFS_FS_ADVANCED_COMPR
 	bool "Advanced compression options"
 	depends on UBIFS_FS
@@ -42,19 +36,41 @@ config UBIFS_FS_ZLIB
 	help
 	  Zlib compresses better than LZO but it is slower. Say 'Y' if unsure.
 
-# Debugging-related stuff
-config UBIFS_FS_DEBUG
-	bool "Enable debugging support"
+config UBIFS_ATIME_SUPPORT
+	bool "Access time support" if UBIFS_FS
 	depends on UBIFS_FS
-	select DEBUG_FS
-	select KALLSYMS
+	default n
 	help
-	  This option enables UBIFS debugging support. It makes sure various
-	  assertions, self-checks, debugging messages and test modes are compiled
-	  in (this all is compiled out otherwise). Assertions are light-weight
-	  and this option also enables them. Self-checks, debugging messages and
-	  test modes are switched off by default. Thus, it is safe and actually
-	  recommended to have debugging support enabled, and it should not slow
-	  down UBIFS. You can then further enable / disable individual  debugging
-	  features using UBIFS module parameters and the corresponding sysfs
-	  interfaces.
+	  Originally UBIFS did not support atime, because it looked like a bad idea due
+	  increased flash wear. This option adds atime support and it is disabled by default
+	  to preserve the old behavior. If you enable this option, UBIFS starts updating atime,
+	  which means that file-system read operations will cause writes (inode atime
+	  updates). This may affect file-system performance and increase flash device wear,
+	  so be careful. How often atime is updated depends on the selected strategy:
+	  strictatime is the "heavy", relatime is "lighter", etc.
+
+	  If unsure, say 'N'
+
+config UBIFS_FS_ENCRYPTION
+	bool "UBIFS Encryption"
+	depends on UBIFS_FS && BLOCK
+	select FS_ENCRYPTION
+	default n
+	help
+	  Enable encryption of UBIFS files and directories. This
+	  feature is similar to ecryptfs, but it is more memory
+	  efficient since it avoids caching the encrypted and
+	  decrypted pages in the page cache.
+
+config UBIFS_FS_SECURITY
+	bool "UBIFS Security Labels"
+	depends on UBIFS_FS
+	default y
+	help
+	  Security labels provide an access control facility to support Linux
+	  Security Models (LSMs) accepted by AppArmor, SELinux, Smack and TOMOYO
+	  Linux. This option enables an extended attribute handler for file
+	  security labels in the ubifs filesystem, so that it requires enabling
+	  the extended attribute support in advance.
+
+	  If you are not using a security module, say N.

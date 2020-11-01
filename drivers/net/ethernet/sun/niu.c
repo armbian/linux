@@ -38,7 +38,7 @@
 #define DRV_MODULE_VERSION	"1.1"
 #define DRV_MODULE_RELDATE	"Apr 22, 2010"
 
-static char version[] __devinitdata =
+static char version[] =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
 MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
@@ -59,7 +59,7 @@ static void writeq(u64 val, void __iomem *reg)
 }
 #endif
 
-static DEFINE_PCI_DEVICE_TABLE(niu_pci_tbl) = {
+static const struct pci_device_id niu_pci_tbl[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_SUN, 0xabcd)},
 	{}
 };
@@ -2584,7 +2584,6 @@ static int niu_determine_phy_disposition(struct niu *np)
 				break;
 			default:
 				return -EINVAL;
-				break;
 			}
 			phy_addr_off = niu_atca_port_num[np->port];
 			break;
@@ -3335,11 +3334,14 @@ static int niu_rbr_add_page(struct niu *np, struct rx_ring_info *rp,
 
 	addr = np->ops->map_page(np->device, page, 0,
 				 PAGE_SIZE, DMA_FROM_DEVICE);
+	if (!addr) {
+		__free_page(page);
+		return -ENOMEM;
+	}
 
 	niu_hash_page(rp, page, addr);
 	if (rp->rbr_blocks_per_page > 1)
-		atomic_add(rp->rbr_blocks_per_page - 1,
-			   &compound_head(page)->_count);
+		page_ref_add(page, rp->rbr_blocks_per_page - 1);
 
 	for (i = 0; i < rp->rbr_blocks_per_page; i++) {
 		__le32 *rbr = &rp->rbr[start_index + i];
@@ -3440,7 +3442,7 @@ static int niu_process_rx_pkt(struct napi_struct *napi, struct niu *np,
 
 		len = (val & RCR_ENTRY_L2_LEN) >>
 			RCR_ENTRY_L2_LEN_SHIFT;
-		len -= ETH_FCS_LEN;
+		append_size = len + ETH_HLEN + ETH_FCS_LEN;
 
 		addr = (val & RCR_ENTRY_PKT_BUF_ADDR) <<
 			RCR_ENTRY_PKT_BUF_ADDR_SHIFT;
@@ -3450,7 +3452,6 @@ static int niu_process_rx_pkt(struct napi_struct *napi, struct niu *np,
 					 RCR_ENTRY_PKTBUFSZ_SHIFT];
 
 		off = addr & ~PAGE_MASK;
-		append_size = rcr_size;
 		if (num_rcr == 1) {
 			int ptype;
 
@@ -3463,7 +3464,7 @@ static int niu_process_rx_pkt(struct napi_struct *napi, struct niu *np,
 			else
 				skb_checksum_none_assert(skb);
 		} else if (!(val & RCR_ENTRY_MULTI))
-			append_size = len - skb->len;
+			append_size = append_size - skb->len;
 
 		niu_rx_skb_append(skb, page, off, append_size, rcr_size);
 		if ((page->index + rp->rbr_block_size) - rcr_size == addr) {
@@ -3489,10 +3490,12 @@ static int niu_process_rx_pkt(struct napi_struct *napi, struct niu *np,
 
 	rh = (struct rx_pkt_hdr1 *) skb->data;
 	if (np->dev->features & NETIF_F_RXHASH)
-		skb->rxhash = ((u32)rh->hashval2_0 << 24 |
-			       (u32)rh->hashval2_1 << 16 |
-			       (u32)rh->hashval1_1 << 8 |
-			       (u32)rh->hashval1_2 << 0);
+		skb_set_hash(skb,
+			     ((u32)rh->hashval2_0 << 24 |
+			      (u32)rh->hashval2_1 << 16 |
+			      (u32)rh->hashval1_1 << 8 |
+			      (u32)rh->hashval1_2 << 0),
+			     PKT_HASH_TYPE_L3);
 	skb_pull(skb, sizeof(*rh));
 
 	rp->rx_packets++;
@@ -3513,7 +3516,7 @@ static int niu_rbr_fill(struct niu *np, struct rx_ring_info *rp, gfp_t mask)
 	err = 0;
 	while (index < (rp->rbr_table_size - blocks_per_page)) {
 		err = niu_rbr_add_page(np, rp, mask, index);
-		if (err)
+		if (unlikely(err))
 			break;
 
 		index += blocks_per_page;
@@ -3782,7 +3785,7 @@ static int niu_poll(struct napi_struct *napi, int budget)
 	work_done = niu_poll_core(np, lp, budget);
 
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		niu_ldg_rearm(np, lp, 1);
 	}
 	return work_done;
@@ -4338,7 +4341,7 @@ static int niu_alloc_rx_ring_info(struct niu *np,
 {
 	BUILD_BUG_ON(sizeof(struct rxdma_mailbox) != 64);
 
-	rp->rxhash = kzalloc(MAX_RBR_RING_SIZE * sizeof(struct page *),
+	rp->rxhash = kcalloc(MAX_RBR_RING_SIZE, sizeof(struct page *),
 			     GFP_KERNEL);
 	if (!rp->rxhash)
 		return -ENOMEM;
@@ -6290,8 +6293,8 @@ no_rings:
 	stats->tx_errors = errors;
 }
 
-static struct rtnl_link_stats64 *niu_get_stats(struct net_device *dev,
-					       struct rtnl_link_stats64 *stats)
+static void niu_get_stats(struct net_device *dev,
+			  struct rtnl_link_stats64 *stats)
 {
 	struct niu *np = netdev_priv(dev);
 
@@ -6299,8 +6302,6 @@ static struct rtnl_link_stats64 *niu_get_stats(struct net_device *dev,
 		niu_get_rx_stats(np, stats);
 		niu_get_tx_stats(np, stats);
 	}
-
-	return stats;
 }
 
 static void niu_load_hash_xmac(struct niu *np, u16 *hash)
@@ -6427,7 +6428,7 @@ static int niu_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 static void niu_netif_stop(struct niu *np)
 {
-	np->dev->trans_start = jiffies;	/* prevent tx timeout */
+	netif_trans_update(np->dev);	/* prevent tx timeout */
 
 	niu_disable_napi(np);
 
@@ -6614,7 +6615,7 @@ static u64 niu_compute_tx_flags(struct sk_buff *skb, struct ethhdr *ehdr,
 	       (len << TXHDR_LEN_SHIFT) |
 	       ((l3off / 2) << TXHDR_L3START_SHIFT) |
 	       (ihl << TXHDR_IHL_SHIFT) |
-	       ((eth_proto_inner < 1536) ? TXHDR_LLC : 0) |
+	       ((eth_proto_inner < ETH_P_802_3_MIN) ? TXHDR_LLC : 0) |
 	       ((eth_proto == ETH_P_8021Q) ? TXHDR_VLAN : 0) |
 	       (ipv6 ? TXHDR_IP_VER : 0) |
 	       csum_bits);
@@ -6646,13 +6647,8 @@ static netdev_tx_t niu_start_xmit(struct sk_buff *skb,
 		return NETDEV_TX_BUSY;
 	}
 
-	if (skb->len < ETH_ZLEN) {
-		unsigned int pad_bytes = ETH_ZLEN - skb->len;
-
-		if (skb_pad(skb, pad_bytes))
-			goto out;
-		skb_put(skb, pad_bytes);
-	}
+	if (eth_skb_pad(skb))
+		goto out;
 
 	len = sizeof(struct tx_pkt_hdr) + 15;
 	if (skb_headroom(skb) < len) {
@@ -6670,7 +6666,7 @@ static netdev_tx_t niu_start_xmit(struct sk_buff *skb,
 	headroom = align + sizeof(struct tx_pkt_hdr);
 
 	ehdr = (struct ethhdr *) skb->data;
-	tp = (struct tx_pkt_hdr *) skb_push(skb, headroom);
+	tp = skb_push(skb, headroom);
 
 	len = skb->len - sizeof(struct tx_pkt_hdr);
 	tp->flags = cpu_to_le64(niu_compute_tx_flags(skb, ehdr, align, len));
@@ -6755,9 +6751,6 @@ static int niu_change_mtu(struct net_device *dev, int new_mtu)
 	struct niu *np = netdev_priv(dev);
 	int err, orig_jumbo, new_jumbo;
 
-	if (new_mtu < 68 || new_mtu > NIU_MAX_MTU)
-		return -EINVAL;
-
 	orig_jumbo = (dev->mtu > ETH_DATA_LEN);
 	new_jumbo = (new_mtu > ETH_DATA_LEN);
 
@@ -6819,7 +6812,8 @@ static void niu_get_drvinfo(struct net_device *dev,
 			sizeof(info->bus_info));
 }
 
-static int niu_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int niu_get_link_ksettings(struct net_device *dev,
+				  struct ethtool_link_ksettings *cmd)
 {
 	struct niu *np = netdev_priv(dev);
 	struct niu_link_config *lp;
@@ -6827,28 +6821,30 @@ static int niu_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 	lp = &np->link_config;
 
 	memset(cmd, 0, sizeof(*cmd));
-	cmd->phy_address = np->phy_addr;
-	cmd->supported = lp->supported;
-	cmd->advertising = lp->active_advertising;
-	cmd->autoneg = lp->active_autoneg;
-	ethtool_cmd_speed_set(cmd, lp->active_speed);
-	cmd->duplex = lp->active_duplex;
-	cmd->port = (np->flags & NIU_FLAGS_FIBER) ? PORT_FIBRE : PORT_TP;
-	cmd->transceiver = (np->flags & NIU_FLAGS_XCVR_SERDES) ?
-		XCVR_EXTERNAL : XCVR_INTERNAL;
+	cmd->base.phy_address = np->phy_addr;
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
+						lp->supported);
+	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
+						lp->active_advertising);
+	cmd->base.autoneg = lp->active_autoneg;
+	cmd->base.speed = lp->active_speed;
+	cmd->base.duplex = lp->active_duplex;
+	cmd->base.port = (np->flags & NIU_FLAGS_FIBER) ? PORT_FIBRE : PORT_TP;
 
 	return 0;
 }
 
-static int niu_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int niu_set_link_ksettings(struct net_device *dev,
+				  const struct ethtool_link_ksettings *cmd)
 {
 	struct niu *np = netdev_priv(dev);
 	struct niu_link_config *lp = &np->link_config;
 
-	lp->advertising = cmd->advertising;
-	lp->speed = ethtool_cmd_speed(cmd);
-	lp->duplex = cmd->duplex;
-	lp->autoneg = cmd->autoneg;
+	ethtool_convert_link_mode_to_legacy_u32(&lp->advertising,
+						cmd->link_modes.advertising);
+	lp->speed = cmd->base.speed;
+	lp->duplex = cmd->base.duplex;
+	lp->autoneg = cmd->base.autoneg;
 	return niu_init_link(np);
 }
 
@@ -6988,10 +6984,10 @@ static int niu_class_to_ethflow(u64 class, int *flow_type)
 		*flow_type = IP_USER_FLOW;
 		break;
 	default:
-		return 0;
+		return -EINVAL;
 	}
 
-	return 1;
+	return 0;
 }
 
 static int niu_ethflow_to_class(int flow_type, u64 *class)
@@ -7197,11 +7193,9 @@ static int niu_get_ethtool_tcam_entry(struct niu *np,
 	class = (tp->key[0] & TCAM_V4KEY0_CLASS_CODE) >>
 		TCAM_V4KEY0_CLASS_CODE_SHIFT;
 	ret = niu_class_to_ethflow(class, &fsp->flow_type);
-
 	if (ret < 0) {
 		netdev_info(np->dev, "niu%d: niu_class_to_ethflow failed\n",
 			    parent->index);
-		ret = -EINVAL;
 		goto out;
 	}
 
@@ -7910,14 +7904,14 @@ static const struct ethtool_ops niu_ethtool_ops = {
 	.nway_reset		= niu_nway_reset,
 	.get_eeprom_len		= niu_get_eeprom_len,
 	.get_eeprom		= niu_get_eeprom,
-	.get_settings		= niu_get_settings,
-	.set_settings		= niu_set_settings,
 	.get_strings		= niu_get_strings,
 	.get_sset_count		= niu_get_sset_count,
 	.get_ethtool_stats	= niu_get_ethtool_stats,
 	.set_phys_id		= niu_set_phys_id,
 	.get_rxnfc		= niu_get_nfc,
 	.set_rxnfc		= niu_set_nfc,
+	.get_link_ksettings	= niu_get_link_ksettings,
+	.set_link_ksettings	= niu_set_link_ksettings,
 };
 
 static int niu_ldg_assign_ldn(struct niu *np, struct niu_parent *parent,
@@ -7971,7 +7965,7 @@ static int niu_set_ldg_sid(struct niu *np, int ldg, int func, int vector)
 	return 0;
 }
 
-static int __devinit niu_pci_eeprom_read(struct niu *np, u32 addr)
+static int niu_pci_eeprom_read(struct niu *np, u32 addr)
 {
 	u64 frame, frame_base = (ESPC_PIO_STAT_READ_START |
 				 (addr << ESPC_PIO_STAT_ADDR_SHIFT));
@@ -8014,7 +8008,7 @@ static int __devinit niu_pci_eeprom_read(struct niu *np, u32 addr)
 	return (frame & ESPC_PIO_STAT_DATA) >> ESPC_PIO_STAT_DATA_SHIFT;
 }
 
-static int __devinit niu_pci_eeprom_read16(struct niu *np, u32 off)
+static int niu_pci_eeprom_read16(struct niu *np, u32 off)
 {
 	int err = niu_pci_eeprom_read(np, off);
 	u16 val;
@@ -8030,7 +8024,7 @@ static int __devinit niu_pci_eeprom_read16(struct niu *np, u32 off)
 	return val;
 }
 
-static int __devinit niu_pci_eeprom_read16_swp(struct niu *np, u32 off)
+static int niu_pci_eeprom_read16_swp(struct niu *np, u32 off)
 {
 	int err = niu_pci_eeprom_read(np, off);
 	u16 val;
@@ -8048,10 +8042,8 @@ static int __devinit niu_pci_eeprom_read16_swp(struct niu *np, u32 off)
 	return val;
 }
 
-static int __devinit niu_pci_vpd_get_propname(struct niu *np,
-					      u32 off,
-					      char *namebuf,
-					      int namebuf_len)
+static int niu_pci_vpd_get_propname(struct niu *np, u32 off, char *namebuf,
+				    int namebuf_len)
 {
 	int i;
 
@@ -8069,7 +8061,7 @@ static int __devinit niu_pci_vpd_get_propname(struct niu *np,
 	return i + 1;
 }
 
-static void __devinit niu_vpd_parse_version(struct niu *np)
+static void niu_vpd_parse_version(struct niu *np)
 {
 	struct niu_vpd *vpd = &np->vpd;
 	int len = strlen(vpd->version) + 1;
@@ -8096,8 +8088,7 @@ static void __devinit niu_vpd_parse_version(struct niu *np)
 }
 
 /* ESPC_PIO_EN_ENABLE must be set */
-static int __devinit niu_pci_vpd_scan_props(struct niu *np,
-					    u32 start, u32 end)
+static int niu_pci_vpd_scan_props(struct niu *np, u32 start, u32 end)
 {
 	unsigned int found_mask = 0;
 #define FOUND_MASK_MODEL	0x00000001
@@ -8128,6 +8119,8 @@ static int __devinit niu_pci_vpd_scan_props(struct niu *np,
 		start += 3;
 
 		prop_len = niu_pci_eeprom_read(np, start + 4);
+		if (prop_len < 0)
+			return prop_len;
 		err = niu_pci_vpd_get_propname(np, start + 5, namebuf, 64);
 		if (err < 0)
 			return err;
@@ -8172,8 +8165,12 @@ static int __devinit niu_pci_vpd_scan_props(struct niu *np,
 			netif_printk(np, probe, KERN_DEBUG, np->dev,
 				     "VPD_SCAN: Reading in property [%s] len[%d]\n",
 				     namebuf, prop_len);
-			for (i = 0; i < prop_len; i++)
-				*prop_buf++ = niu_pci_eeprom_read(np, off + i);
+			for (i = 0; i < prop_len; i++) {
+				err = niu_pci_eeprom_read(np, off + i);
+				if (err >= 0)
+					*prop_buf = err;
+				++prop_buf;
+			}
 		}
 
 		start += len;
@@ -8183,7 +8180,7 @@ static int __devinit niu_pci_vpd_scan_props(struct niu *np,
 }
 
 /* ESPC_PIO_EN_ENABLE must be set */
-static void __devinit niu_pci_vpd_fetch(struct niu *np, u32 start)
+static void niu_pci_vpd_fetch(struct niu *np, u32 start)
 {
 	u32 offset;
 	int err;
@@ -8218,7 +8215,7 @@ static void __devinit niu_pci_vpd_fetch(struct niu *np, u32 start)
 }
 
 /* ESPC_PIO_EN_ENABLE must be set */
-static u32 __devinit niu_pci_vpd_offset(struct niu *np)
+static u32 niu_pci_vpd_offset(struct niu *np)
 {
 	u32 start = 0, end = ESPC_EEPROM_SIZE, ret;
 	int err;
@@ -8273,8 +8270,7 @@ static u32 __devinit niu_pci_vpd_offset(struct niu *np)
 	return 0;
 }
 
-static int __devinit niu_phy_type_prop_decode(struct niu *np,
-					      const char *phy_prop)
+static int niu_phy_type_prop_decode(struct niu *np, const char *phy_prop)
 {
 	if (!strcmp(phy_prop, "mif")) {
 		/* 1G copper, MII */
@@ -8328,7 +8324,7 @@ static int niu_pci_vpd_get_nports(struct niu *np)
 	return ports;
 }
 
-static void __devinit niu_pci_vpd_validate(struct niu *np)
+static void niu_pci_vpd_validate(struct niu *np)
 {
 	struct net_device *dev = np->dev;
 	struct niu_vpd *vpd = &np->vpd;
@@ -8364,17 +8360,15 @@ static void __devinit niu_pci_vpd_validate(struct niu *np)
 		return;
 	}
 
-	memcpy(dev->perm_addr, vpd->local_mac, ETH_ALEN);
+	memcpy(dev->dev_addr, vpd->local_mac, ETH_ALEN);
 
-	val8 = dev->perm_addr[5];
-	dev->perm_addr[5] += np->port;
-	if (dev->perm_addr[5] < val8)
-		dev->perm_addr[4]++;
-
-	memcpy(dev->dev_addr, dev->perm_addr, dev->addr_len);
+	val8 = dev->dev_addr[5];
+	dev->dev_addr[5] += np->port;
+	if (dev->dev_addr[5] < val8)
+		dev->dev_addr[4]++;
 }
 
-static int __devinit niu_pci_probe_sprom(struct niu *np)
+static int niu_pci_probe_sprom(struct niu *np)
 {
 	struct net_device *dev = np->dev;
 	int len, i;
@@ -8468,29 +8462,27 @@ static int __devinit niu_pci_probe_sprom(struct niu *np)
 	val = nr64(ESPC_MAC_ADDR0);
 	netif_printk(np, probe, KERN_DEBUG, np->dev,
 		     "SPROM: MAC_ADDR0[%08llx]\n", (unsigned long long)val);
-	dev->perm_addr[0] = (val >>  0) & 0xff;
-	dev->perm_addr[1] = (val >>  8) & 0xff;
-	dev->perm_addr[2] = (val >> 16) & 0xff;
-	dev->perm_addr[3] = (val >> 24) & 0xff;
+	dev->dev_addr[0] = (val >>  0) & 0xff;
+	dev->dev_addr[1] = (val >>  8) & 0xff;
+	dev->dev_addr[2] = (val >> 16) & 0xff;
+	dev->dev_addr[3] = (val >> 24) & 0xff;
 
 	val = nr64(ESPC_MAC_ADDR1);
 	netif_printk(np, probe, KERN_DEBUG, np->dev,
 		     "SPROM: MAC_ADDR1[%08llx]\n", (unsigned long long)val);
-	dev->perm_addr[4] = (val >>  0) & 0xff;
-	dev->perm_addr[5] = (val >>  8) & 0xff;
+	dev->dev_addr[4] = (val >>  0) & 0xff;
+	dev->dev_addr[5] = (val >>  8) & 0xff;
 
-	if (!is_valid_ether_addr(&dev->perm_addr[0])) {
+	if (!is_valid_ether_addr(&dev->dev_addr[0])) {
 		dev_err(np->device, "SPROM MAC address invalid [ %pM ]\n",
-			dev->perm_addr);
+			dev->dev_addr);
 		return -EINVAL;
 	}
 
-	val8 = dev->perm_addr[5];
-	dev->perm_addr[5] += np->port;
-	if (dev->perm_addr[5] < val8)
-		dev->perm_addr[4]++;
-
-	memcpy(dev->dev_addr, dev->perm_addr, dev->addr_len);
+	val8 = dev->dev_addr[5];
+	dev->dev_addr[5] += np->port;
+	if (dev->dev_addr[5] < val8)
+		dev->dev_addr[4]++;
 
 	val = nr64(ESPC_MOD_STR_LEN);
 	netif_printk(np, probe, KERN_DEBUG, np->dev,
@@ -8532,7 +8524,7 @@ static int __devinit niu_pci_probe_sprom(struct niu *np)
 	return 0;
 }
 
-static int __devinit niu_get_and_validate_port(struct niu *np)
+static int niu_get_and_validate_port(struct niu *np)
 {
 	struct niu_parent *parent = np->parent;
 
@@ -8566,10 +8558,8 @@ static int __devinit niu_get_and_validate_port(struct niu *np)
 	return 0;
 }
 
-static int __devinit phy_record(struct niu_parent *parent,
-				struct phy_probe_info *p,
-				int dev_id_1, int dev_id_2, u8 phy_port,
-				int type)
+static int phy_record(struct niu_parent *parent, struct phy_probe_info *p,
+		      int dev_id_1, int dev_id_2, u8 phy_port, int type)
 {
 	u32 id = (dev_id_1 << 16) | dev_id_2;
 	u8 idx;
@@ -8605,7 +8595,7 @@ static int __devinit phy_record(struct niu_parent *parent,
 	return 0;
 }
 
-static int __devinit port_has_10g(struct phy_probe_info *p, int port)
+static int port_has_10g(struct phy_probe_info *p, int port)
 {
 	int i;
 
@@ -8621,7 +8611,7 @@ static int __devinit port_has_10g(struct phy_probe_info *p, int port)
 	return 0;
 }
 
-static int __devinit count_10g_ports(struct phy_probe_info *p, int *lowest)
+static int count_10g_ports(struct phy_probe_info *p, int *lowest)
 {
 	int port, cnt;
 
@@ -8638,7 +8628,7 @@ static int __devinit count_10g_ports(struct phy_probe_info *p, int *lowest)
 	return cnt;
 }
 
-static int __devinit count_1g_ports(struct phy_probe_info *p, int *lowest)
+static int count_1g_ports(struct phy_probe_info *p, int *lowest)
 {
 	*lowest = 32;
 	if (p->cur[PHY_TYPE_MII])
@@ -8647,7 +8637,7 @@ static int __devinit count_1g_ports(struct phy_probe_info *p, int *lowest)
 	return p->cur[PHY_TYPE_MII];
 }
 
-static void __devinit niu_n2_divide_channels(struct niu_parent *parent)
+static void niu_n2_divide_channels(struct niu_parent *parent)
 {
 	int num_ports = parent->num_ports;
 	int i;
@@ -8663,8 +8653,8 @@ static void __devinit niu_n2_divide_channels(struct niu_parent *parent)
 	}
 }
 
-static void __devinit niu_divide_channels(struct niu_parent *parent,
-					  int num_10g, int num_1g)
+static void niu_divide_channels(struct niu_parent *parent,
+				int num_10g, int num_1g)
 {
 	int num_ports = parent->num_ports;
 	int rx_chans_per_10g, rx_chans_per_1g;
@@ -8720,13 +8710,13 @@ static void __devinit niu_divide_channels(struct niu_parent *parent,
 			parent->txchan_per_port[i] = 1;
 	}
 	if (tot_rx < NIU_NUM_RXCHAN || tot_tx < NIU_NUM_TXCHAN) {
-		pr_warning("niu%d: Driver bug, wasted channels, RX[%d] TX[%d]\n",
-			   parent->index, tot_rx, tot_tx);
+		pr_warn("niu%d: Driver bug, wasted channels, RX[%d] TX[%d]\n",
+			parent->index, tot_rx, tot_tx);
 	}
 }
 
-static void __devinit niu_divide_rdc_groups(struct niu_parent *parent,
-					    int num_10g, int num_1g)
+static void niu_divide_rdc_groups(struct niu_parent *parent,
+				  int num_10g, int num_1g)
 {
 	int i, num_ports = parent->num_ports;
 	int rdc_group, rdc_groups_per_port;
@@ -8770,9 +8760,8 @@ static void __devinit niu_divide_rdc_groups(struct niu_parent *parent,
 	}
 }
 
-static int __devinit fill_phy_probe_info(struct niu *np,
-					 struct niu_parent *parent,
-					 struct phy_probe_info *info)
+static int fill_phy_probe_info(struct niu *np, struct niu_parent *parent,
+			       struct phy_probe_info *info)
 {
 	unsigned long flags;
 	int port, err;
@@ -8813,7 +8802,7 @@ static int __devinit fill_phy_probe_info(struct niu *np,
 	return err;
 }
 
-static int __devinit walk_phys(struct niu *np, struct niu_parent *parent)
+static int walk_phys(struct niu *np, struct niu_parent *parent)
 {
 	struct phy_probe_info *info = &parent->phy_probe_info;
 	int lowest_10g, lowest_1g;
@@ -8942,7 +8931,7 @@ unknown_vg_1g_port:
 	return -EINVAL;
 }
 
-static int __devinit niu_probe_ports(struct niu *np)
+static int niu_probe_ports(struct niu *np)
 {
 	struct niu_parent *parent = np->parent;
 	int err, i;
@@ -8963,7 +8952,7 @@ static int __devinit niu_probe_ports(struct niu *np)
 	return 0;
 }
 
-static int __devinit niu_classifier_swstate_init(struct niu *np)
+static int niu_classifier_swstate_init(struct niu *np)
 {
 	struct niu_classifier *cp = &np->clas;
 
@@ -8975,7 +8964,7 @@ static int __devinit niu_classifier_swstate_init(struct niu *np)
 	return fflp_early_init(np);
 }
 
-static void __devinit niu_link_config_init(struct niu *np)
+static void niu_link_config_init(struct niu *np)
 {
 	struct niu_link_config *lp = &np->link_config;
 
@@ -9000,7 +8989,7 @@ static void __devinit niu_link_config_init(struct niu *np)
 #endif
 }
 
-static int __devinit niu_init_mac_ipp_pcs_base(struct niu *np)
+static int niu_init_mac_ipp_pcs_base(struct niu *np)
 {
 	switch (np->port) {
 	case 0:
@@ -9039,12 +9028,12 @@ static int __devinit niu_init_mac_ipp_pcs_base(struct niu *np)
 	return 0;
 }
 
-static void __devinit niu_try_msix(struct niu *np, u8 *ldg_num_map)
+static void niu_try_msix(struct niu *np, u8 *ldg_num_map)
 {
 	struct msix_entry msi_vec[NIU_NUM_LDG];
 	struct niu_parent *parent = np->parent;
 	struct pci_dev *pdev = np->pdev;
-	int i, num_irqs, err;
+	int i, num_irqs;
 	u8 first_ldg;
 
 	first_ldg = (NIU_NUM_LDG / parent->num_ports) * np->port;
@@ -9056,20 +9045,15 @@ static void __devinit niu_try_msix(struct niu *np, u8 *ldg_num_map)
 		    (np->port == 0 ? 3 : 1));
 	BUG_ON(num_irqs > (NIU_NUM_LDG / parent->num_ports));
 
-retry:
 	for (i = 0; i < num_irqs; i++) {
 		msi_vec[i].vector = 0;
 		msi_vec[i].entry = i;
 	}
 
-	err = pci_enable_msix(pdev, msi_vec, num_irqs);
-	if (err < 0) {
+	num_irqs = pci_enable_msix_range(pdev, msi_vec, 1, num_irqs);
+	if (num_irqs < 0) {
 		np->flags &= ~NIU_FLAGS_MSIX;
 		return;
-	}
-	if (err > 0) {
-		num_irqs = err;
-		goto retry;
 	}
 
 	np->flags |= NIU_FLAGS_MSIX;
@@ -9078,7 +9062,7 @@ retry:
 	np->num_ldg = num_irqs;
 }
 
-static int __devinit niu_n2_irq_init(struct niu *np, u8 *ldg_num_map)
+static int niu_n2_irq_init(struct niu *np, u8 *ldg_num_map)
 {
 #ifdef CONFIG_SPARC64
 	struct platform_device *op = np->op;
@@ -9102,7 +9086,7 @@ static int __devinit niu_n2_irq_init(struct niu *np, u8 *ldg_num_map)
 #endif
 }
 
-static int __devinit niu_ldg_init(struct niu *np)
+static int niu_ldg_init(struct niu *np)
 {
 	struct niu_parent *parent = np->parent;
 	u8 ldg_num_map[NIU_NUM_LDG];
@@ -9219,13 +9203,13 @@ static int __devinit niu_ldg_init(struct niu *np)
 	return 0;
 }
 
-static void __devexit niu_ldg_free(struct niu *np)
+static void niu_ldg_free(struct niu *np)
 {
 	if (np->flags & NIU_FLAGS_MSIX)
 		pci_disable_msix(np->pdev);
 }
 
-static int __devinit niu_get_of_props(struct niu *np)
+static int niu_get_of_props(struct niu *np)
 {
 #ifdef CONFIG_SPARC64
 	struct net_device *dev = np->dev;
@@ -9242,8 +9226,7 @@ static int __devinit niu_get_of_props(struct niu *np)
 
 	phy_type = of_get_property(dp, "phy-type", &prop_len);
 	if (!phy_type) {
-		netdev_err(dev, "%s: OF node lacks phy-type property\n",
-			   dp->full_name);
+		netdev_err(dev, "%pOF: OF node lacks phy-type property\n", dp);
 		return -EINVAL;
 	}
 
@@ -9253,30 +9236,27 @@ static int __devinit niu_get_of_props(struct niu *np)
 	strcpy(np->vpd.phy_type, phy_type);
 
 	if (niu_phy_type_prop_decode(np, np->vpd.phy_type)) {
-		netdev_err(dev, "%s: Illegal phy string [%s]\n",
-			   dp->full_name, np->vpd.phy_type);
+		netdev_err(dev, "%pOF: Illegal phy string [%s]\n",
+			   dp, np->vpd.phy_type);
 		return -EINVAL;
 	}
 
 	mac_addr = of_get_property(dp, "local-mac-address", &prop_len);
 	if (!mac_addr) {
-		netdev_err(dev, "%s: OF node lacks local-mac-address property\n",
-			   dp->full_name);
+		netdev_err(dev, "%pOF: OF node lacks local-mac-address property\n",
+			   dp);
 		return -EINVAL;
 	}
 	if (prop_len != dev->addr_len) {
-		netdev_err(dev, "%s: OF MAC address prop len (%d) is wrong\n",
-			   dp->full_name, prop_len);
+		netdev_err(dev, "%pOF: OF MAC address prop len (%d) is wrong\n",
+			   dp, prop_len);
 	}
-	memcpy(dev->perm_addr, mac_addr, dev->addr_len);
-	if (!is_valid_ether_addr(&dev->perm_addr[0])) {
-		netdev_err(dev, "%s: OF MAC address is invalid\n",
-			   dp->full_name);
-		netdev_err(dev, "%s: [ %pM ]\n", dp->full_name, dev->perm_addr);
+	memcpy(dev->dev_addr, mac_addr, dev->addr_len);
+	if (!is_valid_ether_addr(&dev->dev_addr[0])) {
+		netdev_err(dev, "%pOF: OF MAC address is invalid\n", dp);
+		netdev_err(dev, "%pOF: [ %pM ]\n", dp, dev->dev_addr);
 		return -EINVAL;
 	}
-
-	memcpy(dev->dev_addr, dev->perm_addr, dev->addr_len);
 
 	model = of_get_property(dp, "model", &prop_len);
 
@@ -9294,7 +9274,7 @@ static int __devinit niu_get_of_props(struct niu *np)
 #endif
 }
 
-static int __devinit niu_get_invariants(struct niu *np)
+static int niu_get_invariants(struct niu *np)
 {
 	int err, have_props;
 	u32 offset;
@@ -9367,7 +9347,7 @@ static ssize_t show_port_phy(struct device *dev,
 			     struct device_attribute *attr, char *buf)
 {
 	struct platform_device *plat_dev = to_platform_device(dev);
-	struct niu_parent *p = plat_dev->dev.platform_data;
+	struct niu_parent *p = dev_get_platdata(&plat_dev->dev);
 	u32 port_phy = p->port_phy;
 	char *orig_buf = buf;
 	int i;
@@ -9397,7 +9377,7 @@ static ssize_t show_plat_type(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
 	struct platform_device *plat_dev = to_platform_device(dev);
-	struct niu_parent *p = plat_dev->dev.platform_data;
+	struct niu_parent *p = dev_get_platdata(&plat_dev->dev);
 	const char *type_str;
 
 	switch (p->plat_type) {
@@ -9426,7 +9406,7 @@ static ssize_t __show_chan_per_port(struct device *dev,
 				    int rx)
 {
 	struct platform_device *plat_dev = to_platform_device(dev);
-	struct niu_parent *p = plat_dev->dev.platform_data;
+	struct niu_parent *p = dev_get_platdata(&plat_dev->dev);
 	char *orig_buf = buf;
 	u8 *arr;
 	int i;
@@ -9459,7 +9439,7 @@ static ssize_t show_num_ports(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
 	struct platform_device *plat_dev = to_platform_device(dev);
-	struct niu_parent *p = plat_dev->dev.platform_data;
+	struct niu_parent *p = dev_get_platdata(&plat_dev->dev);
 
 	return sprintf(buf, "%d\n", p->num_ports);
 }
@@ -9473,9 +9453,8 @@ static struct device_attribute niu_parent_attributes[] = {
 	{}
 };
 
-static struct niu_parent * __devinit niu_new_parent(struct niu *np,
-						    union niu_parent_id *id,
-						    u8 ptype)
+static struct niu_parent *niu_new_parent(struct niu *np,
+					 union niu_parent_id *id, u8 ptype)
 {
 	struct platform_device *plat_dev;
 	struct niu_parent *p;
@@ -9486,7 +9465,7 @@ static struct niu_parent * __devinit niu_new_parent(struct niu *np,
 	if (IS_ERR(plat_dev))
 		return NULL;
 
-	for (i = 0; attr_name(niu_parent_attributes[i]); i++) {
+	for (i = 0; niu_parent_attributes[i].attr.name; i++) {
 		int err = device_create_file(&plat_dev->dev,
 					     &niu_parent_attributes[i]);
 		if (err)
@@ -9538,9 +9517,8 @@ fail_unregister:
 	return NULL;
 }
 
-static struct niu_parent * __devinit niu_get_parent(struct niu *np,
-						    union niu_parent_id *id,
-						    u8 ptype)
+static struct niu_parent *niu_get_parent(struct niu *np,
+					 union niu_parent_id *id, u8 ptype)
 {
 	struct niu_parent *p, *tmp;
 	int port = np->port;
@@ -9557,7 +9535,7 @@ static struct niu_parent * __devinit niu_get_parent(struct niu *np,
 		p = niu_new_parent(np, id, ptype);
 
 	if (p) {
-		char port_name[6];
+		char port_name[8];
 		int err;
 
 		sprintf(port_name, "port%d", port);
@@ -9578,7 +9556,7 @@ static void niu_put_parent(struct niu *np)
 {
 	struct niu_parent *p = np->parent;
 	u8 port = np->port;
-	char port_name[6];
+	char port_name[8];
 
 	BUG_ON(!p || p->ports[port] != np);
 
@@ -9656,7 +9634,7 @@ static const struct niu_ops niu_pci_ops = {
 	.unmap_single	= niu_pci_unmap_single,
 };
 
-static void __devinit niu_driver_version(void)
+static void niu_driver_version(void)
 {
 	static int niu_version_printed;
 
@@ -9664,10 +9642,10 @@ static void __devinit niu_driver_version(void)
 		pr_info("%s", version);
 }
 
-static struct net_device * __devinit niu_alloc_and_init(
-	struct device *gen_dev, struct pci_dev *pdev,
-	struct platform_device *op, const struct niu_ops *ops,
-	u8 port)
+static struct net_device *niu_alloc_and_init(struct device *gen_dev,
+					     struct pci_dev *pdev,
+					     struct platform_device *op,
+					     const struct niu_ops *ops, u8 port)
 {
 	struct net_device *dev;
 	struct niu *np;
@@ -9708,14 +9686,14 @@ static const struct net_device_ops niu_netdev_ops = {
 	.ndo_change_mtu		= niu_change_mtu,
 };
 
-static void __devinit niu_assign_netdev_ops(struct net_device *dev)
+static void niu_assign_netdev_ops(struct net_device *dev)
 {
 	dev->netdev_ops = &niu_netdev_ops;
 	dev->ethtool_ops = &niu_ethtool_ops;
 	dev->watchdog_timeo = NIU_TX_TIMEOUT;
 }
 
-static void __devinit niu_device_announce(struct niu *np)
+static void niu_device_announce(struct niu *np)
 {
 	struct net_device *dev = np->dev;
 
@@ -9744,21 +9722,20 @@ static void __devinit niu_device_announce(struct niu *np)
 	}
 }
 
-static void __devinit niu_set_basic_features(struct net_device *dev)
+static void niu_set_basic_features(struct net_device *dev)
 {
 	dev->hw_features = NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_RXHASH;
 	dev->features |= dev->hw_features | NETIF_F_RXCSUM;
 }
 
-static int __devinit niu_pci_init_one(struct pci_dev *pdev,
-				      const struct pci_device_id *ent)
+static int niu_pci_init_one(struct pci_dev *pdev,
+			    const struct pci_device_id *ent)
 {
 	union niu_parent_id parent_id;
 	struct net_device *dev;
 	struct niu *np;
-	int err, pos;
+	int err;
 	u64 dma_mask;
-	u16 val16;
 
 	niu_driver_version();
 
@@ -9781,9 +9758,9 @@ static int __devinit niu_pci_init_one(struct pci_dev *pdev,
 		goto err_out_disable_pdev;
 	}
 
-	pos = pci_pcie_cap(pdev);
-	if (pos <= 0) {
+	if (!pci_is_pcie(pdev)) {
 		dev_err(&pdev->dev, "Cannot find PCI Express capability, aborting\n");
+		err = -ENODEV;
 		goto err_out_free_res;
 	}
 
@@ -9807,14 +9784,11 @@ static int __devinit niu_pci_init_one(struct pci_dev *pdev,
 		goto err_out_free_dev;
 	}
 
-	pci_read_config_word(pdev, pos + PCI_EXP_DEVCTL, &val16);
-	val16 &= ~PCI_EXP_DEVCTL_NOSNOOP_EN;
-	val16 |= (PCI_EXP_DEVCTL_CERE |
-		  PCI_EXP_DEVCTL_NFERE |
-		  PCI_EXP_DEVCTL_FERE |
-		  PCI_EXP_DEVCTL_URRE |
-		  PCI_EXP_DEVCTL_RELAX_EN);
-	pci_write_config_word(pdev, pos + PCI_EXP_DEVCTL, val16);
+	pcie_capability_clear_and_set_word(pdev, PCI_EXP_DEVCTL,
+		PCI_EXP_DEVCTL_NOSNOOP_EN,
+		PCI_EXP_DEVCTL_CERE | PCI_EXP_DEVCTL_NFERE |
+		PCI_EXP_DEVCTL_FERE | PCI_EXP_DEVCTL_URRE |
+		PCI_EXP_DEVCTL_RELAX_EN);
 
 	dma_mask = DMA_BIT_MASK(44);
 	err = pci_set_dma_mask(pdev, dma_mask);
@@ -9826,7 +9800,7 @@ static int __devinit niu_pci_init_one(struct pci_dev *pdev,
 			goto err_out_release_parent;
 		}
 	}
-	if (err || dma_mask == DMA_BIT_MASK(32)) {
+	if (err) {
 		err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
 		if (err) {
 			dev_err(&pdev->dev, "No usable DMA configuration, aborting\n");
@@ -9849,6 +9823,10 @@ static int __devinit niu_pci_init_one(struct pci_dev *pdev,
 	pci_save_state(pdev);
 
 	dev->irq = pdev->irq;
+
+	/* MTU range: 68 - 9216 */
+	dev->min_mtu = ETH_MIN_MTU;
+	dev->max_mtu = NIU_MAX_MTU;
 
 	niu_assign_netdev_ops(dev);
 
@@ -9888,12 +9866,11 @@ err_out_free_res:
 
 err_out_disable_pdev:
 	pci_disable_device(pdev);
-	pci_set_drvdata(pdev, NULL);
 
 	return err;
 }
 
-static void __devexit niu_pci_remove_one(struct pci_dev *pdev)
+static void niu_pci_remove_one(struct pci_dev *pdev)
 {
 	struct net_device *dev = pci_get_drvdata(pdev);
 
@@ -9913,7 +9890,6 @@ static void __devexit niu_pci_remove_one(struct pci_dev *pdev)
 		free_netdev(dev);
 		pci_release_regions(pdev);
 		pci_disable_device(pdev);
-		pci_set_drvdata(pdev, NULL);
 	}
 }
 
@@ -9926,7 +9902,7 @@ static int niu_suspend(struct pci_dev *pdev, pm_message_t state)
 	if (!netif_running(dev))
 		return 0;
 
-	flush_work_sync(&np->reset_task);
+	flush_work(&np->reset_task);
 	niu_netif_stop(np);
 
 	del_timer_sync(&np->timer);
@@ -9978,7 +9954,7 @@ static struct pci_driver niu_pci_driver = {
 	.name		= DRV_MODULE_NAME,
 	.id_table	= niu_pci_tbl,
 	.probe		= niu_pci_init_one,
-	.remove		= __devexit_p(niu_pci_remove_one),
+	.remove		= niu_pci_remove_one,
 	.suspend	= niu_suspend,
 	.resume		= niu_resume,
 };
@@ -10042,7 +10018,7 @@ static const struct niu_ops niu_phys_ops = {
 	.unmap_single	= niu_phys_unmap_single,
 };
 
-static int __devinit niu_of_probe(struct platform_device *op)
+static int niu_of_probe(struct platform_device *op)
 {
 	union niu_parent_id parent_id;
 	struct net_device *dev;
@@ -10054,8 +10030,8 @@ static int __devinit niu_of_probe(struct platform_device *op)
 
 	reg = of_get_property(op->dev.of_node, "reg", NULL);
 	if (!reg) {
-		dev_err(&op->dev, "%s: No 'reg' property, aborting\n",
-			op->dev.of_node->full_name);
+		dev_err(&op->dev, "%pOF: No 'reg' property, aborting\n",
+			op->dev.of_node);
 		return -ENODEV;
 	}
 
@@ -10121,7 +10097,7 @@ static int __devinit niu_of_probe(struct platform_device *op)
 		goto err_out_iounmap;
 	}
 
-	dev_set_drvdata(&op->dev, dev);
+	platform_set_drvdata(op, dev);
 
 	niu_device_announce(np);
 
@@ -10156,9 +10132,9 @@ err_out:
 	return err;
 }
 
-static int __devexit niu_of_remove(struct platform_device *op)
+static int niu_of_remove(struct platform_device *op)
 {
-	struct net_device *dev = dev_get_drvdata(&op->dev);
+	struct net_device *dev = platform_get_drvdata(op);
 
 	if (dev) {
 		struct niu *np = netdev_priv(dev);
@@ -10188,7 +10164,6 @@ static int __devexit niu_of_remove(struct platform_device *op)
 		niu_put_parent(np);
 
 		free_netdev(dev);
-		dev_set_drvdata(&op->dev, NULL);
 	}
 	return 0;
 }
@@ -10205,11 +10180,10 @@ MODULE_DEVICE_TABLE(of, niu_match);
 static struct platform_driver niu_of_driver = {
 	.driver = {
 		.name = "niu",
-		.owner = THIS_MODULE,
 		.of_match_table = niu_match,
 	},
 	.probe		= niu_of_probe,
-	.remove		= __devexit_p(niu_of_remove),
+	.remove		= niu_of_remove,
 };
 
 #endif /* CONFIG_SPARC64 */

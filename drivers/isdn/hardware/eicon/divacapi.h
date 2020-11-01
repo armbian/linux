@@ -26,15 +26,7 @@
 
 /*#define DEBUG */
 
-
-
-
-
-
-
-
-
-
+#include <linux/types.h>
 
 #define IMPLEMENT_DTMF 1
 #define IMPLEMENT_LINE_INTERCONNECT2 1
@@ -82,8 +74,6 @@
 #define CODEC_PERMANENT    0x02
 #define ADV_VOICE          0x03
 #define MAX_CIP_TYPES      5  /* kind of CIP types for group optimization */
-#define C_IND_MASK_DWORDS  ((MAX_APPL + 32) >> 5)
-
 
 #define FAX_CONNECT_INFO_BUFFER_SIZE  256
 #define NCPI_BUFFER_SIZE              256
@@ -265,8 +255,8 @@ struct _PLCI {
 	word          ncci_ring_list;
 	byte          inc_dis_ncci_table[MAX_CHANNELS_PER_PLCI];
 	t_std_internal_command internal_command_queue[MAX_INTERNAL_COMMAND_LEVELS];
-	dword         c_ind_mask_table[C_IND_MASK_DWORDS];
-	dword         group_optimization_mask_table[C_IND_MASK_DWORDS];
+	DECLARE_BITMAP(c_ind_mask_table, MAX_APPL);
+	DECLARE_BITMAP(group_optimization_mask_table, MAX_APPL);
 	byte          RBuffer[200];
 	dword         msg_in_queue[MSG_IN_QUEUE_SIZE/sizeof(dword)];
 	API_SAVE      saved_msg;
@@ -422,11 +412,11 @@ struct _DIVA_CAPI_ADAPTER {
 #define LAPD            6       /* lapd (Q.921)                     */
 #define X25_L2          7       /* x.25 layer-2                     */
 #define V120_L2         8       /* V.120 layer-2 protocol           */
-#define V42_IN          9       /* V.42 layer-2 protocol, incomming */
+#define V42_IN          9       /* V.42 layer-2 protocol, incoming */
 #define V42            10       /* V.42 layer-2 protocol            */
 #define MDM_ATP        11       /* AT Parser built in the L2        */
 #define X75_V42BIS     12       /* ISO7776 (X.75 SLP) modified to support V.42 bis compression */
-#define RTPL2_IN       13       /* RTP layer-2 protocol, incomming  */
+#define RTPL2_IN       13       /* RTP layer-2 protocol, incoming  */
 #define RTPL2          14       /* RTP layer-2 protocol             */
 #define V120_V42BIS    15       /* V.120 layer-2 protocol supporting V.42 bis compression */
 
@@ -1125,7 +1115,7 @@ extern word li_total_channels;
   | Direction           | word | Enable compression/decompression for    |
   |                     |      | 0: All direction                        |
   |                     |      | 1: disable outgoing data                |
-  |                     |      | 2: disable incomming data               |
+  |                     |      | 2: disable incoming data               |
   |                     |      | 3: disable both direction (default)     |
   +---------------------+------+-----------------------------------------+
   | Number of code      | word | Parameter P1 of V.42bis in accordance   |

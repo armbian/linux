@@ -87,7 +87,7 @@
 #define SQUASHFS_COMP_OPTS(flags)		SQUASHFS_BIT(flags, \
 						SQUASHFS_COMP_OPT)
 
-/* Max number of types and file types */
+/* Inode types including extended types */
 #define SQUASHFS_DIR_TYPE		1
 #define SQUASHFS_REG_TYPE		2
 #define SQUASHFS_SYMLINK_TYPE		3
@@ -102,6 +102,9 @@
 #define SQUASHFS_LCHRDEV_TYPE		12
 #define SQUASHFS_LFIFO_TYPE		13
 #define SQUASHFS_LSOCKET_TYPE		14
+
+/* Max type value stored in directory entry */
+#define SQUASHFS_MAX_DIR_TYPE		7
 
 /* Xattr types */
 #define SQUASHFS_XATTR_USER             0
@@ -125,6 +128,12 @@
 						~SQUASHFS_COMPRESSED_BIT_BLOCK)
 
 #define SQUASHFS_COMPRESSED_BLOCK(B)	(!((B) & SQUASHFS_COMPRESSED_BIT_BLOCK))
+
+static inline int squashfs_block_size(__le32 raw)
+{
+	u32 size = le32_to_cpu(raw);
+	return (size >> 25) ? -EIO : size;
+}
 
 /*
  * Inode number ops.  Inodes consist of a compressed block number, and an
@@ -237,6 +246,8 @@ struct meta_index {
 #define LZMA_COMPRESSION	2
 #define LZO_COMPRESSION		3
 #define XZ_COMPRESSION		4
+#define LZ4_COMPRESSION		5
+#define ZSTD_COMPRESSION	6
 
 struct squashfs_super_block {
 	__le32			s_magic;

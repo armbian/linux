@@ -10,10 +10,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #ifndef _DM644X_CCDC_H
 #define _DM644X_CCDC_H
@@ -38,16 +34,22 @@ enum ccdc_sample_line {
 	CCDC_SAMPLE_16LINES
 };
 
-/* enum for Alaw gama width */
-enum ccdc_gama_width {
-	CCDC_GAMMA_BITS_15_6,
+/* enum for Alaw gamma width */
+enum ccdc_gamma_width {
+	CCDC_GAMMA_BITS_15_6,	/* use bits 15-6 for gamma */
 	CCDC_GAMMA_BITS_14_5,
 	CCDC_GAMMA_BITS_13_4,
 	CCDC_GAMMA_BITS_12_3,
 	CCDC_GAMMA_BITS_11_2,
 	CCDC_GAMMA_BITS_10_1,
-	CCDC_GAMMA_BITS_09_0
+	CCDC_GAMMA_BITS_09_0	/* use bits 9-0 for gamma */
 };
+
+/* returns the highest bit used for the gamma */
+static inline u8 ccdc_gamma_width_max_bit(enum ccdc_gamma_width width)
+{
+	return 15 - width;
+}
 
 enum ccdc_data_size {
 	CCDC_DATA_16BITS,
@@ -60,12 +62,18 @@ enum ccdc_data_size {
 	CCDC_DATA_8BITS
 };
 
+/* returns the highest bit used for this data size */
+static inline u8 ccdc_data_size_max_bit(enum ccdc_data_size sz)
+{
+	return sz == CCDC_DATA_8BITS ? 7 : 15 - sz;
+}
+
 /* structure for ALaw */
 struct ccdc_a_law {
 	/* Enable/disable A-Law */
 	unsigned char enable;
-	/* Gama Width Input */
-	enum ccdc_gama_width gama_wd;
+	/* Gamma Width Input */
+	enum ccdc_gamma_width gamma_wd;
 };
 
 /* structure for Black Clamping */
@@ -95,16 +103,6 @@ struct ccdc_black_compensation {
 	char gb;
 };
 
-/* structure for fault pixel correction */
-struct ccdc_fault_pixel {
-	/* Enable or Disable fault pixel correction */
-	unsigned char enable;
-	/* Number of fault pixel */
-	unsigned short fp_num;
-	/* Address of fault pixel table */
-	unsigned int fpc_table_addr;
-};
-
 /* Structure for CCDC configuration parameters for raw capture mode passed
  * by application
  */
@@ -117,8 +115,6 @@ struct ccdc_config_params_raw {
 	struct ccdc_black_clamp blk_clamp;
 	/* Structure for Black Compensation */
 	struct ccdc_black_compensation blk_comp;
-	/* Structure for Fault Pixel Module Configuration */
-	struct ccdc_fault_pixel fault_pxl;
 };
 
 

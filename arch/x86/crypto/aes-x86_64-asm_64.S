@@ -15,6 +15,7 @@
 
 .text
 
+#include <linux/linkage.h>
 #include <asm/asm-offsets.h>
 
 #define R1	%rax
@@ -41,19 +42,15 @@
 #define R5E	%esi
 #define R6	%rdi
 #define R6E	%edi
-#define R7	%rbp
-#define R7E	%ebp
+#define R7	%r9	/* don't use %rbp; it breaks stack traces */
+#define R7E	%r9d
 #define R8	%r8
-#define R9	%r9
 #define R10	%r10
 #define R11	%r11
 
-#define prologue(FUNC,KEY,B128,B192,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11) \
-	.global	FUNC;			\
-	.type	FUNC,@function;		\
-	.align	8;			\
-FUNC:	movq	r1,r2;			\
-	movq	r3,r4;			\
+#define prologue(FUNC,KEY,B128,B192,r1,r2,r5,r6,r7,r8,r9,r10,r11) \
+	ENTRY(FUNC);			\
+	movq	r1,r2;			\
 	leaq	KEY+48(r8),r9;		\
 	movq	r10,r11;		\
 	movl	(r7),r5 ## E;		\
@@ -71,14 +68,14 @@ FUNC:	movq	r1,r2;			\
 	je	B192;			\
 	leaq	32(r9),r9;
 
-#define epilogue(r1,r2,r3,r4,r5,r6,r7,r8,r9) \
+#define epilogue(FUNC,r1,r2,r5,r6,r7,r8,r9) \
 	movq	r1,r2;			\
-	movq	r3,r4;			\
 	movl	r5 ## E,(r9);		\
 	movl	r6 ## E,4(r9);		\
 	movl	r7 ## E,8(r9);		\
 	movl	r8 ## E,12(r9);		\
-	ret;
+	ret;				\
+	ENDPROC(FUNC);
 
 #define round(TAB,OFFSET,r1,r2,r3,r4,r5,r6,r7,r8,ra,rb,rc,rd) \
 	movzbl	r2 ## H,r5 ## E;	\
@@ -88,12 +85,12 @@ FUNC:	movq	r1,r2;			\
 	movl	TAB(,r6,4),r6 ## E;	\
 	roll	$16,r2 ## E;		\
 	shrl	$16,r4 ## E;		\
-	movzbl	r4 ## H,r7 ## E;	\
-	movzbl	r4 ## L,r4 ## E;	\
+	movzbl	r4 ## L,r7 ## E;	\
+	movzbl	r4 ## H,r4 ## E;	\
 	xorl	OFFSET(r8),ra ## E;	\
 	xorl	OFFSET+4(r8),rb ## E;	\
-	xorl	TAB+3072(,r7,4),r5 ## E;\
-	xorl	TAB+2048(,r4,4),r6 ## E;\
+	xorl	TAB+3072(,r4,4),r5 ## E;\
+	xorl	TAB+2048(,r7,4),r6 ## E;\
 	movzbl	r1 ## L,r7 ## E;	\
 	movzbl	r1 ## H,r4 ## E;	\
 	movl	TAB+1024(,r4,4),r4 ## E;\
@@ -101,19 +98,19 @@ FUNC:	movq	r1,r2;			\
 	roll	$16,r1 ## E;		\
 	shrl	$16,r3 ## E;		\
 	xorl	TAB(,r7,4),r5 ## E;	\
-	movzbl	r3 ## H,r7 ## E;	\
-	movzbl	r3 ## L,r3 ## E;	\
-	xorl	TAB+3072(,r7,4),r4 ## E;\
-	xorl	TAB+2048(,r3,4),r5 ## E;\
-	movzbl	r1 ## H,r7 ## E;	\
-	movzbl	r1 ## L,r3 ## E;	\
+	movzbl	r3 ## L,r7 ## E;	\
+	movzbl	r3 ## H,r3 ## E;	\
+	xorl	TAB+3072(,r3,4),r4 ## E;\
+	xorl	TAB+2048(,r7,4),r5 ## E;\
+	movzbl	r1 ## L,r7 ## E;	\
+	movzbl	r1 ## H,r3 ## E;	\
 	shrl	$16,r1 ## E;		\
-	xorl	TAB+3072(,r7,4),r6 ## E;\
-	movl	TAB+2048(,r3,4),r3 ## E;\
-	movzbl	r1 ## H,r7 ## E;	\
-	movzbl	r1 ## L,r1 ## E;	\
-	xorl	TAB+1024(,r7,4),r6 ## E;\
-	xorl	TAB(,r1,4),r3 ## E;	\
+	xorl	TAB+3072(,r3,4),r6 ## E;\
+	movl	TAB+2048(,r7,4),r3 ## E;\
+	movzbl	r1 ## L,r7 ## E;	\
+	movzbl	r1 ## H,r1 ## E;	\
+	xorl	TAB+1024(,r1,4),r6 ## E;\
+	xorl	TAB(,r7,4),r3 ## E;	\
 	movzbl	r2 ## H,r1 ## E;	\
 	movzbl	r2 ## L,r7 ## E;	\
 	shrl	$16,r2 ## E;		\
@@ -131,9 +128,9 @@ FUNC:	movq	r1,r2;			\
 	movl	r4 ## E,r2 ## E;
 
 #define entry(FUNC,KEY,B128,B192) \
-	prologue(FUNC,KEY,B128,B192,R2,R8,R7,R9,R1,R3,R4,R6,R10,R5,R11)
+	prologue(FUNC,KEY,B128,B192,R2,R8,R1,R3,R4,R6,R10,R5,R11)
 
-#define return epilogue(R8,R2,R9,R7,R5,R6,R3,R4,R11)
+#define return(FUNC) epilogue(FUNC,R8,R2,R5,R6,R3,R4,R11)
 
 #define encrypt_round(TAB,OFFSET) \
 	round(TAB,OFFSET,R1,R2,R3,R4,R5,R6,R7,R10,R5,R6,R3,R4) \
@@ -151,12 +148,12 @@ FUNC:	movq	r1,r2;			\
 
 /* void aes_enc_blk(stuct crypto_tfm *tfm, u8 *out, const u8 *in) */
 
-	entry(aes_enc_blk,0,enc128,enc192)
+	entry(aes_enc_blk,0,.Le128,.Le192)
 	encrypt_round(crypto_ft_tab,-96)
 	encrypt_round(crypto_ft_tab,-80)
-enc192:	encrypt_round(crypto_ft_tab,-64)
+.Le192:	encrypt_round(crypto_ft_tab,-64)
 	encrypt_round(crypto_ft_tab,-48)
-enc128:	encrypt_round(crypto_ft_tab,-32)
+.Le128:	encrypt_round(crypto_ft_tab,-32)
 	encrypt_round(crypto_ft_tab,-16)
 	encrypt_round(crypto_ft_tab,  0)
 	encrypt_round(crypto_ft_tab, 16)
@@ -166,16 +163,16 @@ enc128:	encrypt_round(crypto_ft_tab,-32)
 	encrypt_round(crypto_ft_tab, 80)
 	encrypt_round(crypto_ft_tab, 96)
 	encrypt_final(crypto_fl_tab,112)
-	return
+	return(aes_enc_blk)
 
 /* void aes_dec_blk(struct crypto_tfm *tfm, u8 *out, const u8 *in) */
 
-	entry(aes_dec_blk,240,dec128,dec192)
+	entry(aes_dec_blk,240,.Ld128,.Ld192)
 	decrypt_round(crypto_it_tab,-96)
 	decrypt_round(crypto_it_tab,-80)
-dec192:	decrypt_round(crypto_it_tab,-64)
+.Ld192:	decrypt_round(crypto_it_tab,-64)
 	decrypt_round(crypto_it_tab,-48)
-dec128:	decrypt_round(crypto_it_tab,-32)
+.Ld128:	decrypt_round(crypto_it_tab,-32)
 	decrypt_round(crypto_it_tab,-16)
 	decrypt_round(crypto_it_tab,  0)
 	decrypt_round(crypto_it_tab, 16)
@@ -185,4 +182,4 @@ dec128:	decrypt_round(crypto_it_tab,-32)
 	decrypt_round(crypto_it_tab, 80)
 	decrypt_round(crypto_it_tab, 96)
 	decrypt_final(crypto_il_tab,112)
-	return
+	return(aes_dec_blk)

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASMPARISC_ELF_H
 #define __ASMPARISC_ELF_H
 
@@ -247,7 +248,7 @@ typedef unsigned long elf_greg_t;
 #define ELF_PLATFORM  ("PARISC\0")
 
 #define SET_PERSONALITY(ex) \
-	current->personality = PER_LINUX; \
+	set_personality((current->personality & ~PER_MASK) | PER_LINUX); \
 	current->thread.map_base = DEFAULT_MAP_BASE; \
 	current->thread.task_size = DEFAULT_TASK_SIZE \
 
@@ -347,5 +348,14 @@ struct pt_regs;	/* forward declaration... */
    but it's not easy, and we've already done it here.  */
 
 #define ELF_HWCAP	0
+
+/* Masks for stack and mmap randomization */
+#define BRK_RND_MASK	(is_32bit_task() ? 0x07ffUL : 0x3ffffUL)
+#define MMAP_RND_MASK	(is_32bit_task() ? 0x1fffUL : 0x3ffffUL)
+#define STACK_RND_MASK	MMAP_RND_MASK
+
+struct mm_struct;
+extern unsigned long arch_randomize_brk(struct mm_struct *);
+#define arch_randomize_brk arch_randomize_brk
 
 #endif

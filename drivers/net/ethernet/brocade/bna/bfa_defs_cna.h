@@ -1,5 +1,5 @@
 /*
- * Linux network driver for Brocade Converged Network Adapter.
+ * Linux network driver for QLogic BR-series Converged Network Adapter.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License (GPL) Version 2 as
@@ -11,19 +11,17 @@
  * General Public License for more details.
  */
 /*
- * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014-2015 QLogic Corporation
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  */
 #ifndef __BFA_DEFS_CNA_H__
 #define __BFA_DEFS_CNA_H__
 
 #include "bfa_defs.h"
 
-/**
- * @brief
- * FC physical port statistics.
- */
+/* FC physical port statistics. */
 struct bfa_port_fc_stats {
 	u64	secs_reset;	/*!< Seconds since stats is reset */
 	u64	tx_frames;	/*!< Tx frames			*/
@@ -59,10 +57,7 @@ struct bfa_port_fc_stats {
 	u64	bbsc_link_resets; /*!< Credit Recovery-Link Resets   */
 };
 
-/**
- * @brief
- * Eth Physical Port statistics.
- */
+/* Eth Physical Port statistics. */
 struct bfa_port_eth_stats {
 	u64	secs_reset;	/*!< Seconds since stats is reset */
 	u64	frame_64;	/*!< Frames 64 bytes		*/
@@ -108,16 +103,11 @@ struct bfa_port_eth_stats {
 	u64	tx_iscsi_zero_pause; /*!< Tx iSCSI zero pause	*/
 };
 
-/**
- * @brief
- *		Port statistics.
- */
+/* Port statistics. */
 union bfa_port_stats_u {
 	struct bfa_port_fc_stats fc;
 	struct bfa_port_eth_stats eth;
 };
-
-#pragma pack(1)
 
 #define BFA_CEE_LLDP_MAX_STRING_LEN (128)
 #define BFA_CEE_DCBX_MAX_PRIORITY	(8)
@@ -141,9 +131,9 @@ struct bfa_cee_lldp_str {
 	u8 len;
 	u8 rsvd[2];
 	u8 value[BFA_CEE_LLDP_MAX_STRING_LEN];
-};
+} __packed;
 
-/* LLDP paramters */
+/* LLDP parameters */
 struct bfa_cee_lldp_cfg {
 	struct bfa_cee_lldp_str chassis_id;
 	struct bfa_cee_lldp_str port_id;
@@ -153,7 +143,7 @@ struct bfa_cee_lldp_cfg {
 	struct bfa_cee_lldp_str mgmt_addr;
 	u16 time_to_live;
 	u16 enabled_system_cap;
-};
+} __packed;
 
 enum bfa_cee_dcbx_version {
 	DCBX_PROTOCOL_PRECEE	= 1,
@@ -179,7 +169,7 @@ struct bfa_cee_dcbx_cfg {
 	u8 lls_fcoe; /* FCoE Logical Link Status */
 	u8 lls_lan; /* LAN Logical Link Status */
 	u8 rsvd[2];
-};
+} __packed;
 
 /* CEE status */
 /* Making this to tri-state for the benefit of port list command */
@@ -196,11 +186,11 @@ struct bfa_cee_attr {
 	u8 error_reason;
 	struct bfa_cee_lldp_cfg lldp_remote;
 	struct bfa_cee_dcbx_cfg dcbx_remote;
-	mac_t src_mac;
+	u8 src_mac[ETH_ALEN];
 	u8 link_speed;
 	u8 nw_priority;
 	u8 filler[2];
-};
+} __packed;
 
 /* LLDP/DCBX/CEE Statistics */
 struct bfa_cee_stats {
@@ -222,8 +212,6 @@ struct bfa_cee_stats {
 	u32	cee_status_up;		/*!< CEE status up */
 	u32	cee_hw_cfg_changed;	/*!< CEE hw cfg changed */
 	u32	cee_rx_invalid_cfg;	/*!< CEE invalid cfg */
-};
-
-#pragma pack()
+} __packed;
 
 #endif	/* __BFA_DEFS_CNA_H__ */

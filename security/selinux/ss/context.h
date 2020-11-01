@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * A security context is a set of security attributes
  * associated with each subject and object controlled
@@ -10,7 +11,7 @@
  * security server and can be changed without affecting
  * clients of the security server.
  *
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
+ * Author : Stephen Smalley, <sds@tycho.nsa.gov>
  */
 #ifndef _SS_CONTEXT_H_
 #define _SS_CONTEXT_H_
@@ -68,6 +69,26 @@ static inline int mls_context_cpy_low(struct context *dst, struct context *src)
 
 	dst->range.level[1].sens = src->range.level[0].sens;
 	rc = ebitmap_cpy(&dst->range.level[1].cat, &src->range.level[0].cat);
+	if (rc)
+		ebitmap_destroy(&dst->range.level[0].cat);
+out:
+	return rc;
+}
+
+/*
+ * Sets both levels in the MLS range of 'dst' to the high level of 'src'.
+ */
+static inline int mls_context_cpy_high(struct context *dst, struct context *src)
+{
+	int rc;
+
+	dst->range.level[0].sens = src->range.level[1].sens;
+	rc = ebitmap_cpy(&dst->range.level[0].cat, &src->range.level[1].cat);
+	if (rc)
+		goto out;
+
+	dst->range.level[1].sens = src->range.level[1].sens;
+	rc = ebitmap_cpy(&dst->range.level[1].cat, &src->range.level[1].cat);
 	if (rc)
 		ebitmap_destroy(&dst->range.level[0].cat);
 out:

@@ -24,8 +24,9 @@
 */
 
 #include <linux/drbd.h>
+#include "drbd_strings.h"
 
-static const char *drbd_conn_s_names[] = {
+static const char * const drbd_conn_s_names[] = {
 	[C_STANDALONE]       = "StandAlone",
 	[C_DISCONNECTING]    = "Disconnecting",
 	[C_UNCONNECTED]      = "Unconnected",
@@ -52,13 +53,13 @@ static const char *drbd_conn_s_names[] = {
 	[C_BEHIND]           = "Behind",
 };
 
-static const char *drbd_role_s_names[] = {
+static const char * const drbd_role_s_names[] = {
 	[R_PRIMARY]   = "Primary",
 	[R_SECONDARY] = "Secondary",
 	[R_UNKNOWN]   = "Unknown"
 };
 
-static const char *drbd_disk_s_names[] = {
+static const char * const drbd_disk_s_names[] = {
 	[D_DISKLESS]     = "Diskless",
 	[D_ATTACHING]    = "Attaching",
 	[D_FAILED]       = "Failed",
@@ -70,7 +71,7 @@ static const char *drbd_disk_s_names[] = {
 	[D_UP_TO_DATE]   = "UpToDate",
 };
 
-static const char *drbd_state_sw_errors[] = {
+static const char * const drbd_state_sw_errors[] = {
 	[-SS_TWO_PRIMARIES] = "Multiple primaries not allowed by config",
 	[-SS_NO_UP_TO_DATE_DISK] = "Need access to UpToDate data",
 	[-SS_NO_LOCAL_DISK] = "Can not resync without local disk",
@@ -89,6 +90,8 @@ static const char *drbd_state_sw_errors[] = {
 	[-SS_LOWER_THAN_OUTDATED] = "Disk state is lower than outdated",
 	[-SS_IN_TRANSIENT_STATE] = "In transient state, retry after next state change",
 	[-SS_CONCURRENT_ST_CHG] = "Concurrent state changes detected and aborted",
+	[-SS_OUTDATE_WO_CONN] = "Need a connection for a graceful disconnect/outdate peer",
+	[-SS_O_VOL_PEER_PRI] = "Other vol primary on peer not allowed by config",
 };
 
 const char *drbd_conn_str(enum drbd_conns s)

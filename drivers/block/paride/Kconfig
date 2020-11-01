@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # PARIDE configuration
 #
@@ -25,6 +26,7 @@ config PARIDE_PD
 config PARIDE_PCD
 	tristate "Parallel port ATAPI CD-ROMs"
 	depends on PARIDE
+	select BLK_SCSI_REQUEST # only for the generic cdrom code
 	---help---
 	  This option enables the high-level driver for ATAPI CD-ROM devices
 	  connected through a parallel port. If you chose to build PARIDE
@@ -205,8 +207,8 @@ config PARIDE_EPAT
 	  support.
 
 config PARIDE_EPATC8
-	bool "Support c7/c8 chips (EXPERIMENTAL)"
-	depends on PARIDE_EPAT && EXPERIMENTAL
+	bool "Support c7/c8 chips"
+	depends on PARIDE_EPAT
 	help
 	  This option enables support for the newer Shuttle EP1284 (aka c7 and
 	  c8) chip. You need this if you are using any recent Imation SuperDisk

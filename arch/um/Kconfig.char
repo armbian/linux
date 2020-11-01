@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 menu "UML Character Devices"
 
 config STDERR_CONSOLE
@@ -5,10 +6,6 @@ config STDERR_CONSOLE
 	default y
 	help
 	  console driver which dumps all printk messages to stderr.
-
-config STDIO_CONSOLE
-	bool
-	default y
 
 config SSL
 	bool "Virtual serial line"

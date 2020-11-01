@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_MICROBLAZE_ATOMIC_H
 #define _ASM_MICROBLAZE_ATOMIC_H
 
@@ -22,5 +23,6 @@ static inline int atomic_dec_if_positive(atomic_t *v)
 
 	return res;
 }
+#define atomic_dec_if_positive atomic_dec_if_positive
 
 #endif /* _ASM_MICROBLAZE_ATOMIC_H */

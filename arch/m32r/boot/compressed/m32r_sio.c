@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/m32r/boot/compressed/m32r_sio.c
  *
@@ -8,12 +9,13 @@
 
 #include <asm/processor.h>
 
-static void putc(char c);
+static void m32r_putc(char c);
 
 static int puts(const char *s)
 {
 	char c;
-	while ((c = *s++)) putc(c);
+	while ((c = *s++))
+		m32r_putc(c);
 	return 0;
 }
 
@@ -41,7 +43,7 @@ static int puts(const char *s)
 #define BOOT_SIO0TXB	PLD_ESIO0TXB
 #endif
 
-static void putc(char c)
+static void m32r_putc(char c)
 {
 	while ((*BOOT_SIO0STS & 0x3) != 0x3)
 		cpu_relax();
@@ -61,7 +63,7 @@ static void putc(char c)
 #define SIO0TXB	(volatile unsigned short *)(0x00efd000 + 30)
 #endif
 
-static void putc(char c)
+static void m32r_putc(char c)
 {
 	while ((*SIO0STS & 0x1) == 0)
 		cpu_relax();

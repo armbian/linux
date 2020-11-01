@@ -21,6 +21,7 @@
 #include <asm/cputhreads.h>
 #include <asm/page.h>
 #include <asm/hvcall.h>
+#include <asm/firmware.h>
 
 
 #define MODULE_VERS "1.0"
@@ -31,40 +32,6 @@
 static int sysfs_entries;
 
 /* Helper routines */
-
-/*
- * Routine to detect firmware support for hcall
- * return 1 if H_BEST_ENERGY is supported
- * else return 0
- */
-
-static int check_for_h_best_energy(void)
-{
-	struct device_node *rtas = NULL;
-	const char *hypertas, *s;
-	int length;
-	int rc = 0;
-
-	rtas = of_find_node_by_path("/rtas");
-	if (!rtas)
-		return 0;
-
-	hypertas = of_get_property(rtas, "ibm,hypertas-functions", &length);
-	if (!hypertas) {
-		of_node_put(rtas);
-		return 0;
-	}
-
-	/* hypertas will have list of strings with hcall names */
-	for (s = hypertas; s < hypertas + length; s += strlen(s) + 1) {
-		if (!strncmp("hcall-best-energy-1", s, 19)) {
-			rc = 1; /* Found the string */
-			break;
-		}
-	}
-	of_node_put(rtas);
-	return rc;
-}
 
 /* Helper Routines to convert between drc_index to cpu numbers */
 
@@ -141,8 +108,8 @@ err:
  * energy consumption.
  */
 
-#define FLAGS_MODE1	0x004E200000080E01
-#define FLAGS_MODE2	0x004E200000080401
+#define FLAGS_MODE1	0x004E200000080E01UL
+#define FLAGS_MODE2	0x004E200000080401UL
 #define FLAGS_ACTIVATE  0x100
 
 static ssize_t get_best_energy_list(char *page, int activate)
@@ -241,19 +208,19 @@ static ssize_t percpu_deactivate_hint_show(struct device *dev,
  *	Per-cpu value of the hint
  */
 
-struct device_attribute attr_cpu_activate_hint_list =
+static struct device_attribute attr_cpu_activate_hint_list =
 		__ATTR(pseries_activate_hint_list, 0444,
 		cpu_activate_hint_list_show, NULL);
 
-struct device_attribute attr_cpu_deactivate_hint_list =
+static struct device_attribute attr_cpu_deactivate_hint_list =
 		__ATTR(pseries_deactivate_hint_list, 0444,
 		cpu_deactivate_hint_list_show, NULL);
 
-struct device_attribute attr_percpu_activate_hint =
+static struct device_attribute attr_percpu_activate_hint =
 		__ATTR(pseries_activate_hint, 0444,
 		percpu_activate_hint_show, NULL);
 
-struct device_attribute attr_percpu_deactivate_hint =
+static struct device_attribute attr_percpu_deactivate_hint =
 		__ATTR(pseries_deactivate_hint, 0444,
 		percpu_deactivate_hint_show, NULL);
 
@@ -262,10 +229,9 @@ static int __init pseries_energy_init(void)
 	int cpu, err;
 	struct device *cpu_dev;
 
-	if (!check_for_h_best_energy()) {
-		printk(KERN_INFO "Hypercall H_BEST_ENERGY not supported\n");
-		return 0;
-	}
+	if (!firmware_has_feature(FW_FEATURE_BEST_ENERGY))
+		return 0; /* H_BEST_ENERGY hcall not supported */
+
 	/* Create the sysfs files */
 	err = device_create_file(cpu_subsys.dev_root,
 				&attr_cpu_activate_hint_list);

@@ -45,7 +45,7 @@ static struct hppb_card hppb_card_head = {
  * (return 1). If so, initialize the chip and tell other partners in crime 
  * they have work to do.
  */
-static int hppb_probe(struct parisc_device *dev)
+static int __init hppb_probe(struct parisc_device *dev)
 {
 	int status;
 	struct hppb_card *card = &hppb_card_head;
@@ -74,16 +74,14 @@ static int hppb_probe(struct parisc_device *dev)
 
 	status = ccio_request_resource(dev, &card->mmio_region);
 	if(status < 0) {
-		printk(KERN_ERR "%s: failed to claim HP-PB "
-			"bus space (0x%08llx, 0x%08llx)\n",
-			__FILE__, (unsigned long long) card->mmio_region.start,
-			(unsigned long long) card->mmio_region.end);
+		printk(KERN_ERR "%s: failed to claim HP-PB bus space (%pR)\n",
+			__FILE__, &card->mmio_region);
 	}
 
         return 0;
 }
 
-static struct parisc_device_id hppb_tbl[] = {
+static const struct parisc_device_id hppb_tbl[] __initconst = {
         { HPHW_BCPORT, HVERSION_REV_ANY_ID, 0x500, 0xc }, /* E25 and K */
         { HPHW_BCPORT, 0x0, 0x501, 0xc }, /* E35 */
         { HPHW_BCPORT, 0x0, 0x502, 0xc }, /* E45 */
@@ -91,7 +89,7 @@ static struct parisc_device_id hppb_tbl[] = {
         { 0, }
 };
 
-static struct parisc_driver hppb_driver = {
+static struct parisc_driver hppb_driver __refdata = {
         .name =         "gecko_boa",
         .id_table =     hppb_tbl,
 	.probe =        hppb_probe,

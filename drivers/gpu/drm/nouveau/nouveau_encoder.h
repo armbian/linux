@@ -27,28 +27,30 @@
 #ifndef __NOUVEAU_ENCODER_H__
 #define __NOUVEAU_ENCODER_H__
 
-#include "drm_encoder_slave.h"
-#include "nouveau_drv.h"
+#include <subdev/bios/dcb.h>
+
+#include <drm/drm_encoder_slave.h>
+#include <drm/drm_dp_mst_helper.h>
+#include "dispnv04/disp.h"
 
 #define NV_DPMS_CLEARED 0x80
 
-struct dp_train_func {
-	void (*link_set)(struct drm_device *, struct dcb_entry *, int crtc,
-			 int nr, u32 bw, bool enhframe);
-	void (*train_set)(struct drm_device *, struct dcb_entry *, u8 pattern);
-	void (*train_adj)(struct drm_device *, struct dcb_entry *,
-			  u8 lane, u8 swing, u8 preem);
-};
+struct nvkm_i2c_port;
 
 struct nouveau_encoder {
 	struct drm_encoder_slave base;
 
-	struct dcb_entry *dcb;
+	struct dcb_output *dcb;
 	int or;
+	int link;
+
+	struct i2c_adapter *i2c;
+	struct nvkm_i2c_aux *aux;
 
 	/* different to drm_encoder.crtc, this reflects what's
 	 * actually programmed on the hw, not the proposed crtc */
 	struct drm_crtc *crtc;
+	u32 ctrl;
 
 	struct drm_display_mode mode;
 	int last_dpms;
@@ -57,12 +59,16 @@ struct nouveau_encoder {
 
 	union {
 		struct {
-			u8  dpcd[8];
+			struct nv50_mstm *mstm;
 			int link_nr;
 			int link_bw;
-			u32 datarate;
 		} dp;
 	};
+
+	void (*enc_save)(struct drm_encoder *encoder);
+	void (*enc_restore)(struct drm_encoder *encoder);
+	void (*update)(struct nouveau_encoder *, u8 head,
+		       struct drm_display_mode *, u8 proto, u8 depth);
 };
 
 struct nouveau_encoder *
@@ -80,25 +86,24 @@ static inline struct drm_encoder *to_drm_encoder(struct nouveau_encoder *enc)
 	return &enc->base.base;
 }
 
-static inline struct drm_encoder_slave_funcs *
+static inline const struct drm_encoder_slave_funcs *
 get_slave_funcs(struct drm_encoder *enc)
 {
 	return to_encoder_slave(enc)->slave_funcs;
 }
 
 /* nouveau_dp.c */
-int nouveau_dp_auxch(struct nouveau_i2c_chan *auxch, int cmd, int addr,
-		     uint8_t *data, int data_nr);
-bool nouveau_dp_detect(struct drm_encoder *);
-void nouveau_dp_dpms(struct drm_encoder *, int mode, u32 datarate,
-		     struct dp_train_func *);
-u8 *nouveau_dp_bios_data(struct drm_device *, struct dcb_entry *, u8 **);
+enum nouveau_dp_status {
+	NOUVEAU_DP_SST,
+	NOUVEAU_DP_MST,
+};
+
+int nouveau_dp_detect(struct nouveau_encoder *);
 
 struct nouveau_connector *
 nouveau_encoder_connector_get(struct nouveau_encoder *encoder);
-int nv50_sor_create(struct drm_connector *, struct dcb_entry *);
-void nv50_sor_dp_calc_tu(struct drm_device *, int, int, u32, u32);
-int nv50_dac_create(struct drm_connector *, struct dcb_entry *);
 
-
+int nv50_mstm_detect(struct nv50_mstm *, u8 dpcd[8], int allow);
+void nv50_mstm_remove(struct nv50_mstm *);
+void nv50_mstm_service(struct nv50_mstm *);
 #endif /* __NOUVEAU_ENCODER_H__ */

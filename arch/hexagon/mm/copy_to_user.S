@@ -1,7 +1,7 @@
 /*
  * User memory copying routines for the Hexagon Kernel
  *
- * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -43,7 +43,7 @@
 #define bytes r2
 #define loopcount r5
 
-#define FUNCNAME __copy_to_user_hexagon
+#define FUNCNAME raw_copy_to_user
 #include "copy_user_template.S"
 
 	/* STORE FAULTS from COPY_TO_USER */

@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/stat.h>
 #include <linux/sysctl.h>
 #include "../fs/xfs/xfs_sysctl.h"
 #include <linux/sunrpc/debug.h>
 #include <linux/string.h>
-#include <net/ip_vs.h>
 #include <linux/syscalls.h>
 #include <linux/namei.h>
 #include <linux/mount.h>
@@ -14,7 +14,9 @@
 #include <linux/ctype.h>
 #include <linux/netdevice.h>
 #include <linux/kernel.h>
+#include <linux/uuid.h>
 #include <linux/slab.h>
+#include <linux/compat.h>
 
 #ifdef CONFIG_SYSCTL_SYSCALL
 
@@ -137,6 +139,7 @@ static const struct bin_table bin_kern_table[] = {
 	{ CTL_INT,	KERN_COMPAT_LOG,		"compat-log" },
 	{ CTL_INT,	KERN_MAX_LOCK_DEPTH,		"max_lock_depth" },
 	{ CTL_INT,	KERN_PANIC_ON_NMI,		"panic_on_unrecovered_nmi" },
+	{ CTL_INT,	KERN_PANIC_ON_WARN,		"panic_on_warn" },
 	{}
 };
 
@@ -147,7 +150,7 @@ static const struct bin_table bin_vm_table[] = {
 	{ CTL_INT,	VM_DIRTY_RATIO,			"dirty_ratio" },
 	/* VM_DIRTY_WB_CS "dirty_writeback_centisecs" no longer used */
 	/* VM_DIRTY_EXPIRE_CS "dirty_expire_centisecs" no longer used */
-	{ CTL_INT,	VM_NR_PDFLUSH_THREADS,		"nr_pdflush_threads" },
+	/* VM_NR_PDFLUSH_THREADS "nr_pdflush_threads" no longer used */
 	{ CTL_INT,	VM_OVERCOMMIT_RATIO,		"overcommit_ratio" },
 	/* VM_PAGEBUF unused */
 	/* VM_HUGETLB_PAGES "nr_hugepages" no longer used */
@@ -387,11 +390,9 @@ static const struct bin_table bin_net_ipv4_table[] = {
 	{ CTL_INT,	NET_TCP_MODERATE_RCVBUF,		"tcp_moderate_rcvbuf" },
 	{ CTL_INT,	NET_TCP_TSO_WIN_DIVISOR,		"tcp_tso_win_divisor" },
 	{ CTL_STR,	NET_TCP_CONG_CONTROL,			"tcp_congestion_control" },
-	{ CTL_INT,	NET_TCP_ABC,				"tcp_abc" },
 	{ CTL_INT,	NET_TCP_MTU_PROBING,			"tcp_mtu_probing" },
 	{ CTL_INT,	NET_TCP_BASE_MSS,			"tcp_base_mss" },
 	{ CTL_INT,	NET_IPV4_TCP_WORKAROUND_SIGNED_WINDOWS,	"tcp_workaround_signed_windows" },
-	{ CTL_INT,	NET_TCP_DMA_COPYBREAK,			"tcp_dma_copybreak" },
 	{ CTL_INT,	NET_TCP_SLOW_START_AFTER_IDLE,		"tcp_slow_start_after_idle" },
 	{ CTL_INT,	NET_CIPSOV4_CACHE_ENABLE,		"cipso_cache_enable" },
 	{ CTL_INT,	NET_CIPSOV4_CACHE_BUCKET_SIZE,		"cipso_cache_bucket_size" },
@@ -523,6 +524,7 @@ static const struct bin_table bin_net_ipv6_conf_var_table[] = {
 	{ CTL_INT,	NET_IPV6_ACCEPT_RA_RT_INFO_MAX_PLEN,	"accept_ra_rt_info_max_plen" },
 	{ CTL_INT,	NET_IPV6_PROXY_NDP,			"proxy_ndp" },
 	{ CTL_INT,	NET_IPV6_ACCEPT_SOURCE_ROUTE,		"accept_source_route" },
+	{ CTL_INT,	NET_IPV6_ACCEPT_RA_FROM_LOCAL,		"accept_ra_from_local" },
 	{}
 };
 
@@ -971,7 +973,6 @@ out:
 static ssize_t bin_intvec(struct file *file,
 	void __user *oldval, size_t oldlen, void __user *newval, size_t newlen)
 {
-	mm_segment_t old_fs = get_fs();
 	ssize_t copied = 0;
 	char *buffer;
 	ssize_t result;
@@ -984,13 +985,11 @@ static ssize_t bin_intvec(struct file *file,
 	if (oldval && oldlen) {
 		unsigned __user *vec = oldval;
 		size_t length = oldlen / sizeof(*vec);
-		loff_t pos = 0;
 		char *str, *end;
 		int i;
+		loff_t pos = 0;
 
-		set_fs(KERNEL_DS);
-		result = vfs_read(file, buffer, BUFSZ - 1, &pos);
-		set_fs(old_fs);
+		result = kernel_read(file, buffer, BUFSZ - 1, &pos);
 		if (result < 0)
 			goto out_kfree;
 
@@ -1017,9 +1016,9 @@ static ssize_t bin_intvec(struct file *file,
 	if (newval && newlen) {
 		unsigned __user *vec = newval;
 		size_t length = newlen / sizeof(*vec);
-		loff_t pos = 0;
 		char *str, *end;
 		int i;
+		loff_t pos = 0;
 
 		str = buffer;
 		end = str + BUFSZ;
@@ -1030,12 +1029,10 @@ static ssize_t bin_intvec(struct file *file,
 			if (get_user(value, vec + i))
 				goto out_kfree;
 
-			str += snprintf(str, end - str, "%lu\t", value);
+			str += scnprintf(str, end - str, "%lu\t", value);
 		}
 
-		set_fs(KERNEL_DS);
-		result = vfs_write(file, buffer, str - buffer, &pos);
-		set_fs(old_fs);
+		result = kernel_write(file, buffer, str - buffer, &pos);
 		if (result < 0)
 			goto out_kfree;
 	}
@@ -1049,7 +1046,6 @@ out:
 static ssize_t bin_ulongvec(struct file *file,
 	void __user *oldval, size_t oldlen, void __user *newval, size_t newlen)
 {
-	mm_segment_t old_fs = get_fs();
 	ssize_t copied = 0;
 	char *buffer;
 	ssize_t result;
@@ -1062,13 +1058,11 @@ static ssize_t bin_ulongvec(struct file *file,
 	if (oldval && oldlen) {
 		unsigned long __user *vec = oldval;
 		size_t length = oldlen / sizeof(*vec);
-		loff_t pos = 0;
 		char *str, *end;
 		int i;
+		loff_t pos = 0;
 
-		set_fs(KERNEL_DS);
-		result = vfs_read(file, buffer, BUFSZ - 1, &pos);
-		set_fs(old_fs);
+		result = kernel_read(file, buffer, BUFSZ - 1, &pos);
 		if (result < 0)
 			goto out_kfree;
 
@@ -1095,9 +1089,9 @@ static ssize_t bin_ulongvec(struct file *file,
 	if (newval && newlen) {
 		unsigned long __user *vec = newval;
 		size_t length = newlen / sizeof(*vec);
-		loff_t pos = 0;
 		char *str, *end;
 		int i;
+		loff_t pos = 0;
 
 		str = buffer;
 		end = str + BUFSZ;
@@ -1108,12 +1102,10 @@ static ssize_t bin_ulongvec(struct file *file,
 			if (get_user(value, vec + i))
 				goto out_kfree;
 
-			str += snprintf(str, end - str, "%lu\t", value);
+			str += scnprintf(str, end - str, "%lu\t", value);
 		}
 
-		set_fs(KERNEL_DS);
-		result = vfs_write(file, buffer, str - buffer, &pos);
-		set_fs(old_fs);
+		result = kernel_write(file, buffer, str - buffer, &pos);
 		if (result < 0)
 			goto out_kfree;
 	}
@@ -1127,42 +1119,29 @@ out:
 static ssize_t bin_uuid(struct file *file,
 	void __user *oldval, size_t oldlen, void __user *newval, size_t newlen)
 {
-	mm_segment_t old_fs = get_fs();
 	ssize_t result, copied = 0;
 
 	/* Only supports reads */
 	if (oldval && oldlen) {
+		char buf[UUID_STRING_LEN + 1];
+		uuid_t uuid;
 		loff_t pos = 0;
-		char buf[40], *str = buf;
-		unsigned char uuid[16];
-		int i;
 
-		set_fs(KERNEL_DS);
-		result = vfs_read(file, buf, sizeof(buf) - 1, &pos);
-		set_fs(old_fs);
+		result = kernel_read(file, buf, sizeof(buf) - 1, &pos);
 		if (result < 0)
 			goto out;
 
 		buf[result] = '\0';
 
-		/* Convert the uuid to from a string to binary */
-		for (i = 0; i < 16; i++) {
-			result = -EIO;
-			if (!isxdigit(str[0]) || !isxdigit(str[1]))
-				goto out;
-
-			uuid[i] = (hex_to_bin(str[0]) << 4) |
-					hex_to_bin(str[1]);
-			str += 2;
-			if (*str == '-')
-				str++;
-		}
+		result = -EIO;
+		if (uuid_parse(buf, &uuid))
+			goto out;
 
 		if (oldlen > 16)
 			oldlen = 16;
 
 		result = -EFAULT;
-		if (copy_to_user(oldval, uuid, oldlen))
+		if (copy_to_user(oldval, &uuid, oldlen))
 			goto out;
 
 		copied = oldlen;
@@ -1175,18 +1154,15 @@ out:
 static ssize_t bin_dn_node_address(struct file *file,
 	void __user *oldval, size_t oldlen, void __user *newval, size_t newlen)
 {
-	mm_segment_t old_fs = get_fs();
 	ssize_t result, copied = 0;
 
 	if (oldval && oldlen) {
-		loff_t pos = 0;
 		char buf[15], *nodep;
 		unsigned long area, node;
 		__le16 dnaddr;
+		loff_t pos = 0;
 
-		set_fs(KERNEL_DS);
-		result = vfs_read(file, buf, sizeof(buf) - 1, &pos);
-		set_fs(old_fs);
+		result = kernel_read(file, buf, sizeof(buf) - 1, &pos);
 		if (result < 0)
 			goto out;
 
@@ -1216,10 +1192,10 @@ static ssize_t bin_dn_node_address(struct file *file,
 	}
 
 	if (newval && newlen) {
-		loff_t pos = 0;
 		__le16 dnaddr;
 		char buf[15];
 		int len;
+		loff_t pos = 0;
 
 		result = -EINVAL;
 		if (newlen != sizeof(dnaddr))
@@ -1229,13 +1205,11 @@ static ssize_t bin_dn_node_address(struct file *file,
 		if (get_user(dnaddr, (__le16 __user *)newval))
 			goto out;
 
-		len = snprintf(buf, sizeof(buf), "%hu.%hu",
+		len = scnprintf(buf, sizeof(buf), "%hu.%hu",
 				le16_to_cpu(dnaddr) >> 10,
 				le16_to_cpu(dnaddr) & 0x3ff);
 
-		set_fs(KERNEL_DS);
-		result = vfs_write(file, buf, len, &pos);
-		set_fs(old_fs);
+		result = kernel_write(file, buf, len, &pos);
 		if (result < 0)
 			goto out;
 	}
@@ -1345,8 +1319,8 @@ static ssize_t binary_sysctl(const int *name, int nlen,
 		goto out_putname;
 	}
 
-	mnt = current->nsproxy->pid_ns->proc_mnt;
-	file = file_open_root(mnt->mnt_root, mnt, pathname, flags);
+	mnt = task_active_pid_ns(current)->proc_mnt;
+	file = file_open_root(mnt->mnt_root, mnt, pathname, flags, 0);
 	result = PTR_ERR(file);
 	if (IS_ERR(file))
 		goto out_putname;
@@ -1380,7 +1354,7 @@ static void deprecated_sysctl_warning(const int *name, int nlen)
 	 * CTL_KERN/KERN_VERSION is used by older glibc and cannot
 	 * ever go away.
 	 */
-	if (name[0] == CTL_KERN && name[1] == KERN_VERSION)
+	if (nlen >= 2 && name[0] == CTL_KERN && name[1] == KERN_VERSION)
 		return;
 
 	if (printk_ratelimit()) {
@@ -1388,8 +1362,8 @@ static void deprecated_sysctl_warning(const int *name, int nlen)
 			"warning: process `%s' used the deprecated sysctl "
 			"system call with ", current->comm);
 		for (i = 0; i < nlen; i++)
-			printk("%d.", name[i]);
-		printk("\n");
+			printk(KERN_CONT "%d.", name[i]);
+		printk(KERN_CONT "\n");
 	}
 	return;
 }
@@ -1473,7 +1447,6 @@ SYSCALL_DEFINE1(sysctl, struct __sysctl_args __user *, args)
 
 
 #ifdef CONFIG_COMPAT
-#include <asm/compat.h>
 
 struct compat_sysctl_args {
 	compat_uptr_t	name;
@@ -1485,7 +1458,7 @@ struct compat_sysctl_args {
 	compat_ulong_t	__unused[4];
 };
 
-asmlinkage long compat_sys_sysctl(struct compat_sysctl_args __user *args)
+COMPAT_SYSCALL_DEFINE1(sysctl, struct compat_sysctl_args __user *, args)
 {
 	struct compat_sysctl_args tmp;
 	compat_size_t __user *compat_oldlenp;

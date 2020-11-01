@@ -26,13 +26,20 @@ static bool rpfilter_addr_unicast(const struct in6_addr *addr)
 	return addr_type & IPV6_ADDR_UNICAST;
 }
 
-static bool rpfilter_lookup_reverse6(const struct sk_buff *skb,
+static bool rpfilter_addr_linklocal(const struct in6_addr *addr)
+{
+	int addr_type = ipv6_addr_type(addr);
+	return addr_type & IPV6_ADDR_LINKLOCAL;
+}
+
+static bool rpfilter_lookup_reverse6(struct net *net, const struct sk_buff *skb,
 				     const struct net_device *dev, u8 flags)
 {
 	struct rt6_info *rt;
 	struct ipv6hdr *iph = ipv6_hdr(skb);
 	bool ret = false;
 	struct flowi6 fl6 = {
+		.flowi6_iif = LOOPBACK_IFINDEX,
 		.flowlabel = (* (__be32 *) iph) & IPV6_FLOWINFO_MASK,
 		.flowi6_proto = iph->nexthdr,
 		.daddr = iph->saddr,
@@ -47,12 +54,16 @@ static bool rpfilter_lookup_reverse6(const struct sk_buff *skb,
 	}
 
 	fl6.flowi6_mark = flags & XT_RPFILTER_VALID_MARK ? skb->mark : 0;
-	if ((flags & XT_RPFILTER_LOOSE) == 0) {
-		fl6.flowi6_oif = dev->ifindex;
-		lookup_flags |= RT6_LOOKUP_F_IFACE;
-	}
 
-	rt = (void *) ip6_route_lookup(dev_net(dev), &fl6, lookup_flags);
+	if (rpfilter_addr_linklocal(&iph->saddr)) {
+		lookup_flags |= RT6_LOOKUP_F_IFACE;
+		fl6.flowi6_oif = dev->ifindex;
+	/* Set flowi6_oif for vrf devices to lookup route in l3mdev domain. */
+	} else if (netif_is_l3_master(dev) || netif_is_l3_slave(dev) ||
+		  (flags & XT_RPFILTER_LOOSE) == 0)
+		fl6.flowi6_oif = dev->ifindex;
+
+	rt = (void *) ip6_route_lookup(net, &fl6, lookup_flags);
 	if (rt->dst.error)
 		goto out;
 
@@ -64,11 +75,19 @@ static bool rpfilter_lookup_reverse6(const struct sk_buff *skb,
 		goto out;
 	}
 
-	if (rt->rt6i_idev->dev == dev || (flags & XT_RPFILTER_LOOSE))
+	if (rt->rt6i_idev->dev == dev ||
+	    l3mdev_master_ifindex_rcu(rt->rt6i_idev->dev) == dev->ifindex ||
+	    (flags & XT_RPFILTER_LOOSE))
 		ret = true;
  out:
-	dst_release(&rt->dst);
+	ip6_rt_put(rt);
 	return ret;
+}
+
+static bool
+rpfilter_is_loopback(const struct sk_buff *skb, const struct net_device *in)
+{
+	return skb->pkt_type == PACKET_LOOPBACK || in->flags & IFF_LOOPBACK;
 }
 
 static bool rpfilter_mt(const struct sk_buff *skb, struct xt_action_param *par)
@@ -78,7 +97,7 @@ static bool rpfilter_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	struct ipv6hdr *iph;
 	bool invert = info->flags & XT_RPFILTER_INVERT;
 
-	if (par->in->flags & IFF_LOOPBACK)
+	if (rpfilter_is_loopback(skb, xt_in(par)))
 		return true ^ invert;
 
 	iph = ipv6_hdr(skb);
@@ -86,7 +105,8 @@ static bool rpfilter_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	if (unlikely(saddrtype == IPV6_ADDR_ANY))
 		return true ^ invert; /* not routable: forward path will drop it */
 
-	return rpfilter_lookup_reverse6(skb, par->in, info->flags) ^ invert;
+	return rpfilter_lookup_reverse6(xt_net(par), skb, xt_in(par),
+					info->flags) ^ invert;
 }
 
 static int rpfilter_check(const struct xt_mtchk_param *par)

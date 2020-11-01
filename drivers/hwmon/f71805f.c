@@ -1,7 +1,7 @@
 /*
  * f71805f.c - driver for the Fintek F71805F/FG and F71872F/FG Super-I/O
  *             chips integrated hardware monitoring features
- * Copyright (C) 2005-2006  Jean Delvare <khali@linux-fr.org>
+ * Copyright (C) 2005-2006  Jean Delvare <jdelvare@suse.de>
  *
  * The F71805F/FG is a LPC Super-I/O chip made by Fintek. It integrates
  * complete hardware monitoring features: voltage, fan and temperature
@@ -96,17 +96,23 @@ superio_select(int base, int ld)
 	outb(ld, base + 1);
 }
 
-static inline void
+static inline int
 superio_enter(int base)
 {
+	if (!request_muxed_region(base, 2, DRVNAME))
+		return -EBUSY;
+
 	outb(0x87, base);
 	outb(0x87, base);
+
+	return 0;
 }
 
 static inline void
 superio_exit(int base)
 {
 	outb(0xaa, base);
+	release_region(base, 2);
 }
 
 /*
@@ -946,7 +952,7 @@ static ssize_t set_temp_hyst(struct device *dev, struct device_attribute
 	return count;
 }
 
-static ssize_t show_alarms_in(struct device *dev, struct device_attribute
+static ssize_t alarms_in_show(struct device *dev, struct device_attribute
 			      *devattr, char *buf)
 {
 	struct f71805f_data *data = f71805f_update_device(dev);
@@ -954,7 +960,7 @@ static ssize_t show_alarms_in(struct device *dev, struct device_attribute
 	return sprintf(buf, "%lu\n", data->alarms & 0x7ff);
 }
 
-static ssize_t show_alarms_fan(struct device *dev, struct device_attribute
+static ssize_t alarms_fan_show(struct device *dev, struct device_attribute
 			       *devattr, char *buf)
 {
 	struct f71805f_data *data = f71805f_update_device(dev);
@@ -962,7 +968,7 @@ static ssize_t show_alarms_fan(struct device *dev, struct device_attribute
 	return sprintf(buf, "%lu\n", (data->alarms >> 16) & 0x07);
 }
 
-static ssize_t show_alarms_temp(struct device *dev, struct device_attribute
+static ssize_t alarms_temp_show(struct device *dev, struct device_attribute
 				*devattr, char *buf)
 {
 	struct f71805f_data *data = f71805f_update_device(dev);
@@ -980,7 +986,7 @@ static ssize_t show_alarm(struct device *dev, struct device_attribute
 	return sprintf(buf, "%lu\n", (data->alarms >> bitnr) & 1);
 }
 
-static ssize_t show_name(struct device *dev, struct device_attribute
+static ssize_t name_show(struct device *dev, struct device_attribute
 			 *devattr, char *buf)
 {
 	struct f71805f_data *data = dev_get_drvdata(dev);
@@ -1176,11 +1182,11 @@ static SENSOR_DEVICE_ATTR(temp3_alarm, S_IRUGO, show_alarm, NULL, 13);
 static SENSOR_DEVICE_ATTR(fan1_alarm, S_IRUGO, show_alarm, NULL, 16);
 static SENSOR_DEVICE_ATTR(fan2_alarm, S_IRUGO, show_alarm, NULL, 17);
 static SENSOR_DEVICE_ATTR(fan3_alarm, S_IRUGO, show_alarm, NULL, 18);
-static DEVICE_ATTR(alarms_in, S_IRUGO, show_alarms_in, NULL);
-static DEVICE_ATTR(alarms_fan, S_IRUGO, show_alarms_fan, NULL);
-static DEVICE_ATTR(alarms_temp, S_IRUGO, show_alarms_temp, NULL);
+static DEVICE_ATTR_RO(alarms_in);
+static DEVICE_ATTR_RO(alarms_fan);
+static DEVICE_ATTR_RO(alarms_temp);
 
-static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
+static DEVICE_ATTR_RO(name);
 
 static struct attribute *f71805f_attributes[] = {
 	&sensor_dev_attr_in0_input.dev_attr.attr,
@@ -1343,15 +1349,14 @@ static struct attribute *f71805f_attr_pwm[] = {
  * Device registration and initialization
  */
 
-static void __devinit f71805f_init_device(struct f71805f_data *data)
+static void f71805f_init_device(struct f71805f_data *data)
 {
 	u8 reg;
 	int i;
 
 	reg = f71805f_read8(data, F71805F_REG_START);
 	if ((reg & 0x41) != 0x01) {
-		printk(KERN_DEBUG DRVNAME ": Starting monitoring "
-		       "operations\n");
+		pr_debug("Starting monitoring operations\n");
 		f71805f_write8(data, F71805F_REG_START, (reg | 0x01) & ~0x40);
 	}
 
@@ -1374,9 +1379,9 @@ static void __devinit f71805f_init_device(struct f71805f_data *data)
 	}
 }
 
-static int __devinit f71805f_probe(struct platform_device *pdev)
+static int f71805f_probe(struct platform_device *pdev)
 {
-	struct f71805f_sio_data *sio_data = pdev->dev.platform_data;
+	struct f71805f_sio_data *sio_data = dev_get_platdata(&pdev->dev);
 	struct f71805f_data *data;
 	struct resource *res;
 	int i, err;
@@ -1386,20 +1391,18 @@ static int __devinit f71805f_probe(struct platform_device *pdev)
 		"f71872f",
 	};
 
-	data = kzalloc(sizeof(struct f71805f_data), GFP_KERNEL);
-	if (!data) {
-		err = -ENOMEM;
-		pr_err("Out of memory\n");
-		goto exit;
-	}
+	data = devm_kzalloc(&pdev->dev, sizeof(struct f71805f_data),
+			    GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_IO, 0);
-	if (!request_region(res->start + ADDR_REG_OFFSET, 2, DRVNAME)) {
-		err = -EBUSY;
+	if (!devm_request_region(&pdev->dev, res->start + ADDR_REG_OFFSET, 2,
+				 DRVNAME)) {
 		dev_err(&pdev->dev, "Failed to request region 0x%lx-0x%lx\n",
 			(unsigned long)(res->start + ADDR_REG_OFFSET),
 			(unsigned long)(res->start + ADDR_REG_OFFSET + 1));
-		goto exit_free;
+		return -EBUSY;
 	}
 	data->addr = res->start;
 	data->name = names[sio_data->kind];
@@ -1427,7 +1430,7 @@ static int __devinit f71805f_probe(struct platform_device *pdev)
 	/* Register sysfs interface files */
 	err = sysfs_create_group(&pdev->dev.kobj, &f71805f_group);
 	if (err)
-		goto exit_release_region;
+		return err;
 	if (data->has_in & (1 << 4)) { /* in4 */
 		err = sysfs_create_group(&pdev->dev.kobj,
 					 &f71805f_group_optin[0]);
@@ -1487,19 +1490,12 @@ exit_remove_files:
 	for (i = 0; i < 4; i++)
 		sysfs_remove_group(&pdev->dev.kobj, &f71805f_group_optin[i]);
 	sysfs_remove_group(&pdev->dev.kobj, &f71805f_group_pwm_freq);
-exit_release_region:
-	release_region(res->start + ADDR_REG_OFFSET, 2);
-exit_free:
-	platform_set_drvdata(pdev, NULL);
-	kfree(data);
-exit:
 	return err;
 }
 
-static int __devexit f71805f_remove(struct platform_device *pdev)
+static int f71805f_remove(struct platform_device *pdev)
 {
 	struct f71805f_data *data = platform_get_drvdata(pdev);
-	struct resource *res;
 	int i;
 
 	hwmon_device_unregister(data->hwmon_dev);
@@ -1507,22 +1503,16 @@ static int __devexit f71805f_remove(struct platform_device *pdev)
 	for (i = 0; i < 4; i++)
 		sysfs_remove_group(&pdev->dev.kobj, &f71805f_group_optin[i]);
 	sysfs_remove_group(&pdev->dev.kobj, &f71805f_group_pwm_freq);
-	platform_set_drvdata(pdev, NULL);
-	kfree(data);
-
-	res = platform_get_resource(pdev, IORESOURCE_IO, 0);
-	release_region(res->start + ADDR_REG_OFFSET, 2);
 
 	return 0;
 }
 
 static struct platform_driver f71805f_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= DRVNAME,
 	},
 	.probe		= f71805f_probe,
-	.remove		= __devexit_p(f71805f_remove),
+	.remove		= f71805f_remove,
 };
 
 static int __init f71805f_device_add(unsigned short address,
@@ -1577,7 +1567,7 @@ exit:
 static int __init f71805f_find(int sioaddr, unsigned short *address,
 			       struct f71805f_sio_data *sio_data)
 {
-	int err = -ENODEV;
+	int err;
 	u16 devid;
 
 	static const char * const names[] = {
@@ -1585,8 +1575,11 @@ static int __init f71805f_find(int sioaddr, unsigned short *address,
 		"F71872F/FG or F71806F/FG",
 	};
 
-	superio_enter(sioaddr);
+	err = superio_enter(sioaddr);
+	if (err)
+		return err;
 
+	err = -ENODEV;
 	devid = superio_inw(sioaddr, SIO_REG_MANID);
 	if (devid != SIO_FINTEK_ID)
 		goto exit;
@@ -1661,7 +1654,7 @@ static void __exit f71805f_exit(void)
 	platform_driver_unregister(&f71805f_driver);
 }
 
-MODULE_AUTHOR("Jean Delvare <khali@linux-fr>");
+MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("F71805F/F71872F hardware monitoring driver");
 

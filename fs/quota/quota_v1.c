@@ -54,16 +54,18 @@ static void v1_mem2disk_dqblk(struct v1_disk_dqblk *d, struct mem_dqblk *m)
 
 static int v1_read_dqblk(struct dquot *dquot)
 {
-	int type = dquot->dq_type;
+	int type = dquot->dq_id.type;
 	struct v1_disk_dqblk dqblk;
+	struct quota_info *dqopt = sb_dqopt(dquot->dq_sb);
 
-	if (!sb_dqopt(dquot->dq_sb)->files[type])
+	if (!dqopt->files[type])
 		return -EINVAL;
 
 	/* Set structure to 0s in case read fails/is after end of file */
 	memset(&dqblk, 0, sizeof(struct v1_disk_dqblk));
 	dquot->dq_sb->s_op->quota_read(dquot->dq_sb, type, (char *)&dqblk,
-			sizeof(struct v1_disk_dqblk), v1_dqoff(dquot->dq_id));
+			sizeof(struct v1_disk_dqblk),
+			v1_dqoff(from_kqid(&init_user_ns, dquot->dq_id)));
 
 	v1_disk2mem_dqblk(&dquot->dq_dqb, &dqblk);
 	if (dquot->dq_dqb.dqb_bhardlimit == 0 &&
@@ -78,12 +80,13 @@ static int v1_read_dqblk(struct dquot *dquot)
 
 static int v1_commit_dqblk(struct dquot *dquot)
 {
-	short type = dquot->dq_type;
+	short type = dquot->dq_id.type;
 	ssize_t ret;
 	struct v1_disk_dqblk dqblk;
 
 	v1_mem2disk_dqblk(&dqblk, &dquot->dq_dqb);
-	if (dquot->dq_id == 0) {
+	if (((type == USRQUOTA) && uid_eq(dquot->dq_id.uid, GLOBAL_ROOT_UID)) ||
+	    ((type == GRPQUOTA) && gid_eq(dquot->dq_id.gid, GLOBAL_ROOT_GID))) {
 		dqblk.dqb_btime =
 			sb_dqopt(dquot->dq_sb)->info[type].dqi_bgrace;
 		dqblk.dqb_itime =
@@ -93,7 +96,7 @@ static int v1_commit_dqblk(struct dquot *dquot)
 	if (sb_dqopt(dquot->dq_sb)->files[type])
 		ret = dquot->dq_sb->s_op->quota_write(dquot->dq_sb, type,
 			(char *)&dqblk, sizeof(struct v1_disk_dqblk),
-			v1_dqoff(dquot->dq_id));
+			v1_dqoff(from_kqid(&init_user_ns, dquot->dq_id)));
 	if (ret != sizeof(struct v1_disk_dqblk)) {
 		quota_error(dquot->dq_sb, "dquota write failed");
 		if (ret >= 0)
@@ -158,6 +161,7 @@ static int v1_read_file_info(struct super_block *sb, int type)
 	struct v1_disk_dqblk dqblk;
 	int ret;
 
+	down_read(&dqopt->dqio_sem);
 	ret = sb->s_op->quota_read(sb, type, (char *)&dqblk,
 				sizeof(struct v1_disk_dqblk), v1_dqoff(0));
 	if (ret != sizeof(struct v1_disk_dqblk)) {
@@ -167,13 +171,14 @@ static int v1_read_file_info(struct super_block *sb, int type)
 	}
 	ret = 0;
 	/* limits are stored as unsigned 32-bit data */
-	dqopt->info[type].dqi_maxblimit = 0xffffffff;
-	dqopt->info[type].dqi_maxilimit = 0xffffffff;
+	dqopt->info[type].dqi_max_spc_limit = 0xffffffffULL << QUOTABLOCK_BITS;
+	dqopt->info[type].dqi_max_ino_limit = 0xffffffff;
 	dqopt->info[type].dqi_igrace =
 			dqblk.dqb_itime ? dqblk.dqb_itime : MAX_IQ_TIME;
 	dqopt->info[type].dqi_bgrace =
 			dqblk.dqb_btime ? dqblk.dqb_btime : MAX_DQ_TIME;
 out:
+	up_read(&dqopt->dqio_sem);
 	return ret;
 }
 
@@ -183,7 +188,7 @@ static int v1_write_file_info(struct super_block *sb, int type)
 	struct v1_disk_dqblk dqblk;
 	int ret;
 
-	dqopt->info[type].dqi_flags &= ~DQF_INFO_DIRTY;
+	down_write(&dqopt->dqio_sem);
 	ret = sb->s_op->quota_read(sb, type, (char *)&dqblk,
 				sizeof(struct v1_disk_dqblk), v1_dqoff(0));
 	if (ret != sizeof(struct v1_disk_dqblk)) {
@@ -191,8 +196,11 @@ static int v1_write_file_info(struct super_block *sb, int type)
 			ret = -EIO;
 		goto out;
 	}
+	spin_lock(&dq_data_lock);
+	dqopt->info[type].dqi_flags &= ~DQF_INFO_DIRTY;
 	dqblk.dqb_itime = dqopt->info[type].dqi_igrace;
 	dqblk.dqb_btime = dqopt->info[type].dqi_bgrace;
+	spin_unlock(&dq_data_lock);
 	ret = sb->s_op->quota_write(sb, type, (char *)&dqblk,
 	      sizeof(struct v1_disk_dqblk), v1_dqoff(0));
 	if (ret == sizeof(struct v1_disk_dqblk))
@@ -200,6 +208,7 @@ static int v1_write_file_info(struct super_block *sb, int type)
 	else if (ret > 0)
 		ret = -EIO;
 out:
+	up_write(&dqopt->dqio_sem);
 	return ret;
 }
 

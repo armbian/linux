@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/m68k/hp300/time.c
  *
@@ -37,16 +38,22 @@
 
 static irqreturn_t hp300_tick(int irq, void *dev_id)
 {
+	irq_handler_t timer_routine = dev_id;
+	unsigned long flags;
 	unsigned long tmp;
-	irq_handler_t vector = dev_id;
+
+	local_irq_save(flags);
 	in_8(CLOCKBASE + CLKSR);
 	asm volatile ("movpw %1@(5),%0" : "=d" (tmp) : "a" (CLOCKBASE));
+	timer_routine(0, NULL);
+	local_irq_restore(flags);
+
 	/* Turn off the network and SCSI leds */
 	blinken_leds(0, 0xe0);
-	return vector(irq, NULL);
+	return IRQ_HANDLED;
 }
 
-unsigned long hp300_gettimeoffset(void)
+u32 hp300_gettimeoffset(void)
 {
   /* Read current timer 1 value */
   unsigned char lsb, msb1, msb2;
@@ -59,7 +66,7 @@ unsigned long hp300_gettimeoffset(void)
     /* A carry happened while we were reading.  Read it again */
     lsb = in_8(CLOCKBASE + 7);
   ticks = INTVAL - ((msb2 << 8) | lsb);
-  return (USECS_PER_JIFFY * ticks) / INTVAL;
+  return ((USECS_PER_JIFFY * ticks) / INTVAL) * 1000;
 }
 
 void __init hp300_sched_init(irq_handler_t vector)

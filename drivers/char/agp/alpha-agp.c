@@ -11,16 +11,14 @@
 
 #include "agp.h"
 
-static int alpha_core_agp_vm_fault(struct vm_area_struct *vma,
-					struct vm_fault *vmf)
+static int alpha_core_agp_vm_fault(struct vm_fault *vmf)
 {
 	alpha_agp_info *agp = agp_bridge->dev_private_data;
 	dma_addr_t dma_addr;
 	unsigned long pa;
 	struct page *page;
 
-	dma_addr = (unsigned long)vmf->virtual_address - vma->vm_start
-						+ agp->aperture.bus_base;
+	dma_addr = vmf->address - vmf->vma->vm_start + agp->aperture.bus_base;
 	pa = agp->ops->translate(agp, dma_addr);
 
 	if (pa == (unsigned long)-EINVAL)
@@ -174,7 +172,7 @@ alpha_core_agp_setup(void)
 	/*
 	 * Build a fake pci_dev struct
 	 */
-	pdev = alloc_pci_dev();
+	pdev = pci_alloc_dev(NULL);
 	if (!pdev)
 		return -ENOMEM;
 	pdev->vendor = 0xffff;

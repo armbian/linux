@@ -23,12 +23,17 @@
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-#include <linux/module.h>
-#include <linux/sched.h>
+#include <linux/extable.h>
+#include <linux/ptrace.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/debug.h>
+#include <linux/mm_types.h>
 
 #include <asm/cacheflush.h>
 #include <asm/irq.h>
 #include <asm/irq_regs.h>
+#include <linux/uaccess.h>
 
 unsigned long exception_handlers[32];
 
@@ -117,6 +122,8 @@ static void show_code(unsigned int *pc)
  */
 void show_regs(struct pt_regs *regs)
 {
+	show_regs_print_info(KERN_DEFAULT);
+
 	printk("r0 : %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx\n",
 		regs->regs[0], regs->regs[1], regs->regs[2], regs->regs[3],
 		regs->regs[4], regs->regs[5], regs->regs[6], regs->regs[7]);
@@ -148,16 +155,6 @@ static void show_registers(struct pt_regs *regs)
 	show_code((unsigned int *) regs->cp0_epc);
 	printk(KERN_NOTICE "\n");
 }
-
-/*
- * The architecture-independent dump_stack generator
- */
-void dump_stack(void)
-{
-	show_stack(current_thread_info()->task,
-		   (long *) get_irq_regs()->regs[0]);
-}
-EXPORT_SYMBOL(dump_stack);
 
 void __die(const char *str, struct pt_regs *regs, const char *file,
 	const char *func, unsigned long line)
@@ -343,7 +340,7 @@ void __init trap_init(void)
 	set_except_vector(18, handle_dbe);
 	flush_icache_range(DEBUG_VECTOR_BASE_ADDR, IRQ_VECTOR_BASE_ADDR);
 
-	atomic_inc(&init_mm.mm_count);
+	mmgrab(&init_mm);
 	current->active_mm = &init_mm;
 	cpu_cache_init();
 }

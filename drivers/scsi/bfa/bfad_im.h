@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2005-2010 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014- QLogic Corporation.
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  *
- * Linux driver for Brocade Fibre Channel Host Bus Adapter.
+ * Linux driver for QLogic BR-series Fibre Channel Host Bus Adapter.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License (GPL) Version 2 as
@@ -37,6 +38,7 @@ int  bfad_im_scsi_host_alloc(struct bfad_s *bfad,
 		struct bfad_im_port_s *im_port, struct device *dev);
 void bfad_im_scsi_host_free(struct bfad_s *bfad,
 				struct bfad_im_port_s *im_port);
+u32 bfad_im_supported_speeds(struct bfa_s *bfa);
 
 #define MAX_FCP_TARGET 1024
 #define MAX_FCP_LUN 16384
@@ -66,6 +68,16 @@ struct bfad_im_port_s {
 	struct list_head itnim_mapped_list;
 	struct fc_vport *fc_vport;
 };
+
+struct bfad_im_port_pointer {
+	struct bfad_im_port_s *p;
+};
+
+static inline struct bfad_im_port_s *bfad_get_im_port(struct Scsi_Host *host)
+{
+	struct bfad_im_port_pointer *im_portp = shost_priv(host);
+	return im_portp->p;
+}
 
 enum bfad_itnim_state {
 	ITNIM_STATE_NONE,
@@ -164,8 +176,8 @@ extern struct device_attribute *bfad_im_vport_attrs[];
 
 irqreturn_t bfad_intx(int irq, void *dev_id);
 
-int bfad_im_bsg_request(struct fc_bsg_job *job);
-int bfad_im_bsg_timeout(struct fc_bsg_job *job);
+int bfad_im_bsg_request(struct bsg_job *job);
+int bfad_im_bsg_timeout(struct bsg_job *job);
 
 /*
  * Macro to set the SCSI device sdev_bflags - sdev_bflags are used by the

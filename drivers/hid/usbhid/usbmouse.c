@@ -42,11 +42,10 @@
 #define DRIVER_VERSION "v1.6"
 #define DRIVER_AUTHOR "Vojtech Pavlik <vojtech@ucw.cz>"
 #define DRIVER_DESC "USB HID Boot Protocol mouse driver"
-#define DRIVER_LICENSE "GPL"
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_LICENSE(DRIVER_LICENSE);
+MODULE_LICENSE("GPL");
 
 struct usb_mouse {
 	char name[128];
@@ -92,9 +91,10 @@ static void usb_mouse_irq(struct urb *urb)
 resubmit:
 	status = usb_submit_urb (urb, GFP_ATOMIC);
 	if (status)
-		err ("can't resubmit intr, %s-%s/input0, status %d",
-				mouse->usbdev->bus->bus_name,
-				mouse->usbdev->devpath, status);
+		dev_err(&mouse->usbdev->dev,
+			"can't resubmit intr, %s-%s/input0, status %d\n",
+			mouse->usbdev->bus->bus_name,
+			mouse->usbdev->devpath, status);
 }
 
 static int usb_mouse_open(struct input_dev *dev)
@@ -226,7 +226,7 @@ static void usb_mouse_disconnect(struct usb_interface *intf)
 	}
 }
 
-static struct usb_device_id usb_mouse_id_table [] = {
+static const struct usb_device_id usb_mouse_id_table[] = {
 	{ USB_INTERFACE_INFO(USB_INTERFACE_CLASS_HID, USB_INTERFACE_SUBCLASS_BOOT,
 		USB_INTERFACE_PROTOCOL_MOUSE) },
 	{ }	/* Terminating entry */

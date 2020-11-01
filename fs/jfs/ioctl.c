@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/fs/jfs/ioctl.c
  *
@@ -11,13 +12,17 @@
 #include <linux/mount.h>
 #include <linux/time.h>
 #include <linux/sched.h>
+#include <linux/blkdev.h>
 #include <asm/current.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
+#include "jfs_filsys.h"
+#include "jfs_debug.h"
 #include "jfs_incore.h"
 #include "jfs_dinode.h"
 #include "jfs_inode.h"
-
+#include "jfs_dmap.h"
+#include "jfs_discard.h"
 
 static struct {
 	long jfs_flag;
@@ -54,13 +59,12 @@ static long jfs_map_ext2(unsigned long flags, int from)
 
 long jfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct inode *inode = filp->f_dentry->d_inode;
+	struct inode *inode = file_inode(filp);
 	struct jfs_inode_info *jfs_inode = JFS_IP(inode);
 	unsigned int flags;
 
 	switch (cmd) {
 	case JFS_IOC_GETFLAGS:
-		jfs_get_inode_flags(jfs_inode);
 		flags = jfs_inode->mode2 & JFS_FL_USER_VISIBLE;
 		flags = jfs_map_ext2(flags, 0);
 		return put_user(flags, (int __user *) arg);
@@ -92,9 +96,8 @@ long jfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 
 		/* Lock against other parallel changes of flags */
-		mutex_lock(&inode->i_mutex);
+		inode_lock(inode);
 
-		jfs_get_inode_flags(jfs_inode);
 		oldflags = jfs_inode->mode2;
 
 		/*
@@ -105,7 +108,7 @@ long jfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			((flags ^ oldflags) &
 			(JFS_APPEND_FL | JFS_IMMUTABLE_FL))) {
 			if (!capable(CAP_LINUX_IMMUTABLE)) {
-				mutex_unlock(&inode->i_mutex);
+				inode_unlock(inode);
 				err = -EPERM;
 				goto setflags_out;
 			}
@@ -116,13 +119,47 @@ long jfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		jfs_inode->mode2 = flags;
 
 		jfs_set_inode_flags(inode);
-		mutex_unlock(&inode->i_mutex);
-		inode->i_ctime = CURRENT_TIME_SEC;
+		inode_unlock(inode);
+		inode->i_ctime = current_time(inode);
 		mark_inode_dirty(inode);
 setflags_out:
 		mnt_drop_write_file(filp);
 		return err;
 	}
+
+	case FITRIM:
+	{
+		struct super_block *sb = inode->i_sb;
+		struct request_queue *q = bdev_get_queue(sb->s_bdev);
+		struct fstrim_range range;
+		s64 ret = 0;
+
+		if (!capable(CAP_SYS_ADMIN))
+			return -EPERM;
+
+		if (!blk_queue_discard(q)) {
+			jfs_warn("FITRIM not supported on device");
+			return -EOPNOTSUPP;
+		}
+
+		if (copy_from_user(&range, (struct fstrim_range __user *)arg,
+		    sizeof(range)))
+			return -EFAULT;
+
+		range.minlen = max_t(unsigned int, range.minlen,
+			q->limits.discard_granularity);
+
+		ret = jfs_ioc_trim(inode, &range);
+		if (ret < 0)
+			return ret;
+
+		if (copy_to_user((struct fstrim_range __user *)arg, &range,
+		    sizeof(range)))
+			return -EFAULT;
+
+		return 0;
+	}
+
 	default:
 		return -ENOTTY;
 	}

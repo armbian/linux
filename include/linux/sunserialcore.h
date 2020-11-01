@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* sunserialcore.h
  *
  * Generic SUN serial/kbd/ms layer.  Based entirely
@@ -12,6 +13,10 @@
 
 #ifndef _SERIAL_SUN_H
 #define _SERIAL_SUN_H
+
+#include <linux/device.h>
+#include <linux/serial_core.h>
+#include <linux/console.h>
 
 /* Serial keyboard defines for L1-A processing... */
 #define SUNKBD_RESET		0xff

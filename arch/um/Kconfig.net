@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 
 menu "UML Network Devices"
 	depends on NET
@@ -157,7 +158,7 @@ config UML_NET_MCAST
 
 config UML_NET_PCAP
 	bool "pcap transport"
-	depends on UML_NET && EXPERIMENTAL
+	depends on UML_NET
 	help
 	The pcap transport makes a pcap packet stream on the host look
 	like an ethernet device inside UML.  This is useful for making

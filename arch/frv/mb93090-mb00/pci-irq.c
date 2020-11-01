@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* pci-irq.c: PCI IRQ routing on the FRV motherboard
  *
  * Copyright (C) 2003 Red Hat, Inc. All Rights Reserved.
@@ -28,7 +29,7 @@
  *
  */
 
-static const uint8_t __initdata pci_bus0_irq_routing[32][4] = {
+static const uint8_t __initconst pci_bus0_irq_routing[32][4] = {
 	[0 ] = { IRQ_FPGA_MB86943_PCI_INTA },
 	[16] = { IRQ_FPGA_RTL8029_INTA },
 	[17] = { IRQ_FPGA_PCI_INTC, IRQ_FPGA_PCI_INTD, IRQ_FPGA_PCI_INTA, IRQ_FPGA_PCI_INTB },
@@ -53,10 +54,6 @@ void __init pcibios_fixup_irqs(void)
 		}
 		pci_read_config_byte(dev, PCI_INTERRUPT_LINE, &line);
 	}
-}
-
-void __init pcibios_penalize_isa_irq(int irq)
-{
 }
 
 void pcibios_enable_irq(struct pci_dev *dev)

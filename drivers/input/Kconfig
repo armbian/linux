@@ -3,7 +3,7 @@
 #
 
 menu "Input device support"
-	depends on !S390 && !UML
+	depends on !UML
 
 config INPUT
 	tristate "Generic input layer (needed for keyboard, mouse, ...)" if EXPERT
@@ -25,9 +25,18 @@ config INPUT
 
 if INPUT
 
-config INPUT_OF_MATRIX_KEYMAP
-	depends on USE_OF
-	bool
+config INPUT_LEDS
+	tristate "Export input device LEDs in sysfs"
+	depends on LEDS_CLASS
+	default INPUT
+	help
+	  Say Y here if you would like to export LEDs on input devices
+	  as standard LED class devices in sysfs.
+
+	  If unsure, say Y.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called input-leds.
 
 config INPUT_FF_MEMLESS
 	tristate "Support for memoryless force-feedback devices"
@@ -68,11 +77,23 @@ config INPUT_SPARSEKMAP
 	  To compile this driver as a module, choose M here: the
 	  module will be called sparse-keymap.
 
+config INPUT_MATRIXKMAP
+	tristate "Matrix keymap support library"
+	help
+	  Say Y here if you are using a driver for an input
+	  device that uses matrix keymap. This option is only
+	  useful for out-of-tree drivers since in-tree drivers
+	  select it automatically.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called matrix-keymap.
+
 comment "Userland interfaces"
 
 config INPUT_MOUSEDEV
 	tristate "Mouse interface"
-	default y
 	help
 	  Say Y here if you want your mouse to be accessible as char devices
 	  13:32+ - /dev/input/mouseX and 13:63 - /dev/input/mice as an
@@ -87,7 +108,6 @@ config INPUT_MOUSEDEV
 
 config INPUT_MOUSEDEV_PSAUX
 	bool "Provide legacy /dev/psaux device"
-	default y
 	depends on INPUT_MOUSEDEV
 	help
 	  Say Y here if you want your mouse also be accessible as char device
@@ -95,7 +115,6 @@ config INPUT_MOUSEDEV_PSAUX
 	  the same as the data from /dev/input/mice.
 
 	  If unsure, say Y.
-
 
 config INPUT_MOUSEDEV_SCREEN_X
 	int "Horizontal screen resolution"
@@ -165,23 +184,6 @@ config INPUT_APMPOWER
 	  To compile this driver as a module, choose M here: the
 	  module will be called apm-power.
 
-config INPUT_KEYRESET
-	tristate "Reset key"
-	depends on INPUT
-	---help---
-	  Say Y here if you want to reboot when some keys are pressed;
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called keyreset.
-
-config  INPUT_SW_DEVICE
-       tristate  "i2c device detect support"
-       depends on INPUT && I2C
-       default m
-       help
-        Sensors and CTPS of i2c bus to use the equipment inspection
-        If you say yes here you get support for Sensors and CTPS Detection.
-
 comment "Input Device Drivers"
 
 source "drivers/input/keyboard/Kconfig"
@@ -195,6 +197,8 @@ source "drivers/input/tablet/Kconfig"
 source "drivers/input/touchscreen/Kconfig"
 
 source "drivers/input/misc/Kconfig"
+
+source "drivers/input/rmi4/Kconfig"
 
 endif
 

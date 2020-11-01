@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * parport.h: platform-specific PC-style parport initialisation
  *
@@ -12,7 +13,7 @@
 
 #include <asm/prom.h>
 
-static int __devinit parport_pc_find_nonpci_ports (int autoirq, int autodma)
+static int parport_pc_find_nonpci_ports (int autoirq, int autodma)
 {
 	struct device_node *np;
 	const u32 *prop;
@@ -21,16 +22,14 @@ static int __devinit parport_pc_find_nonpci_ports (int autoirq, int autodma)
 	int count = 0;
 	int virq;
 
-	for (np = NULL; (np = of_find_compatible_node(np,
-						      "parallel",
-						      "pnpPNP,400")) != NULL;) {
+	for_each_compatible_node(np, "parallel", "pnpPNP,400") {
 		prop = of_get_property(np, "reg", &propsize);
 		if (!prop || propsize > 6*sizeof(u32))
 			continue;
 		io1 = prop[1]; io2 = prop[2];
 
 		virq = irq_of_parse_and_map(np, 0);
-		if (virq == NO_IRQ)
+		if (!virq)
 			continue;
 
 		if (parport_pc_probe_port(io1, io2, virq, autodma, NULL, 0)

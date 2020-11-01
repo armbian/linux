@@ -613,24 +613,14 @@ static int start_usb_playback(struct ua101 *ua)
 
 static void abort_alsa_capture(struct ua101 *ua)
 {
-	unsigned long flags;
-
-	if (test_bit(ALSA_CAPTURE_RUNNING, &ua->states)) {
-		snd_pcm_stream_lock_irqsave(ua->capture.substream, flags);
-		snd_pcm_stop(ua->capture.substream, SNDRV_PCM_STATE_XRUN);
-		snd_pcm_stream_unlock_irqrestore(ua->capture.substream, flags);
-	}
+	if (test_bit(ALSA_CAPTURE_RUNNING, &ua->states))
+		snd_pcm_stop_xrun(ua->capture.substream);
 }
 
 static void abort_alsa_playback(struct ua101 *ua)
 {
-	unsigned long flags;
-
-	if (test_bit(ALSA_PLAYBACK_RUNNING, &ua->states)) {
-		snd_pcm_stream_lock_irqsave(ua->playback.substream, flags);
-		snd_pcm_stop(ua->playback.substream, SNDRV_PCM_STATE_XRUN);
-		snd_pcm_stream_unlock_irqrestore(ua->playback.substream, flags);
-	}
+	if (test_bit(ALSA_PLAYBACK_RUNNING, &ua->states))
+		snd_pcm_stop_xrun(ua->playback.substream);
 }
 
 static int set_stream_hw(struct ua101 *ua, struct snd_pcm_substream *substream,
@@ -900,7 +890,7 @@ static snd_pcm_uframes_t playback_pcm_pointer(struct snd_pcm_substream *subs)
 	return ua101_pcm_pointer(ua, &ua->playback);
 }
 
-static struct snd_pcm_ops capture_pcm_ops = {
+static const struct snd_pcm_ops capture_pcm_ops = {
 	.open = capture_pcm_open,
 	.close = capture_pcm_close,
 	.ioctl = snd_pcm_lib_ioctl,
@@ -913,7 +903,7 @@ static struct snd_pcm_ops capture_pcm_ops = {
 	.mmap = snd_pcm_lib_mmap_vmalloc,
 };
 
-static struct snd_pcm_ops playback_pcm_ops = {
+static const struct snd_pcm_ops playback_pcm_ops = {
 	.open = playback_pcm_open,
 	.close = playback_pcm_close,
 	.ioctl = snd_pcm_lib_ioctl,
@@ -1047,7 +1037,7 @@ static int detect_usb_format(struct ua101 *ua)
 		return -ENXIO;
 	}
 	ua->capture.usb_pipe = usb_rcvisocpipe(ua->dev, usb_endpoint_num(epd));
-	ua->capture.max_packet_bytes = le16_to_cpu(epd->wMaxPacketSize);
+	ua->capture.max_packet_bytes = usb_endpoint_maxp(epd);
 
 	epd = &ua->intf[INTF_PLAYBACK]->altsetting[1].endpoint[0].desc;
 	if (!usb_endpoint_is_isoc_out(epd)) {
@@ -1055,7 +1045,7 @@ static int detect_usb_format(struct ua101 *ua)
 		return -ENXIO;
 	}
 	ua->playback.usb_pipe = usb_sndisocpipe(ua->dev, usb_endpoint_num(epd));
-	ua->playback.max_packet_bytes = le16_to_cpu(epd->wMaxPacketSize);
+	ua->playback.max_packet_bytes = usb_endpoint_maxp(epd);
 	return 0;
 }
 
@@ -1130,8 +1120,7 @@ static int alloc_stream_urbs(struct ua101 *ua, struct ua101_stream *stream,
 			usb_init_urb(&urb->urb);
 			urb->urb.dev = ua->dev;
 			urb->urb.pipe = stream->usb_pipe;
-			urb->urb.transfer_flags = URB_ISO_ASAP |
-					URB_NO_TRANSFER_DMA_MAP;
+			urb->urb.transfer_flags = URB_NO_TRANSFER_DMA_MAP;
 			urb->urb.transfer_buffer = addr;
 			urb->urb.transfer_dma = dma;
 			urb->urb.transfer_buffer_length = max_packet_size;
@@ -1244,8 +1233,9 @@ static int ua101_probe(struct usb_interface *interface,
 		mutex_unlock(&devices_mutex);
 		return -ENOENT;
 	}
-	err = snd_card_create(index[card_index], id[card_index], THIS_MODULE,
-			      sizeof(*ua), &card);
+	err = snd_card_new(&interface->dev,
+			   index[card_index], id[card_index], THIS_MODULE,
+			   sizeof(*ua), &card);
 	if (err < 0) {
 		mutex_unlock(&devices_mutex);
 		return err;
@@ -1283,8 +1273,6 @@ static int ua101_probe(struct usb_interface *interface,
 			goto probe_error;
 		}
 	}
-
-	snd_card_set_dev(card, &interface->dev);
 
 	err = detect_usb_format(ua);
 	if (err < 0)
@@ -1360,7 +1348,7 @@ static void ua101_disconnect(struct usb_interface *interface)
 	snd_card_disconnect(ua->card);
 
 	/* make sure that there are no pending USB requests */
-	__list_for_each(midi, &ua->midi_list)
+	list_for_each(midi, &ua->midi_list)
 		snd_usbmidi_disconnect(midi);
 	abort_alsa_playback(ua);
 	abort_alsa_capture(ua);
@@ -1378,7 +1366,7 @@ static void ua101_disconnect(struct usb_interface *interface)
 	mutex_unlock(&devices_mutex);
 }
 
-static struct usb_device_id ua101_ids[] = {
+static const struct usb_device_id ua101_ids[] = {
 	{ USB_DEVICE(0x0582, 0x0044) }, /* UA-1000 high speed */
 	{ USB_DEVICE(0x0582, 0x007d) }, /* UA-101 high speed */
 	{ USB_DEVICE(0x0582, 0x008d) }, /* UA-101 full speed */

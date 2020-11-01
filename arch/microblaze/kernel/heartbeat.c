@@ -9,6 +9,7 @@
  */
 
 #include <linux/sched.h>
+#include <linux/sched/loadavg.h>
 #include <linux/io.h>
 
 #include <asm/setup.h>
@@ -17,7 +18,7 @@
 
 static unsigned int base_addr;
 
-void heartbeat(void)
+void microblaze_heartbeat(void)
 {
 	static unsigned int cnt, period, dist;
 
@@ -42,7 +43,7 @@ void heartbeat(void)
 	}
 }
 
-void setup_heartbeat(void)
+void microblaze_setup_heartbeat(void)
 {
 	struct device_node *gpio = NULL;
 	int *prop;
@@ -61,7 +62,7 @@ void setup_heartbeat(void)
 	if (gpio) {
 		base_addr = be32_to_cpup(of_get_property(gpio, "reg", NULL));
 		base_addr = (unsigned long) ioremap(base_addr, PAGE_SIZE);
-		printk(KERN_NOTICE "Heartbeat GPIO at 0x%x\n", base_addr);
+		pr_notice("Heartbeat GPIO at 0x%x\n", base_addr);
 
 		/* GPIO is configured as output */
 		prop = (int *) of_get_property(gpio, "xlnx,is-bidir", NULL);

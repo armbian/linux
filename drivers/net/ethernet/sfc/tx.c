@@ -1,7 +1,7 @@
 /****************************************************************************
- * Driver for Solarflare Solarstorm network controllers and boards
+ * Driver for Solarflare network controllers and boards
  * Copyright 2005-2006 Fen Systems Ltd.
- * Copyright 2005-2010 Solarflare Communications Inc.
+ * Copyright 2005-2013 Solarflare Communications Inc.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 as published
@@ -17,18 +17,47 @@
 #include <net/ipv6.h>
 #include <linux/if_ether.h>
 #include <linux/highmem.h>
+#include <linux/cache.h>
 #include "net_driver.h"
 #include "efx.h"
+#include "io.h"
 #include "nic.h"
+#include "tx.h"
 #include "workarounds.h"
+#include "ef10_regs.h"
 
-/*
- * TX descriptor ring full threshold
- *
- * The tx_queue descriptor ring fill-level must fall below this value
- * before we restart the netif queue
- */
-#define EFX_TXQ_THRESHOLD(_efx) ((_efx)->txq_entries / 2u)
+#ifdef EFX_USE_PIO
+
+#define EFX_PIOBUF_SIZE_DEF ALIGN(256, L1_CACHE_BYTES)
+unsigned int efx_piobuf_size __read_mostly = EFX_PIOBUF_SIZE_DEF;
+
+#endif /* EFX_USE_PIO */
+
+static inline u8 *efx_tx_get_copy_buffer(struct efx_tx_queue *tx_queue,
+					 struct efx_tx_buffer *buffer)
+{
+	unsigned int index = efx_tx_queue_get_insert_index(tx_queue);
+	struct efx_buffer *page_buf =
+		&tx_queue->cb_page[index >> (PAGE_SHIFT - EFX_TX_CB_ORDER)];
+	unsigned int offset =
+		((index << EFX_TX_CB_ORDER) + NET_IP_ALIGN) & (PAGE_SIZE - 1);
+
+	if (unlikely(!page_buf->addr) &&
+	    efx_nic_alloc_buffer(tx_queue->efx, page_buf, PAGE_SIZE,
+				 GFP_ATOMIC))
+		return NULL;
+	buffer->dma_addr = page_buf->dma_addr + offset;
+	buffer->unmap_len = 0;
+	return (u8 *)page_buf->addr + offset;
+}
+
+u8 *efx_tx_get_copy_buffer_limited(struct efx_tx_queue *tx_queue,
+				   struct efx_tx_buffer *buffer, size_t len)
+{
+	if (len > EFX_TX_CB_SIZE)
+		return NULL;
+	return efx_tx_get_copy_buffer(tx_queue, buffer);
+}
 
 static void efx_dequeue_buffer(struct efx_tx_queue *tx_queue,
 			       struct efx_tx_buffer *buffer,
@@ -36,87 +65,29 @@ static void efx_dequeue_buffer(struct efx_tx_queue *tx_queue,
 			       unsigned int *bytes_compl)
 {
 	if (buffer->unmap_len) {
-		struct pci_dev *pci_dev = tx_queue->efx->pci_dev;
-		dma_addr_t unmap_addr = (buffer->dma_addr + buffer->len -
-					 buffer->unmap_len);
-		if (buffer->unmap_single)
-			pci_unmap_single(pci_dev, unmap_addr, buffer->unmap_len,
-					 PCI_DMA_TODEVICE);
+		struct device *dma_dev = &tx_queue->efx->pci_dev->dev;
+		dma_addr_t unmap_addr = buffer->dma_addr - buffer->dma_offset;
+		if (buffer->flags & EFX_TX_BUF_MAP_SINGLE)
+			dma_unmap_single(dma_dev, unmap_addr, buffer->unmap_len,
+					 DMA_TO_DEVICE);
 		else
-			pci_unmap_page(pci_dev, unmap_addr, buffer->unmap_len,
-				       PCI_DMA_TODEVICE);
+			dma_unmap_page(dma_dev, unmap_addr, buffer->unmap_len,
+				       DMA_TO_DEVICE);
 		buffer->unmap_len = 0;
-		buffer->unmap_single = false;
 	}
 
-	if (buffer->skb) {
+	if (buffer->flags & EFX_TX_BUF_SKB) {
+		EFX_WARN_ON_PARANOID(!pkts_compl || !bytes_compl);
 		(*pkts_compl)++;
 		(*bytes_compl) += buffer->skb->len;
-		dev_kfree_skb_any((struct sk_buff *) buffer->skb);
-		buffer->skb = NULL;
+		dev_consume_skb_any((struct sk_buff *)buffer->skb);
 		netif_vdbg(tx_queue->efx, tx_done, tx_queue->efx->net_dev,
 			   "TX queue %d transmission id %x complete\n",
 			   tx_queue->queue, tx_queue->read_count);
 	}
-}
 
-/**
- * struct efx_tso_header - a DMA mapped buffer for packet headers
- * @next: Linked list of free ones.
- *	The list is protected by the TX queue lock.
- * @dma_unmap_len: Length to unmap for an oversize buffer, or 0.
- * @dma_addr: The DMA address of the header below.
- *
- * This controls the memory used for a TSO header.  Use TSOH_DATA()
- * to find the packet header data.  Use TSOH_SIZE() to calculate the
- * total size required for a given packet header length.  TSO headers
- * in the free list are exactly %TSOH_STD_SIZE bytes in size.
- */
-struct efx_tso_header {
-	union {
-		struct efx_tso_header *next;
-		size_t unmap_len;
-	};
-	dma_addr_t dma_addr;
-};
-
-static int efx_enqueue_skb_tso(struct efx_tx_queue *tx_queue,
-			       struct sk_buff *skb);
-static void efx_fini_tso(struct efx_tx_queue *tx_queue);
-static void efx_tsoh_heap_free(struct efx_tx_queue *tx_queue,
-			       struct efx_tso_header *tsoh);
-
-static void efx_tsoh_free(struct efx_tx_queue *tx_queue,
-			  struct efx_tx_buffer *buffer)
-{
-	if (buffer->tsoh) {
-		if (likely(!buffer->tsoh->unmap_len)) {
-			buffer->tsoh->next = tx_queue->tso_headers_free;
-			tx_queue->tso_headers_free = buffer->tsoh;
-		} else {
-			efx_tsoh_heap_free(tx_queue, buffer->tsoh);
-		}
-		buffer->tsoh = NULL;
-	}
-}
-
-
-static inline unsigned
-efx_max_tx_len(struct efx_nic *efx, dma_addr_t dma_addr)
-{
-	/* Depending on the NIC revision, we can use descriptor
-	 * lengths up to 8K or 8K-1.  However, since PCI Express
-	 * devices must split read requests at 4K boundaries, there is
-	 * little benefit from using descriptors that cross those
-	 * boundaries and we keep things simple by not doing so.
-	 */
-	unsigned len = (~dma_addr & (EFX_PAGE_SIZE - 1)) + 1;
-
-	/* Work around hardware bug for unaligned buffers. */
-	if (EFX_WORKAROUND_5391(efx) && (dma_addr & 0xf))
-		len = min_t(unsigned, len, 512 - (dma_addr & 0xf));
-
-	return len;
+	buffer->len = 0;
+	buffer->flags = 0;
 }
 
 unsigned int efx_tx_max_skb_descs(struct efx_nic *efx)
@@ -126,8 +97,8 @@ unsigned int efx_tx_max_skb_descs(struct efx_nic *efx)
 	 */
 	unsigned int max_descs = EFX_TSO_MAX_SEGS * 2 + MAX_SKB_FRAGS;
 
-	/* Possibly one more per segment for the alignment workaround */
-	if (EFX_WORKAROUND_5391(efx))
+	/* Possibly one more per segment for option descriptors */
+	if (efx_nic_rev(efx) >= EFX_REV_HUNT_A0)
 		max_descs += EFX_TSO_MAX_SEGS;
 
 	/* Possibly more for PCIe page boundaries within input fragments */
@@ -136,6 +107,369 @@ unsigned int efx_tx_max_skb_descs(struct efx_nic *efx)
 				   DIV_ROUND_UP(GSO_MAX_SIZE, EFX_PAGE_SIZE));
 
 	return max_descs;
+}
+
+static void efx_tx_maybe_stop_queue(struct efx_tx_queue *txq1)
+{
+	/* We need to consider both queues that the net core sees as one */
+	struct efx_tx_queue *txq2 = efx_tx_queue_partner(txq1);
+	struct efx_nic *efx = txq1->efx;
+	unsigned int fill_level;
+
+	fill_level = max(txq1->insert_count - txq1->old_read_count,
+			 txq2->insert_count - txq2->old_read_count);
+	if (likely(fill_level < efx->txq_stop_thresh))
+		return;
+
+	/* We used the stale old_read_count above, which gives us a
+	 * pessimistic estimate of the fill level (which may even
+	 * validly be >= efx->txq_entries).  Now try again using
+	 * read_count (more likely to be a cache miss).
+	 *
+	 * If we read read_count and then conditionally stop the
+	 * queue, it is possible for the completion path to race with
+	 * us and complete all outstanding descriptors in the middle,
+	 * after which there will be no more completions to wake it.
+	 * Therefore we stop the queue first, then read read_count
+	 * (with a memory barrier to ensure the ordering), then
+	 * restart the queue if the fill level turns out to be low
+	 * enough.
+	 */
+	netif_tx_stop_queue(txq1->core_txq);
+	smp_mb();
+	txq1->old_read_count = ACCESS_ONCE(txq1->read_count);
+	txq2->old_read_count = ACCESS_ONCE(txq2->read_count);
+
+	fill_level = max(txq1->insert_count - txq1->old_read_count,
+			 txq2->insert_count - txq2->old_read_count);
+	EFX_WARN_ON_ONCE_PARANOID(fill_level >= efx->txq_entries);
+	if (likely(fill_level < efx->txq_stop_thresh)) {
+		smp_mb();
+		if (likely(!efx->loopback_selftest))
+			netif_tx_start_queue(txq1->core_txq);
+	}
+}
+
+static int efx_enqueue_skb_copy(struct efx_tx_queue *tx_queue,
+				struct sk_buff *skb)
+{
+	unsigned int copy_len = skb->len;
+	struct efx_tx_buffer *buffer;
+	u8 *copy_buffer;
+	int rc;
+
+	EFX_WARN_ON_ONCE_PARANOID(copy_len > EFX_TX_CB_SIZE);
+
+	buffer = efx_tx_queue_get_insert_buffer(tx_queue);
+
+	copy_buffer = efx_tx_get_copy_buffer(tx_queue, buffer);
+	if (unlikely(!copy_buffer))
+		return -ENOMEM;
+
+	rc = skb_copy_bits(skb, 0, copy_buffer, copy_len);
+	EFX_WARN_ON_PARANOID(rc);
+	buffer->len = copy_len;
+
+	buffer->skb = skb;
+	buffer->flags = EFX_TX_BUF_SKB;
+
+	++tx_queue->insert_count;
+	return rc;
+}
+
+#ifdef EFX_USE_PIO
+
+struct efx_short_copy_buffer {
+	int used;
+	u8 buf[L1_CACHE_BYTES];
+};
+
+/* Copy to PIO, respecting that writes to PIO buffers must be dword aligned.
+ * Advances piobuf pointer. Leaves additional data in the copy buffer.
+ */
+static void efx_memcpy_toio_aligned(struct efx_nic *efx, u8 __iomem **piobuf,
+				    u8 *data, int len,
+				    struct efx_short_copy_buffer *copy_buf)
+{
+	int block_len = len & ~(sizeof(copy_buf->buf) - 1);
+
+	__iowrite64_copy(*piobuf, data, block_len >> 3);
+	*piobuf += block_len;
+	len -= block_len;
+
+	if (len) {
+		data += block_len;
+		BUG_ON(copy_buf->used);
+		BUG_ON(len > sizeof(copy_buf->buf));
+		memcpy(copy_buf->buf, data, len);
+		copy_buf->used = len;
+	}
+}
+
+/* Copy to PIO, respecting dword alignment, popping data from copy buffer first.
+ * Advances piobuf pointer. Leaves additional data in the copy buffer.
+ */
+static void efx_memcpy_toio_aligned_cb(struct efx_nic *efx, u8 __iomem **piobuf,
+				       u8 *data, int len,
+				       struct efx_short_copy_buffer *copy_buf)
+{
+	if (copy_buf->used) {
+		/* if the copy buffer is partially full, fill it up and write */
+		int copy_to_buf =
+			min_t(int, sizeof(copy_buf->buf) - copy_buf->used, len);
+
+		memcpy(copy_buf->buf + copy_buf->used, data, copy_to_buf);
+		copy_buf->used += copy_to_buf;
+
+		/* if we didn't fill it up then we're done for now */
+		if (copy_buf->used < sizeof(copy_buf->buf))
+			return;
+
+		__iowrite64_copy(*piobuf, copy_buf->buf,
+				 sizeof(copy_buf->buf) >> 3);
+		*piobuf += sizeof(copy_buf->buf);
+		data += copy_to_buf;
+		len -= copy_to_buf;
+		copy_buf->used = 0;
+	}
+
+	efx_memcpy_toio_aligned(efx, piobuf, data, len, copy_buf);
+}
+
+static void efx_flush_copy_buffer(struct efx_nic *efx, u8 __iomem *piobuf,
+				  struct efx_short_copy_buffer *copy_buf)
+{
+	/* if there's anything in it, write the whole buffer, including junk */
+	if (copy_buf->used)
+		__iowrite64_copy(piobuf, copy_buf->buf,
+				 sizeof(copy_buf->buf) >> 3);
+}
+
+/* Traverse skb structure and copy fragments in to PIO buffer.
+ * Advances piobuf pointer.
+ */
+static void efx_skb_copy_bits_to_pio(struct efx_nic *efx, struct sk_buff *skb,
+				     u8 __iomem **piobuf,
+				     struct efx_short_copy_buffer *copy_buf)
+{
+	int i;
+
+	efx_memcpy_toio_aligned(efx, piobuf, skb->data, skb_headlen(skb),
+				copy_buf);
+
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; ++i) {
+		skb_frag_t *f = &skb_shinfo(skb)->frags[i];
+		u8 *vaddr;
+
+		vaddr = kmap_atomic(skb_frag_page(f));
+
+		efx_memcpy_toio_aligned_cb(efx, piobuf, vaddr + f->page_offset,
+					   skb_frag_size(f), copy_buf);
+		kunmap_atomic(vaddr);
+	}
+
+	EFX_WARN_ON_ONCE_PARANOID(skb_shinfo(skb)->frag_list);
+}
+
+static int efx_enqueue_skb_pio(struct efx_tx_queue *tx_queue,
+			       struct sk_buff *skb)
+{
+	struct efx_tx_buffer *buffer =
+		efx_tx_queue_get_insert_buffer(tx_queue);
+	u8 __iomem *piobuf = tx_queue->piobuf;
+
+	/* Copy to PIO buffer. Ensure the writes are padded to the end
+	 * of a cache line, as this is required for write-combining to be
+	 * effective on at least x86.
+	 */
+
+	if (skb_shinfo(skb)->nr_frags) {
+		/* The size of the copy buffer will ensure all writes
+		 * are the size of a cache line.
+		 */
+		struct efx_short_copy_buffer copy_buf;
+
+		copy_buf.used = 0;
+
+		efx_skb_copy_bits_to_pio(tx_queue->efx, skb,
+					 &piobuf, &copy_buf);
+		efx_flush_copy_buffer(tx_queue->efx, piobuf, &copy_buf);
+	} else {
+		/* Pad the write to the size of a cache line.
+		 * We can do this because we know the skb_shared_info struct is
+		 * after the source, and the destination buffer is big enough.
+		 */
+		BUILD_BUG_ON(L1_CACHE_BYTES >
+			     SKB_DATA_ALIGN(sizeof(struct skb_shared_info)));
+		__iowrite64_copy(tx_queue->piobuf, skb->data,
+				 ALIGN(skb->len, L1_CACHE_BYTES) >> 3);
+	}
+
+	buffer->skb = skb;
+	buffer->flags = EFX_TX_BUF_SKB | EFX_TX_BUF_OPTION;
+
+	EFX_POPULATE_QWORD_5(buffer->option,
+			     ESF_DZ_TX_DESC_IS_OPT, 1,
+			     ESF_DZ_TX_OPTION_TYPE, ESE_DZ_TX_OPTION_DESC_PIO,
+			     ESF_DZ_TX_PIO_CONT, 0,
+			     ESF_DZ_TX_PIO_BYTE_CNT, skb->len,
+			     ESF_DZ_TX_PIO_BUF_ADDR,
+			     tx_queue->piobuf_offset);
+	++tx_queue->insert_count;
+	return 0;
+}
+#endif /* EFX_USE_PIO */
+
+static struct efx_tx_buffer *efx_tx_map_chunk(struct efx_tx_queue *tx_queue,
+					      dma_addr_t dma_addr,
+					      size_t len)
+{
+	const struct efx_nic_type *nic_type = tx_queue->efx->type;
+	struct efx_tx_buffer *buffer;
+	unsigned int dma_len;
+
+	/* Map the fragment taking account of NIC-dependent DMA limits. */
+	do {
+		buffer = efx_tx_queue_get_insert_buffer(tx_queue);
+		dma_len = nic_type->tx_limit_len(tx_queue, dma_addr, len);
+
+		buffer->len = dma_len;
+		buffer->dma_addr = dma_addr;
+		buffer->flags = EFX_TX_BUF_CONT;
+		len -= dma_len;
+		dma_addr += dma_len;
+		++tx_queue->insert_count;
+	} while (len);
+
+	return buffer;
+}
+
+/* Map all data from an SKB for DMA and create descriptors on the queue.
+ */
+static int efx_tx_map_data(struct efx_tx_queue *tx_queue, struct sk_buff *skb,
+			   unsigned int segment_count)
+{
+	struct efx_nic *efx = tx_queue->efx;
+	struct device *dma_dev = &efx->pci_dev->dev;
+	unsigned int frag_index, nr_frags;
+	dma_addr_t dma_addr, unmap_addr;
+	unsigned short dma_flags;
+	size_t len, unmap_len;
+
+	nr_frags = skb_shinfo(skb)->nr_frags;
+	frag_index = 0;
+
+	/* Map header data. */
+	len = skb_headlen(skb);
+	dma_addr = dma_map_single(dma_dev, skb->data, len, DMA_TO_DEVICE);
+	dma_flags = EFX_TX_BUF_MAP_SINGLE;
+	unmap_len = len;
+	unmap_addr = dma_addr;
+
+	if (unlikely(dma_mapping_error(dma_dev, dma_addr)))
+		return -EIO;
+
+	if (segment_count) {
+		/* For TSO we need to put the header in to a separate
+		 * descriptor. Map this separately if necessary.
+		 */
+		size_t header_len = skb_transport_header(skb) - skb->data +
+				(tcp_hdr(skb)->doff << 2u);
+
+		if (header_len != len) {
+			tx_queue->tso_long_headers++;
+			efx_tx_map_chunk(tx_queue, dma_addr, header_len);
+			len -= header_len;
+			dma_addr += header_len;
+		}
+	}
+
+	/* Add descriptors for each fragment. */
+	do {
+		struct efx_tx_buffer *buffer;
+		skb_frag_t *fragment;
+
+		buffer = efx_tx_map_chunk(tx_queue, dma_addr, len);
+
+		/* The final descriptor for a fragment is responsible for
+		 * unmapping the whole fragment.
+		 */
+		buffer->flags = EFX_TX_BUF_CONT | dma_flags;
+		buffer->unmap_len = unmap_len;
+		buffer->dma_offset = buffer->dma_addr - unmap_addr;
+
+		if (frag_index >= nr_frags) {
+			/* Store SKB details with the final buffer for
+			 * the completion.
+			 */
+			buffer->skb = skb;
+			buffer->flags = EFX_TX_BUF_SKB | dma_flags;
+			return 0;
+		}
+
+		/* Move on to the next fragment. */
+		fragment = &skb_shinfo(skb)->frags[frag_index++];
+		len = skb_frag_size(fragment);
+		dma_addr = skb_frag_dma_map(dma_dev, fragment,
+				0, len, DMA_TO_DEVICE);
+		dma_flags = 0;
+		unmap_len = len;
+		unmap_addr = dma_addr;
+
+		if (unlikely(dma_mapping_error(dma_dev, dma_addr)))
+			return -EIO;
+	} while (1);
+}
+
+/* Remove buffers put into a tx_queue.  None of the buffers must have
+ * an skb attached.
+ */
+static void efx_enqueue_unwind(struct efx_tx_queue *tx_queue)
+{
+	struct efx_tx_buffer *buffer;
+	unsigned int bytes_compl = 0;
+	unsigned int pkts_compl = 0;
+
+	/* Work backwards until we hit the original insert pointer value */
+	while (tx_queue->insert_count != tx_queue->write_count) {
+		--tx_queue->insert_count;
+		buffer = __efx_tx_queue_get_insert_buffer(tx_queue);
+		efx_dequeue_buffer(tx_queue, buffer, &pkts_compl, &bytes_compl);
+	}
+}
+
+/*
+ * Fallback to software TSO.
+ *
+ * This is used if we are unable to send a GSO packet through hardware TSO.
+ * This should only ever happen due to per-queue restrictions - unsupported
+ * packets should first be filtered by the feature flags.
+ *
+ * Returns 0 on success, error code otherwise.
+ */
+static int efx_tx_tso_fallback(struct efx_tx_queue *tx_queue,
+			       struct sk_buff *skb)
+{
+	struct sk_buff *segments, *next;
+
+	segments = skb_gso_segment(skb, 0);
+	if (IS_ERR(segments))
+		return PTR_ERR(segments);
+
+	dev_kfree_skb_any(skb);
+	skb = segments;
+
+	while (skb) {
+		next = skb->next;
+		skb->next = NULL;
+
+		if (next)
+			skb->xmit_more = true;
+		efx_enqueue_skb(tx_queue, skb);
+		skb = next;
+	}
+
+	return 0;
 }
 
 /*
@@ -151,166 +485,93 @@ unsigned int efx_tx_max_skb_descs(struct efx_nic *efx)
  * This function is split out from efx_hard_start_xmit to allow the
  * loopback test to direct packets via specific TX queues.
  *
- * Returns NETDEV_TX_OK or NETDEV_TX_BUSY
+ * Returns NETDEV_TX_OK.
  * You must hold netif_tx_lock() to call this function.
  */
 netdev_tx_t efx_enqueue_skb(struct efx_tx_queue *tx_queue, struct sk_buff *skb)
 {
-	struct efx_nic *efx = tx_queue->efx;
-	struct pci_dev *pci_dev = efx->pci_dev;
-	struct efx_tx_buffer *buffer;
-	skb_frag_t *fragment;
-	unsigned int len, unmap_len = 0, fill_level, insert_ptr;
-	dma_addr_t dma_addr, unmap_addr = 0;
-	unsigned int dma_len;
-	bool unmap_single;
-	int q_space, i = 0;
-	netdev_tx_t rc = NETDEV_TX_OK;
+	bool data_mapped = false;
+	unsigned int segments;
+	unsigned int skb_len;
+	int rc;
 
-	EFX_BUG_ON_PARANOID(tx_queue->write_count != tx_queue->insert_count);
+	skb_len = skb->len;
+	segments = skb_is_gso(skb) ? skb_shinfo(skb)->gso_segs : 0;
+	if (segments == 1)
+		segments = 0; /* Don't use TSO for a single segment. */
 
-	if (skb_shinfo(skb)->gso_size)
-		return efx_enqueue_skb_tso(tx_queue, skb);
-
-	/* Get size of the initial fragment */
-	len = skb_headlen(skb);
-
-	/* Pad if necessary */
-	if (EFX_WORKAROUND_15592(efx) && skb->len <= 32) {
-		EFX_BUG_ON_PARANOID(skb->data_len);
-		len = 32 + 1;
-		if (skb_pad(skb, len - skb->len))
-			return NETDEV_TX_OK;
-	}
-
-	fill_level = tx_queue->insert_count - tx_queue->old_read_count;
-	q_space = efx->txq_entries - 1 - fill_level;
-
-	/* Map for DMA.  Use pci_map_single rather than pci_map_page
-	 * since this is more efficient on machines with sparse
-	 * memory.
+	/* Handle TSO first - it's *possible* (although unlikely) that we might
+	 * be passed a packet to segment that's smaller than the copybreak/PIO
+	 * size limit.
 	 */
-	unmap_single = true;
-	dma_addr = pci_map_single(pci_dev, skb->data, len, PCI_DMA_TODEVICE);
-
-	/* Process all fragments */
-	while (1) {
-		if (unlikely(pci_dma_mapping_error(pci_dev, dma_addr)))
-			goto pci_err;
-
-		/* Store fields for marking in the per-fragment final
-		 * descriptor */
-		unmap_len = len;
-		unmap_addr = dma_addr;
-
-		/* Add to TX queue, splitting across DMA boundaries */
-		do {
-			if (unlikely(q_space-- <= 0)) {
-				/* It might be that completions have
-				 * happened since the xmit path last
-				 * checked.  Update the xmit path's
-				 * copy of read_count.
-				 */
-				netif_tx_stop_queue(tx_queue->core_txq);
-				/* This memory barrier protects the
-				 * change of queue state from the access
-				 * of read_count. */
-				smp_mb();
-				tx_queue->old_read_count =
-					ACCESS_ONCE(tx_queue->read_count);
-				fill_level = (tx_queue->insert_count
-					      - tx_queue->old_read_count);
-				q_space = efx->txq_entries - 1 - fill_level;
-				if (unlikely(q_space-- <= 0)) {
-					rc = NETDEV_TX_BUSY;
-					goto unwind;
-				}
-				smp_mb();
-				if (likely(!efx->loopback_selftest))
-					netif_tx_start_queue(
-						tx_queue->core_txq);
-			}
-
-			insert_ptr = tx_queue->insert_count & tx_queue->ptr_mask;
-			buffer = &tx_queue->buffer[insert_ptr];
-			efx_tsoh_free(tx_queue, buffer);
-			EFX_BUG_ON_PARANOID(buffer->tsoh);
-			EFX_BUG_ON_PARANOID(buffer->skb);
-			EFX_BUG_ON_PARANOID(buffer->len);
-			EFX_BUG_ON_PARANOID(!buffer->continuation);
-			EFX_BUG_ON_PARANOID(buffer->unmap_len);
-
-			dma_len = efx_max_tx_len(efx, dma_addr);
-			if (likely(dma_len >= len))
-				dma_len = len;
-
-			/* Fill out per descriptor fields */
-			buffer->len = dma_len;
-			buffer->dma_addr = dma_addr;
-			len -= dma_len;
-			dma_addr += dma_len;
-			++tx_queue->insert_count;
-		} while (len);
-
-		/* Transfer ownership of the unmapping to the final buffer */
-		buffer->unmap_single = unmap_single;
-		buffer->unmap_len = unmap_len;
-		unmap_len = 0;
-
-		/* Get address and size of next fragment */
-		if (i >= skb_shinfo(skb)->nr_frags)
-			break;
-		fragment = &skb_shinfo(skb)->frags[i];
-		len = skb_frag_size(fragment);
-		i++;
-		/* Map for DMA */
-		unmap_single = false;
-		dma_addr = skb_frag_dma_map(&pci_dev->dev, fragment, 0, len,
-					    DMA_TO_DEVICE);
+	if (segments) {
+		EFX_WARN_ON_ONCE_PARANOID(!tx_queue->handle_tso);
+		rc = tx_queue->handle_tso(tx_queue, skb, &data_mapped);
+		if (rc == -EINVAL) {
+			rc = efx_tx_tso_fallback(tx_queue, skb);
+			tx_queue->tso_fallbacks++;
+			if (rc == 0)
+				return 0;
+		}
+		if (rc)
+			goto err;
+#ifdef EFX_USE_PIO
+	} else if (skb_len <= efx_piobuf_size && !skb->xmit_more &&
+		   efx_nic_may_tx_pio(tx_queue)) {
+		/* Use PIO for short packets with an empty queue. */
+		if (efx_enqueue_skb_pio(tx_queue, skb))
+			goto err;
+		tx_queue->pio_packets++;
+		data_mapped = true;
+#endif
+	} else if (skb->data_len && skb_len <= EFX_TX_CB_SIZE) {
+		/* Pad short packets or coalesce short fragmented packets. */
+		if (efx_enqueue_skb_copy(tx_queue, skb))
+			goto err;
+		tx_queue->cb_packets++;
+		data_mapped = true;
 	}
 
-	/* Transfer ownership of the skb to the final buffer */
-	buffer->skb = skb;
-	buffer->continuation = false;
+	/* Map for DMA and create descriptors if we haven't done so already. */
+	if (!data_mapped && (efx_tx_map_data(tx_queue, skb, segments)))
+		goto err;
 
-	netdev_tx_sent_queue(tx_queue->core_txq, skb->len);
+	/* Update BQL */
+	netdev_tx_sent_queue(tx_queue->core_txq, skb_len);
 
 	/* Pass off to hardware */
-	efx_nic_push_buffers(tx_queue);
+	if (!skb->xmit_more || netif_xmit_stopped(tx_queue->core_txq)) {
+		struct efx_tx_queue *txq2 = efx_tx_queue_partner(tx_queue);
+
+		/* There could be packets left on the partner queue if those
+		 * SKBs had skb->xmit_more set. If we do not push those they
+		 * could be left for a long time and cause a netdev watchdog.
+		 */
+		if (txq2->xmit_more_available)
+			efx_nic_push_buffers(txq2);
+
+		efx_nic_push_buffers(tx_queue);
+	} else {
+		tx_queue->xmit_more_available = skb->xmit_more;
+	}
+
+	if (segments) {
+		tx_queue->tso_bursts++;
+		tx_queue->tso_packets += segments;
+		tx_queue->tx_packets  += segments;
+	} else {
+		tx_queue->tx_packets++;
+	}
+
+	efx_tx_maybe_stop_queue(tx_queue);
 
 	return NETDEV_TX_OK;
 
- pci_err:
-	netif_err(efx, tx_err, efx->net_dev,
-		  " TX queue %d could not map skb with %d bytes %d "
-		  "fragments for DMA\n", tx_queue->queue, skb->len,
-		  skb_shinfo(skb)->nr_frags + 1);
 
-	/* Mark the packet as transmitted, and free the SKB ourselves */
+err:
+	efx_enqueue_unwind(tx_queue);
 	dev_kfree_skb_any(skb);
-
- unwind:
-	/* Work backwards until we hit the original insert pointer value */
-	while (tx_queue->insert_count != tx_queue->write_count) {
-		unsigned int pkts_compl = 0, bytes_compl = 0;
-		--tx_queue->insert_count;
-		insert_ptr = tx_queue->insert_count & tx_queue->ptr_mask;
-		buffer = &tx_queue->buffer[insert_ptr];
-		efx_dequeue_buffer(tx_queue, buffer, &pkts_compl, &bytes_compl);
-		buffer->len = 0;
-	}
-
-	/* Free the fragment we were mid-way through pushing */
-	if (unmap_len) {
-		if (unmap_single)
-			pci_unmap_single(pci_dev, unmap_addr, unmap_len,
-					 PCI_DMA_TODEVICE);
-		else
-			pci_unmap_page(pci_dev, unmap_addr, unmap_len,
-				       PCI_DMA_TODEVICE);
-	}
-
-	return rc;
+	return NETDEV_TX_OK;
 }
 
 /* Remove packets from the TX queue
@@ -331,7 +592,9 @@ static void efx_dequeue_buffers(struct efx_tx_queue *tx_queue,
 
 	while (read_ptr != stop_index) {
 		struct efx_tx_buffer *buffer = &tx_queue->buffer[read_ptr];
-		if (unlikely(buffer->len == 0)) {
+
+		if (!(buffer->flags & EFX_TX_BUF_OPTION) &&
+		    unlikely(buffer->len == 0)) {
 			netif_err(efx, tx_err, efx->net_dev,
 				  "TX queue %d spurious TX completion id %x\n",
 				  tx_queue->queue, read_ptr);
@@ -340,8 +603,6 @@ static void efx_dequeue_buffers(struct efx_tx_queue *tx_queue,
 		}
 
 		efx_dequeue_buffer(tx_queue, buffer, pkts_compl, bytes_compl);
-		buffer->continuation = true;
-		buffer->len = 0;
 
 		++tx_queue->read_count;
 		read_ptr = tx_queue->read_count & tx_queue->ptr_mask;
@@ -366,6 +627,12 @@ netdev_tx_t efx_hard_start_xmit(struct sk_buff *skb,
 
 	EFX_WARN_ON_PARANOID(!netif_device_present(net_dev));
 
+	/* PTP "event" packet */
+	if (unlikely(efx_xmit_with_hwtstamp(skb)) &&
+	    unlikely(efx_ptp_is_ptp_tx(efx, skb))) {
+		return efx_ptp_tx(efx, skb);
+	}
+
 	index = skb_get_queue_mapping(skb);
 	type = skb->ip_summed == CHECKSUM_PARTIAL ? EFX_TXQ_TYPE_OFFLOAD : 0;
 	if (index >= efx->n_tx_channels) {
@@ -389,16 +656,25 @@ void efx_init_tx_queue_core_txq(struct efx_tx_queue *tx_queue)
 				     efx->n_tx_channels : 0));
 }
 
-int efx_setup_tc(struct net_device *net_dev, u8 num_tc)
+int efx_setup_tc(struct net_device *net_dev, enum tc_setup_type type,
+		 void *type_data)
 {
 	struct efx_nic *efx = netdev_priv(net_dev);
+	struct tc_mqprio_qopt *mqprio = type_data;
 	struct efx_channel *channel;
 	struct efx_tx_queue *tx_queue;
-	unsigned tc;
+	unsigned tc, num_tc;
 	int rc;
 
-	if (efx_nic_rev(efx) < EFX_REV_FALCON_B0 || num_tc > EFX_MAX_TX_TC)
+	if (type != TC_SETUP_MQPRIO)
+		return -EOPNOTSUPP;
+
+	num_tc = mqprio->num_tc;
+
+	if (num_tc > EFX_MAX_TX_TC)
 		return -EINVAL;
+
+	mqprio->hw = TC_MQPRIO_HW_OFFLOAD_TCS;
 
 	if (num_tc == net_dev->num_tc)
 		return 0;
@@ -450,22 +726,30 @@ void efx_xmit_done(struct efx_tx_queue *tx_queue, unsigned int index)
 {
 	unsigned fill_level;
 	struct efx_nic *efx = tx_queue->efx;
+	struct efx_tx_queue *txq2;
 	unsigned int pkts_compl = 0, bytes_compl = 0;
 
-	EFX_BUG_ON_PARANOID(index > tx_queue->ptr_mask);
+	EFX_WARN_ON_ONCE_PARANOID(index > tx_queue->ptr_mask);
 
 	efx_dequeue_buffers(tx_queue, index, &pkts_compl, &bytes_compl);
-	netdev_tx_completed_queue(tx_queue->core_txq, pkts_compl, bytes_compl);
+	tx_queue->pkts_compl += pkts_compl;
+	tx_queue->bytes_compl += bytes_compl;
 
-	/* See if we need to restart the netif queue.  This barrier
-	 * separates the update of read_count from the test of the
-	 * queue state. */
+	if (pkts_compl > 1)
+		++tx_queue->merge_events;
+
+	/* See if we need to restart the netif queue.  This memory
+	 * barrier ensures that we write read_count (inside
+	 * efx_dequeue_buffers()) before reading the queue status.
+	 */
 	smp_mb();
 	if (unlikely(netif_tx_queue_stopped(tx_queue->core_txq)) &&
 	    likely(efx->port_enabled) &&
 	    likely(netif_device_present(efx->net_dev))) {
-		fill_level = tx_queue->insert_count - tx_queue->read_count;
-		if (fill_level < EFX_TXQ_THRESHOLD(efx))
+		txq2 = efx_tx_queue_partner(tx_queue);
+		fill_level = max(tx_queue->insert_count - tx_queue->read_count,
+				 txq2->insert_count - txq2->read_count);
+		if (fill_level <= efx->txq_wake_thresh)
 			netif_tx_wake_queue(tx_queue->core_txq);
 	}
 
@@ -480,15 +764,20 @@ void efx_xmit_done(struct efx_tx_queue *tx_queue, unsigned int index)
 	}
 }
 
+static unsigned int efx_tx_cb_page_count(struct efx_tx_queue *tx_queue)
+{
+	return DIV_ROUND_UP(tx_queue->ptr_mask + 1, PAGE_SIZE >> EFX_TX_CB_ORDER);
+}
+
 int efx_probe_tx_queue(struct efx_tx_queue *tx_queue)
 {
 	struct efx_nic *efx = tx_queue->efx;
 	unsigned int entries;
-	int i, rc;
+	int rc;
 
 	/* Create the smallest power-of-two aligned ring */
 	entries = max(roundup_pow_of_two(efx->txq_entries), EFX_MIN_DMAQ_SIZE);
-	EFX_BUG_ON_PARANOID(entries > EFX_MAX_DMAQ_SIZE);
+	EFX_WARN_ON_PARANOID(entries > EFX_MAX_DMAQ_SIZE);
 	tx_queue->ptr_mask = entries - 1;
 
 	netif_dbg(efx, probe, efx->net_dev,
@@ -500,17 +789,25 @@ int efx_probe_tx_queue(struct efx_tx_queue *tx_queue)
 				   GFP_KERNEL);
 	if (!tx_queue->buffer)
 		return -ENOMEM;
-	for (i = 0; i <= tx_queue->ptr_mask; ++i)
-		tx_queue->buffer[i].continuation = true;
+
+	tx_queue->cb_page = kcalloc(efx_tx_cb_page_count(tx_queue),
+				    sizeof(tx_queue->cb_page[0]), GFP_KERNEL);
+	if (!tx_queue->cb_page) {
+		rc = -ENOMEM;
+		goto fail1;
+	}
 
 	/* Allocate hardware ring */
 	rc = efx_nic_probe_tx(tx_queue);
 	if (rc)
-		goto fail;
+		goto fail2;
 
 	return 0;
 
- fail:
+fail2:
+	kfree(tx_queue->cb_page);
+	tx_queue->cb_page = NULL;
+fail1:
 	kfree(tx_queue->buffer);
 	tx_queue->buffer = NULL;
 	return rc;
@@ -518,15 +815,24 @@ int efx_probe_tx_queue(struct efx_tx_queue *tx_queue)
 
 void efx_init_tx_queue(struct efx_tx_queue *tx_queue)
 {
-	netif_dbg(tx_queue->efx, drv, tx_queue->efx->net_dev,
+	struct efx_nic *efx = tx_queue->efx;
+
+	netif_dbg(efx, drv, efx->net_dev,
 		  "initialising TX queue %d\n", tx_queue->queue);
 
 	tx_queue->insert_count = 0;
 	tx_queue->write_count = 0;
+	tx_queue->packet_write_count = 0;
 	tx_queue->old_write_count = 0;
 	tx_queue->read_count = 0;
 	tx_queue->old_read_count = 0;
 	tx_queue->empty_read_count = 0 | EFX_EMPTY_COUNT_VALID;
+	tx_queue->xmit_more_available = false;
+
+	/* Set up default function pointers. These may get replaced by
+	 * efx_nic_init_tx() based off NIC/queue capabilities.
+	 */
+	tx_queue->handle_tso = efx_enqueue_skb_tso;
 
 	/* Set up TX descriptor ring */
 	efx_nic_init_tx(tx_queue);
@@ -534,9 +840,12 @@ void efx_init_tx_queue(struct efx_tx_queue *tx_queue)
 	tx_queue->initialised = true;
 }
 
-void efx_release_tx_buffers(struct efx_tx_queue *tx_queue)
+void efx_fini_tx_queue(struct efx_tx_queue *tx_queue)
 {
 	struct efx_tx_buffer *buffer;
+
+	netif_dbg(tx_queue->efx, drv, tx_queue->efx->net_dev,
+		  "shutting down TX queue %d\n", tx_queue->queue);
 
 	if (!tx_queue->buffer)
 		return;
@@ -546,35 +855,17 @@ void efx_release_tx_buffers(struct efx_tx_queue *tx_queue)
 		unsigned int pkts_compl = 0, bytes_compl = 0;
 		buffer = &tx_queue->buffer[tx_queue->read_count & tx_queue->ptr_mask];
 		efx_dequeue_buffer(tx_queue, buffer, &pkts_compl, &bytes_compl);
-		buffer->continuation = true;
-		buffer->len = 0;
 
 		++tx_queue->read_count;
 	}
+	tx_queue->xmit_more_available = false;
 	netdev_tx_reset_queue(tx_queue->core_txq);
-}
-
-void efx_fini_tx_queue(struct efx_tx_queue *tx_queue)
-{
-	if (!tx_queue->initialised)
-		return;
-
-	netif_dbg(tx_queue->efx, drv, tx_queue->efx->net_dev,
-		  "shutting down TX queue %d\n", tx_queue->queue);
-
-	tx_queue->initialised = false;
-
-	/* Flush TX queue, remove descriptor ring */
-	efx_nic_fini_tx(tx_queue);
-
-	efx_release_tx_buffers(tx_queue);
-
-	/* Free up TSO header cache */
-	efx_fini_tso(tx_queue);
 }
 
 void efx_remove_tx_queue(struct efx_tx_queue *tx_queue)
 {
+	int i;
+
 	if (!tx_queue->buffer)
 		return;
 
@@ -582,658 +873,14 @@ void efx_remove_tx_queue(struct efx_tx_queue *tx_queue)
 		  "destroying TX queue %d\n", tx_queue->queue);
 	efx_nic_remove_tx(tx_queue);
 
+	if (tx_queue->cb_page) {
+		for (i = 0; i < efx_tx_cb_page_count(tx_queue); i++)
+			efx_nic_free_buffer(tx_queue->efx,
+					    &tx_queue->cb_page[i]);
+		kfree(tx_queue->cb_page);
+		tx_queue->cb_page = NULL;
+	}
+
 	kfree(tx_queue->buffer);
 	tx_queue->buffer = NULL;
-}
-
-
-/* Efx TCP segmentation acceleration.
- *
- * Why?  Because by doing it here in the driver we can go significantly
- * faster than the GSO.
- *
- * Requires TX checksum offload support.
- */
-
-/* Number of bytes inserted at the start of a TSO header buffer,
- * similar to NET_IP_ALIGN.
- */
-#ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
-#define TSOH_OFFSET	0
-#else
-#define TSOH_OFFSET	NET_IP_ALIGN
-#endif
-
-#define TSOH_BUFFER(tsoh)	((u8 *)(tsoh + 1) + TSOH_OFFSET)
-
-/* Total size of struct efx_tso_header, buffer and padding */
-#define TSOH_SIZE(hdr_len)					\
-	(sizeof(struct efx_tso_header) + TSOH_OFFSET + hdr_len)
-
-/* Size of blocks on free list.  Larger blocks must be allocated from
- * the heap.
- */
-#define TSOH_STD_SIZE		128
-
-#define PTR_DIFF(p1, p2)  ((u8 *)(p1) - (u8 *)(p2))
-#define ETH_HDR_LEN(skb)  (skb_network_header(skb) - (skb)->data)
-#define SKB_TCP_OFF(skb)  PTR_DIFF(tcp_hdr(skb), (skb)->data)
-#define SKB_IPV4_OFF(skb) PTR_DIFF(ip_hdr(skb), (skb)->data)
-#define SKB_IPV6_OFF(skb) PTR_DIFF(ipv6_hdr(skb), (skb)->data)
-
-/**
- * struct tso_state - TSO state for an SKB
- * @out_len: Remaining length in current segment
- * @seqnum: Current sequence number
- * @ipv4_id: Current IPv4 ID, host endian
- * @packet_space: Remaining space in current packet
- * @dma_addr: DMA address of current position
- * @in_len: Remaining length in current SKB fragment
- * @unmap_len: Length of SKB fragment
- * @unmap_addr: DMA address of SKB fragment
- * @unmap_single: DMA single vs page mapping flag
- * @protocol: Network protocol (after any VLAN header)
- * @header_len: Number of bytes of header
- * @full_packet_size: Number of bytes to put in each outgoing segment
- *
- * The state used during segmentation.  It is put into this data structure
- * just to make it easy to pass into inline functions.
- */
-struct tso_state {
-	/* Output position */
-	unsigned out_len;
-	unsigned seqnum;
-	unsigned ipv4_id;
-	unsigned packet_space;
-
-	/* Input position */
-	dma_addr_t dma_addr;
-	unsigned in_len;
-	unsigned unmap_len;
-	dma_addr_t unmap_addr;
-	bool unmap_single;
-
-	__be16 protocol;
-	unsigned header_len;
-	int full_packet_size;
-};
-
-
-/*
- * Verify that our various assumptions about sk_buffs and the conditions
- * under which TSO will be attempted hold true.  Return the protocol number.
- */
-static __be16 efx_tso_check_protocol(struct sk_buff *skb)
-{
-	__be16 protocol = skb->protocol;
-
-	EFX_BUG_ON_PARANOID(((struct ethhdr *)skb->data)->h_proto !=
-			    protocol);
-	if (protocol == htons(ETH_P_8021Q)) {
-		/* Find the encapsulated protocol; reset network header
-		 * and transport header based on that. */
-		struct vlan_ethhdr *veh = (struct vlan_ethhdr *)skb->data;
-		protocol = veh->h_vlan_encapsulated_proto;
-		skb_set_network_header(skb, sizeof(*veh));
-		if (protocol == htons(ETH_P_IP))
-			skb_set_transport_header(skb, sizeof(*veh) +
-						 4 * ip_hdr(skb)->ihl);
-		else if (protocol == htons(ETH_P_IPV6))
-			skb_set_transport_header(skb, sizeof(*veh) +
-						 sizeof(struct ipv6hdr));
-	}
-
-	if (protocol == htons(ETH_P_IP)) {
-		EFX_BUG_ON_PARANOID(ip_hdr(skb)->protocol != IPPROTO_TCP);
-	} else {
-		EFX_BUG_ON_PARANOID(protocol != htons(ETH_P_IPV6));
-		EFX_BUG_ON_PARANOID(ipv6_hdr(skb)->nexthdr != NEXTHDR_TCP);
-	}
-	EFX_BUG_ON_PARANOID((PTR_DIFF(tcp_hdr(skb), skb->data)
-			     + (tcp_hdr(skb)->doff << 2u)) >
-			    skb_headlen(skb));
-
-	return protocol;
-}
-
-
-/*
- * Allocate a page worth of efx_tso_header structures, and string them
- * into the tx_queue->tso_headers_free linked list. Return 0 or -ENOMEM.
- */
-static int efx_tsoh_block_alloc(struct efx_tx_queue *tx_queue)
-{
-
-	struct pci_dev *pci_dev = tx_queue->efx->pci_dev;
-	struct efx_tso_header *tsoh;
-	dma_addr_t dma_addr;
-	u8 *base_kva, *kva;
-
-	base_kva = pci_alloc_consistent(pci_dev, PAGE_SIZE, &dma_addr);
-	if (base_kva == NULL) {
-		netif_err(tx_queue->efx, tx_err, tx_queue->efx->net_dev,
-			  "Unable to allocate page for TSO headers\n");
-		return -ENOMEM;
-	}
-
-	/* pci_alloc_consistent() allocates pages. */
-	EFX_BUG_ON_PARANOID(dma_addr & (PAGE_SIZE - 1u));
-
-	for (kva = base_kva; kva < base_kva + PAGE_SIZE; kva += TSOH_STD_SIZE) {
-		tsoh = (struct efx_tso_header *)kva;
-		tsoh->dma_addr = dma_addr + (TSOH_BUFFER(tsoh) - base_kva);
-		tsoh->next = tx_queue->tso_headers_free;
-		tx_queue->tso_headers_free = tsoh;
-	}
-
-	return 0;
-}
-
-
-/* Free up a TSO header, and all others in the same page. */
-static void efx_tsoh_block_free(struct efx_tx_queue *tx_queue,
-				struct efx_tso_header *tsoh,
-				struct pci_dev *pci_dev)
-{
-	struct efx_tso_header **p;
-	unsigned long base_kva;
-	dma_addr_t base_dma;
-
-	base_kva = (unsigned long)tsoh & PAGE_MASK;
-	base_dma = tsoh->dma_addr & PAGE_MASK;
-
-	p = &tx_queue->tso_headers_free;
-	while (*p != NULL) {
-		if (((unsigned long)*p & PAGE_MASK) == base_kva)
-			*p = (*p)->next;
-		else
-			p = &(*p)->next;
-	}
-
-	pci_free_consistent(pci_dev, PAGE_SIZE, (void *)base_kva, base_dma);
-}
-
-static struct efx_tso_header *
-efx_tsoh_heap_alloc(struct efx_tx_queue *tx_queue, size_t header_len)
-{
-	struct efx_tso_header *tsoh;
-
-	tsoh = kmalloc(TSOH_SIZE(header_len), GFP_ATOMIC | GFP_DMA);
-	if (unlikely(!tsoh))
-		return NULL;
-
-	tsoh->dma_addr = pci_map_single(tx_queue->efx->pci_dev,
-					TSOH_BUFFER(tsoh), header_len,
-					PCI_DMA_TODEVICE);
-	if (unlikely(pci_dma_mapping_error(tx_queue->efx->pci_dev,
-					   tsoh->dma_addr))) {
-		kfree(tsoh);
-		return NULL;
-	}
-
-	tsoh->unmap_len = header_len;
-	return tsoh;
-}
-
-static void
-efx_tsoh_heap_free(struct efx_tx_queue *tx_queue, struct efx_tso_header *tsoh)
-{
-	pci_unmap_single(tx_queue->efx->pci_dev,
-			 tsoh->dma_addr, tsoh->unmap_len,
-			 PCI_DMA_TODEVICE);
-	kfree(tsoh);
-}
-
-/**
- * efx_tx_queue_insert - push descriptors onto the TX queue
- * @tx_queue:		Efx TX queue
- * @dma_addr:		DMA address of fragment
- * @len:		Length of fragment
- * @final_buffer:	The final buffer inserted into the queue
- *
- * Push descriptors onto the TX queue.  Return 0 on success or 1 if
- * @tx_queue full.
- */
-static int efx_tx_queue_insert(struct efx_tx_queue *tx_queue,
-			       dma_addr_t dma_addr, unsigned len,
-			       struct efx_tx_buffer **final_buffer)
-{
-	struct efx_tx_buffer *buffer;
-	struct efx_nic *efx = tx_queue->efx;
-	unsigned dma_len, fill_level, insert_ptr;
-	int q_space;
-
-	EFX_BUG_ON_PARANOID(len <= 0);
-
-	fill_level = tx_queue->insert_count - tx_queue->old_read_count;
-	/* -1 as there is no way to represent all descriptors used */
-	q_space = efx->txq_entries - 1 - fill_level;
-
-	while (1) {
-		if (unlikely(q_space-- <= 0)) {
-			/* It might be that completions have happened
-			 * since the xmit path last checked.  Update
-			 * the xmit path's copy of read_count.
-			 */
-			netif_tx_stop_queue(tx_queue->core_txq);
-			/* This memory barrier protects the change of
-			 * queue state from the access of read_count. */
-			smp_mb();
-			tx_queue->old_read_count =
-				ACCESS_ONCE(tx_queue->read_count);
-			fill_level = (tx_queue->insert_count
-				      - tx_queue->old_read_count);
-			q_space = efx->txq_entries - 1 - fill_level;
-			if (unlikely(q_space-- <= 0)) {
-				*final_buffer = NULL;
-				return 1;
-			}
-			smp_mb();
-			netif_tx_start_queue(tx_queue->core_txq);
-		}
-
-		insert_ptr = tx_queue->insert_count & tx_queue->ptr_mask;
-		buffer = &tx_queue->buffer[insert_ptr];
-		++tx_queue->insert_count;
-
-		EFX_BUG_ON_PARANOID(tx_queue->insert_count -
-				    tx_queue->read_count >=
-				    efx->txq_entries);
-
-		efx_tsoh_free(tx_queue, buffer);
-		EFX_BUG_ON_PARANOID(buffer->len);
-		EFX_BUG_ON_PARANOID(buffer->unmap_len);
-		EFX_BUG_ON_PARANOID(buffer->skb);
-		EFX_BUG_ON_PARANOID(!buffer->continuation);
-		EFX_BUG_ON_PARANOID(buffer->tsoh);
-
-		buffer->dma_addr = dma_addr;
-
-		dma_len = efx_max_tx_len(efx, dma_addr);
-
-		/* If there is enough space to send then do so */
-		if (dma_len >= len)
-			break;
-
-		buffer->len = dma_len; /* Don't set the other members */
-		dma_addr += dma_len;
-		len -= dma_len;
-	}
-
-	EFX_BUG_ON_PARANOID(!len);
-	buffer->len = len;
-	*final_buffer = buffer;
-	return 0;
-}
-
-
-/*
- * Put a TSO header into the TX queue.
- *
- * This is special-cased because we know that it is small enough to fit in
- * a single fragment, and we know it doesn't cross a page boundary.  It
- * also allows us to not worry about end-of-packet etc.
- */
-static void efx_tso_put_header(struct efx_tx_queue *tx_queue,
-			       struct efx_tso_header *tsoh, unsigned len)
-{
-	struct efx_tx_buffer *buffer;
-
-	buffer = &tx_queue->buffer[tx_queue->insert_count & tx_queue->ptr_mask];
-	efx_tsoh_free(tx_queue, buffer);
-	EFX_BUG_ON_PARANOID(buffer->len);
-	EFX_BUG_ON_PARANOID(buffer->unmap_len);
-	EFX_BUG_ON_PARANOID(buffer->skb);
-	EFX_BUG_ON_PARANOID(!buffer->continuation);
-	EFX_BUG_ON_PARANOID(buffer->tsoh);
-	buffer->len = len;
-	buffer->dma_addr = tsoh->dma_addr;
-	buffer->tsoh = tsoh;
-
-	++tx_queue->insert_count;
-}
-
-
-/* Remove descriptors put into a tx_queue. */
-static void efx_enqueue_unwind(struct efx_tx_queue *tx_queue)
-{
-	struct efx_tx_buffer *buffer;
-	dma_addr_t unmap_addr;
-
-	/* Work backwards until we hit the original insert pointer value */
-	while (tx_queue->insert_count != tx_queue->write_count) {
-		--tx_queue->insert_count;
-		buffer = &tx_queue->buffer[tx_queue->insert_count &
-					   tx_queue->ptr_mask];
-		efx_tsoh_free(tx_queue, buffer);
-		EFX_BUG_ON_PARANOID(buffer->skb);
-		if (buffer->unmap_len) {
-			unmap_addr = (buffer->dma_addr + buffer->len -
-				      buffer->unmap_len);
-			if (buffer->unmap_single)
-				pci_unmap_single(tx_queue->efx->pci_dev,
-						 unmap_addr, buffer->unmap_len,
-						 PCI_DMA_TODEVICE);
-			else
-				pci_unmap_page(tx_queue->efx->pci_dev,
-					       unmap_addr, buffer->unmap_len,
-					       PCI_DMA_TODEVICE);
-			buffer->unmap_len = 0;
-		}
-		buffer->len = 0;
-		buffer->continuation = true;
-	}
-}
-
-
-/* Parse the SKB header and initialise state. */
-static void tso_start(struct tso_state *st, const struct sk_buff *skb)
-{
-	/* All ethernet/IP/TCP headers combined size is TCP header size
-	 * plus offset of TCP header relative to start of packet.
-	 */
-	st->header_len = ((tcp_hdr(skb)->doff << 2u)
-			  + PTR_DIFF(tcp_hdr(skb), skb->data));
-	st->full_packet_size = st->header_len + skb_shinfo(skb)->gso_size;
-
-	if (st->protocol == htons(ETH_P_IP))
-		st->ipv4_id = ntohs(ip_hdr(skb)->id);
-	else
-		st->ipv4_id = 0;
-	st->seqnum = ntohl(tcp_hdr(skb)->seq);
-
-	EFX_BUG_ON_PARANOID(tcp_hdr(skb)->urg);
-	EFX_BUG_ON_PARANOID(tcp_hdr(skb)->syn);
-	EFX_BUG_ON_PARANOID(tcp_hdr(skb)->rst);
-
-	st->packet_space = st->full_packet_size;
-	st->out_len = skb->len - st->header_len;
-	st->unmap_len = 0;
-	st->unmap_single = false;
-}
-
-static int tso_get_fragment(struct tso_state *st, struct efx_nic *efx,
-			    skb_frag_t *frag)
-{
-	st->unmap_addr = skb_frag_dma_map(&efx->pci_dev->dev, frag, 0,
-					  skb_frag_size(frag), DMA_TO_DEVICE);
-	if (likely(!dma_mapping_error(&efx->pci_dev->dev, st->unmap_addr))) {
-		st->unmap_single = false;
-		st->unmap_len = skb_frag_size(frag);
-		st->in_len = skb_frag_size(frag);
-		st->dma_addr = st->unmap_addr;
-		return 0;
-	}
-	return -ENOMEM;
-}
-
-static int tso_get_head_fragment(struct tso_state *st, struct efx_nic *efx,
-				 const struct sk_buff *skb)
-{
-	int hl = st->header_len;
-	int len = skb_headlen(skb) - hl;
-
-	st->unmap_addr = pci_map_single(efx->pci_dev, skb->data + hl,
-					len, PCI_DMA_TODEVICE);
-	if (likely(!pci_dma_mapping_error(efx->pci_dev, st->unmap_addr))) {
-		st->unmap_single = true;
-		st->unmap_len = len;
-		st->in_len = len;
-		st->dma_addr = st->unmap_addr;
-		return 0;
-	}
-	return -ENOMEM;
-}
-
-
-/**
- * tso_fill_packet_with_fragment - form descriptors for the current fragment
- * @tx_queue:		Efx TX queue
- * @skb:		Socket buffer
- * @st:			TSO state
- *
- * Form descriptors for the current fragment, until we reach the end
- * of fragment or end-of-packet.  Return 0 on success, 1 if not enough
- * space in @tx_queue.
- */
-static int tso_fill_packet_with_fragment(struct efx_tx_queue *tx_queue,
-					 const struct sk_buff *skb,
-					 struct tso_state *st)
-{
-	struct efx_tx_buffer *buffer;
-	int n, end_of_packet, rc;
-
-	if (st->in_len == 0)
-		return 0;
-	if (st->packet_space == 0)
-		return 0;
-
-	EFX_BUG_ON_PARANOID(st->in_len <= 0);
-	EFX_BUG_ON_PARANOID(st->packet_space <= 0);
-
-	n = min(st->in_len, st->packet_space);
-
-	st->packet_space -= n;
-	st->out_len -= n;
-	st->in_len -= n;
-
-	rc = efx_tx_queue_insert(tx_queue, st->dma_addr, n, &buffer);
-	if (likely(rc == 0)) {
-		if (st->out_len == 0)
-			/* Transfer ownership of the skb */
-			buffer->skb = skb;
-
-		end_of_packet = st->out_len == 0 || st->packet_space == 0;
-		buffer->continuation = !end_of_packet;
-
-		if (st->in_len == 0) {
-			/* Transfer ownership of the pci mapping */
-			buffer->unmap_len = st->unmap_len;
-			buffer->unmap_single = st->unmap_single;
-			st->unmap_len = 0;
-		}
-	}
-
-	st->dma_addr += n;
-	return rc;
-}
-
-
-/**
- * tso_start_new_packet - generate a new header and prepare for the new packet
- * @tx_queue:		Efx TX queue
- * @skb:		Socket buffer
- * @st:			TSO state
- *
- * Generate a new header and prepare for the new packet.  Return 0 on
- * success, or -1 if failed to alloc header.
- */
-static int tso_start_new_packet(struct efx_tx_queue *tx_queue,
-				const struct sk_buff *skb,
-				struct tso_state *st)
-{
-	struct efx_tso_header *tsoh;
-	struct tcphdr *tsoh_th;
-	unsigned ip_length;
-	u8 *header;
-
-	/* Allocate a DMA-mapped header buffer. */
-	if (likely(TSOH_SIZE(st->header_len) <= TSOH_STD_SIZE)) {
-		if (tx_queue->tso_headers_free == NULL) {
-			if (efx_tsoh_block_alloc(tx_queue))
-				return -1;
-		}
-		EFX_BUG_ON_PARANOID(!tx_queue->tso_headers_free);
-		tsoh = tx_queue->tso_headers_free;
-		tx_queue->tso_headers_free = tsoh->next;
-		tsoh->unmap_len = 0;
-	} else {
-		tx_queue->tso_long_headers++;
-		tsoh = efx_tsoh_heap_alloc(tx_queue, st->header_len);
-		if (unlikely(!tsoh))
-			return -1;
-	}
-
-	header = TSOH_BUFFER(tsoh);
-	tsoh_th = (struct tcphdr *)(header + SKB_TCP_OFF(skb));
-
-	/* Copy and update the headers. */
-	memcpy(header, skb->data, st->header_len);
-
-	tsoh_th->seq = htonl(st->seqnum);
-	st->seqnum += skb_shinfo(skb)->gso_size;
-	if (st->out_len > skb_shinfo(skb)->gso_size) {
-		/* This packet will not finish the TSO burst. */
-		ip_length = st->full_packet_size - ETH_HDR_LEN(skb);
-		tsoh_th->fin = 0;
-		tsoh_th->psh = 0;
-	} else {
-		/* This packet will be the last in the TSO burst. */
-		ip_length = st->header_len - ETH_HDR_LEN(skb) + st->out_len;
-		tsoh_th->fin = tcp_hdr(skb)->fin;
-		tsoh_th->psh = tcp_hdr(skb)->psh;
-	}
-
-	if (st->protocol == htons(ETH_P_IP)) {
-		struct iphdr *tsoh_iph =
-			(struct iphdr *)(header + SKB_IPV4_OFF(skb));
-
-		tsoh_iph->tot_len = htons(ip_length);
-
-		/* Linux leaves suitable gaps in the IP ID space for us to fill. */
-		tsoh_iph->id = htons(st->ipv4_id);
-		st->ipv4_id++;
-	} else {
-		struct ipv6hdr *tsoh_iph =
-			(struct ipv6hdr *)(header + SKB_IPV6_OFF(skb));
-
-		tsoh_iph->payload_len = htons(ip_length - sizeof(*tsoh_iph));
-	}
-
-	st->packet_space = skb_shinfo(skb)->gso_size;
-	++tx_queue->tso_packets;
-
-	/* Form a descriptor for this header. */
-	efx_tso_put_header(tx_queue, tsoh, st->header_len);
-
-	return 0;
-}
-
-
-/**
- * efx_enqueue_skb_tso - segment and transmit a TSO socket buffer
- * @tx_queue:		Efx TX queue
- * @skb:		Socket buffer
- *
- * Context: You must hold netif_tx_lock() to call this function.
- *
- * Add socket buffer @skb to @tx_queue, doing TSO or return != 0 if
- * @skb was not enqueued.  In all cases @skb is consumed.  Return
- * %NETDEV_TX_OK or %NETDEV_TX_BUSY.
- */
-static int efx_enqueue_skb_tso(struct efx_tx_queue *tx_queue,
-			       struct sk_buff *skb)
-{
-	struct efx_nic *efx = tx_queue->efx;
-	int frag_i, rc, rc2 = NETDEV_TX_OK;
-	struct tso_state state;
-
-	/* Find the packet protocol and sanity-check it */
-	state.protocol = efx_tso_check_protocol(skb);
-
-	EFX_BUG_ON_PARANOID(tx_queue->write_count != tx_queue->insert_count);
-
-	tso_start(&state, skb);
-
-	/* Assume that skb header area contains exactly the headers, and
-	 * all payload is in the frag list.
-	 */
-	if (skb_headlen(skb) == state.header_len) {
-		/* Grab the first payload fragment. */
-		EFX_BUG_ON_PARANOID(skb_shinfo(skb)->nr_frags < 1);
-		frag_i = 0;
-		rc = tso_get_fragment(&state, efx,
-				      skb_shinfo(skb)->frags + frag_i);
-		if (rc)
-			goto mem_err;
-	} else {
-		rc = tso_get_head_fragment(&state, efx, skb);
-		if (rc)
-			goto mem_err;
-		frag_i = -1;
-	}
-
-	if (tso_start_new_packet(tx_queue, skb, &state) < 0)
-		goto mem_err;
-
-	while (1) {
-		rc = tso_fill_packet_with_fragment(tx_queue, skb, &state);
-		if (unlikely(rc)) {
-			rc2 = NETDEV_TX_BUSY;
-			goto unwind;
-		}
-
-		/* Move onto the next fragment? */
-		if (state.in_len == 0) {
-			if (++frag_i >= skb_shinfo(skb)->nr_frags)
-				/* End of payload reached. */
-				break;
-			rc = tso_get_fragment(&state, efx,
-					      skb_shinfo(skb)->frags + frag_i);
-			if (rc)
-				goto mem_err;
-		}
-
-		/* Start at new packet? */
-		if (state.packet_space == 0 &&
-		    tso_start_new_packet(tx_queue, skb, &state) < 0)
-			goto mem_err;
-	}
-
-	netdev_tx_sent_queue(tx_queue->core_txq, skb->len);
-
-	/* Pass off to hardware */
-	efx_nic_push_buffers(tx_queue);
-
-	tx_queue->tso_bursts++;
-	return NETDEV_TX_OK;
-
- mem_err:
-	netif_err(efx, tx_err, efx->net_dev,
-		  "Out of memory for TSO headers, or PCI mapping error\n");
-	dev_kfree_skb_any(skb);
-
- unwind:
-	/* Free the DMA mapping we were in the process of writing out */
-	if (state.unmap_len) {
-		if (state.unmap_single)
-			pci_unmap_single(efx->pci_dev, state.unmap_addr,
-					 state.unmap_len, PCI_DMA_TODEVICE);
-		else
-			pci_unmap_page(efx->pci_dev, state.unmap_addr,
-				       state.unmap_len, PCI_DMA_TODEVICE);
-	}
-
-	efx_enqueue_unwind(tx_queue);
-	return rc2;
-}
-
-
-/*
- * Free up all TSO datastructures associated with tx_queue. This
- * routine should be called only once the tx_queue is both empty and
- * will no longer be used.
- */
-static void efx_fini_tso(struct efx_tx_queue *tx_queue)
-{
-	unsigned i;
-
-	if (tx_queue->buffer) {
-		for (i = 0; i <= tx_queue->ptr_mask; ++i)
-			efx_tsoh_free(tx_queue, &tx_queue->buffer[i]);
-	}
-
-	while (tx_queue->tso_headers_free != NULL)
-		efx_tsoh_block_free(tx_queue, tx_queue->tso_headers_free,
-				    tx_queue->efx->pci_dev);
 }

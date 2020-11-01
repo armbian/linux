@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_INET_DATALINK_H_
 #define _NET_INET_DATALINK_H_
 
@@ -15,4 +16,6 @@ struct datalink_proto {
 	struct list_head node;
 };
 
+struct datalink_proto *make_EII_client(void);
+void destroy_EII_client(struct datalink_proto *dl);
 #endif

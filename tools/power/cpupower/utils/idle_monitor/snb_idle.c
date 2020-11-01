@@ -120,7 +120,7 @@ static int snb_start(void)
 			previous_count[num][cpu] = val;
 		}
 	}
-	snb_get_count(TSC, &tsc_at_measure_start, 0);
+	snb_get_count(TSC, &tsc_at_measure_start, base_cpu);
 	return 0;
 }
 
@@ -129,7 +129,7 @@ static int snb_stop(void)
 	unsigned long long val;
 	int num, cpu;
 
-	snb_get_count(TSC, &tsc_at_measure_end, 0);
+	snb_get_count(TSC, &tsc_at_measure_end, base_cpu);
 
 	for (num = 0; num < SNB_CSTATE_COUNT; num++) {
 		for (cpu = 0; cpu < cpu_count; cpu++) {
@@ -150,9 +150,19 @@ static struct cpuidle_monitor *snb_register(void)
 	    || cpupower_cpu_info.family != 6)
 		return NULL;
 
-	if (cpupower_cpu_info.model != 0x2A
-	    && cpupower_cpu_info.model != 0x2D)
+	switch (cpupower_cpu_info.model) {
+	case 0x2A: /* SNB */
+	case 0x2D: /* SNB Xeon */
+	case 0x3A: /* IVB */
+	case 0x3E: /* IVB Xeon */
+	case 0x3C: /* HSW */
+	case 0x3F: /* HSW */
+	case 0x45: /* HSW */
+	case 0x46: /* HSW */
+		break;
+	default:
 		return NULL;
+	}
 
 	is_valid = calloc(cpu_count, sizeof(int));
 	for (num = 0; num < SNB_CSTATE_COUNT; num++) {

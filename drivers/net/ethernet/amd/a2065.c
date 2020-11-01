@@ -57,6 +57,7 @@
 #include <linux/zorro.h>
 #include <linux/bitops.h>
 
+#include <asm/byteorder.h>
 #include <asm/irq.h>
 #include <asm/amigaints.h>
 #include <asm/amigahw.h>
@@ -293,7 +294,6 @@ static int lance_rx(struct net_device *dev)
 			struct sk_buff *skb = netdev_alloc_skb(dev, len + 2);
 
 			if (!skb) {
-				netdev_warn(dev, "Memory squeeze, deferring packet\n");
 				dev->stats.rx_dropped++;
 				rd->mblength = 0;
 				rd->rmd1_bits = LE_R1_OWN;
@@ -512,7 +512,7 @@ static inline int lance_reset(struct net_device *dev)
 	load_csrs(lp);
 
 	lance_init_ring(dev);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	netif_start_queue(dev);
 
 	status = init_restart_lance(lp);
@@ -547,10 +547,8 @@ static netdev_tx_t lance_start_xmit(struct sk_buff *skb,
 
 	local_irq_save(flags);
 
-	if (!lance_tx_buffs_avail(lp)) {
-		local_irq_restore(flags);
-		return NETDEV_TX_LOCKED;
-	}
+	if (!lance_tx_buffs_avail(lp))
+		goto out_free;
 
 #ifdef DEBUG
 	/* dump the packet */
@@ -573,6 +571,7 @@ static netdev_tx_t lance_start_xmit(struct sk_buff *skb,
 
 	/* Kick the lance: transmit now */
 	ll->rdp = LE_C0_INEA | LE_C0_TDMD;
+ out_free:
 	dev_kfree_skb(skb);
 
 	local_irq_restore(flags);
@@ -639,12 +638,12 @@ static void lance_set_multicast(struct net_device *dev)
 	netif_wake_queue(dev);
 }
 
-static int __devinit a2065_init_one(struct zorro_dev *z,
-				    const struct zorro_device_id *ent);
-static void __devexit a2065_remove_one(struct zorro_dev *z);
+static int a2065_init_one(struct zorro_dev *z,
+			  const struct zorro_device_id *ent);
+static void a2065_remove_one(struct zorro_dev *z);
 
 
-static struct zorro_device_id a2065_zorro_tbl[] __devinitdata = {
+static const struct zorro_device_id a2065_zorro_tbl[] = {
 	{ ZORRO_PROD_CBM_A2065_1 },
 	{ ZORRO_PROD_CBM_A2065_2 },
 	{ ZORRO_PROD_AMERISTAR_A2065 },
@@ -656,7 +655,7 @@ static struct zorro_driver a2065_driver = {
 	.name		= "a2065",
 	.id_table	= a2065_zorro_tbl,
 	.probe		= a2065_init_one,
-	.remove		= __devexit_p(a2065_remove_one),
+	.remove		= a2065_remove_one,
 };
 
 static const struct net_device_ops lance_netdev_ops = {
@@ -666,12 +665,11 @@ static const struct net_device_ops lance_netdev_ops = {
 	.ndo_tx_timeout		= lance_tx_timeout,
 	.ndo_set_rx_mode	= lance_set_multicast,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
 
-static int __devinit a2065_init_one(struct zorro_dev *z,
-				    const struct zorro_device_id *ent)
+static int a2065_init_one(struct zorro_dev *z,
+			  const struct zorro_device_id *ent)
 {
 	struct net_device *dev;
 	struct lance_private *priv;
@@ -679,6 +677,7 @@ static int __devinit a2065_init_one(struct zorro_dev *z,
 	unsigned long base_addr = board + A2065_LANCE;
 	unsigned long mem_start = board + A2065_RAM;
 	struct resource *r1, *r2;
+	u32 serial;
 	int err;
 
 	r1 = request_mem_region(base_addr, sizeof(struct lance_regs),
@@ -703,6 +702,7 @@ static int __devinit a2065_init_one(struct zorro_dev *z,
 	r1->name = dev->name;
 	r2->name = dev->name;
 
+	serial = be32_to_cpu(z->rom.er_SerialNumber);
 	dev->dev_addr[0] = 0x00;
 	if (z->id != ZORRO_PROD_AMERISTAR_A2065) {	/* Commodore */
 		dev->dev_addr[1] = 0x80;
@@ -711,11 +711,11 @@ static int __devinit a2065_init_one(struct zorro_dev *z,
 		dev->dev_addr[1] = 0x00;
 		dev->dev_addr[2] = 0x9f;
 	}
-	dev->dev_addr[3] = (z->rom.er_SerialNumber >> 16) & 0xff;
-	dev->dev_addr[4] = (z->rom.er_SerialNumber >> 8) & 0xff;
-	dev->dev_addr[5] = z->rom.er_SerialNumber & 0xff;
-	dev->base_addr = ZTWO_VADDR(base_addr);
-	dev->mem_start = ZTWO_VADDR(mem_start);
+	dev->dev_addr[3] = (serial >> 16) & 0xff;
+	dev->dev_addr[4] = (serial >> 8) & 0xff;
+	dev->dev_addr[5] = serial & 0xff;
+	dev->base_addr = (unsigned long)ZTWO_VADDR(base_addr);
+	dev->mem_start = (unsigned long)ZTWO_VADDR(mem_start);
 	dev->mem_end = dev->mem_start + A2065_RAM_SIZE;
 
 	priv->ll = (volatile struct lance_regs *)dev->base_addr;
@@ -754,7 +754,7 @@ static int __devinit a2065_init_one(struct zorro_dev *z,
 }
 
 
-static void __devexit a2065_remove_one(struct zorro_dev *z)
+static void a2065_remove_one(struct zorro_dev *z)
 {
 	struct net_device *dev = zorro_get_drvdata(z);
 

@@ -37,7 +37,7 @@ statistic_mt(const struct sk_buff *skb, struct xt_action_param *par)
 
 	switch (info->mode) {
 	case XT_STATISTIC_MODE_RANDOM:
-		if ((net_random() & 0x7FFFFFFF) < info->u.random.probability)
+		if ((prandom_u32() & 0x7FFFFFFF) < info->u.random.probability)
 			ret = !ret;
 		break;
 	case XT_STATISTIC_MODE_NTH:
@@ -84,6 +84,7 @@ static struct xt_match xt_statistic_mt_reg __read_mostly = {
 	.checkentry = statistic_mt_check,
 	.destroy    = statistic_mt_destroy,
 	.matchsize  = sizeof(struct xt_statistic_info),
+	.usersize   = offsetof(struct xt_statistic_info, master),
 	.me         = THIS_MODULE,
 };
 

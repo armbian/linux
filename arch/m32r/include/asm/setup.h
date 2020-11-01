@@ -1,13 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_M32R_SETUP_H
 #define _ASM_M32R_SETUP_H
 
-/*
- * This is set up by the setup-routine at boot-time
- */
+#include <uapi/asm/setup.h>
 
-#define COMMAND_LINE_SIZE       512
-
-#ifdef __KERNEL__
 
 #define PARAM			((unsigned char *)empty_zero_page)
 
@@ -32,7 +28,5 @@
 
 extern unsigned long memory_start;
 extern unsigned long memory_end;
-
-#endif  /*  __KERNEL__  */
 
 #endif /* _ASM_M32R_SETUP_H */

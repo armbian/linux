@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Packet network namespace
  */
@@ -5,10 +6,10 @@
 #define __NETNS_PACKET_H__
 
 #include <linux/rculist.h>
-#include <linux/spinlock.h>
+#include <linux/mutex.h>
 
 struct netns_packet {
-	spinlock_t		sklist_lock;
+	struct mutex		sklist_lock;
 	struct hlist_head	sklist;
 };
 

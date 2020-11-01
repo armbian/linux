@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Simulated Ethernet Driver
  *
@@ -268,7 +269,7 @@ static __inline__ int dev_is_ethdev(struct net_device *dev)
 static int
 simeth_device_event(struct notifier_block *this,unsigned long event, void *ptr)
 {
-	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct simeth_local *local;
 	struct in_device *in_dev;
 	struct in_ifaddr **ifap = NULL;

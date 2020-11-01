@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * DECnet       An implementation of the DECnet protocol suite for the LINUX
  *              operating system.  DECnet is implemented using the  BSD Socket
@@ -23,6 +24,7 @@
 #include <linux/spinlock.h>
 #include <net/sock.h>
 #include <linux/atomic.h>
+#include <linux/jiffies.h>
 #include <net/flow.h>
 #include <net/dn.h>
 
@@ -91,7 +93,7 @@ static void dn_slow_timer(unsigned long arg)
 	 * since the last successful transmission.
 	 */
 	if (scp->keepalive && scp->keepalive_fxn && (scp->state == DN_RUN)) {
-		if ((jiffies - scp->stamp) >= scp->keepalive)
+		if (time_after_eq(jiffies, scp->stamp + scp->keepalive))
 			scp->keepalive_fxn(sk);
 	}
 

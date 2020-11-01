@@ -40,13 +40,13 @@
  * seem to be a documentation error.  At least on my RM200C the Cirrus
  * Logic CL-GD5434 VGA is device 3.
  */
-static char irq_tab_rm200[8][5] __initdata = {
-	/*       INTA  INTB  INTC  INTD */
-	{     0,    0,    0,    0,    0 },	/* EISA bridge */
+static char irq_tab_rm200[8][5] = {
+	/*	 INTA  INTB  INTC  INTD */
+	{     0,    0,	  0,	0,    0 },	/* EISA bridge */
 	{  SCSI, SCSI, SCSI, SCSI, SCSI },	/* SCSI */
-	{   ETH,  ETH,  ETH,  ETH,  ETH },	/* Ethernet */
+	{   ETH,  ETH,	ETH,  ETH,  ETH },	/* Ethernet */
 	{  INTB, INTB, INTB, INTB, INTB },	/* VGA */
-	{     0,    0,    0,    0,    0 },	/* Unused */
+	{     0,    0,	  0,	0,    0 },	/* Unused */
 	{     0, INTB, INTC, INTD, INTA },	/* Slot 2 */
 	{     0, INTC, INTD, INTA, INTB },	/* Slot 3 */
 	{     0, INTD, INTA, INTB, INTC },	/* Slot 4 */
@@ -57,21 +57,21 @@ static char irq_tab_rm200[8][5] __initdata = {
  *
  * The VGA card is optional for RM300 systems.
  */
-static char irq_tab_rm300d[8][5] __initdata = {
-	/*       INTA  INTB  INTC  INTD */
-	{     0,    0,    0,    0,    0 },	/* EISA bridge */
+static char irq_tab_rm300d[8][5] = {
+	/*	 INTA  INTB  INTC  INTD */
+	{     0,    0,	  0,	0,    0 },	/* EISA bridge */
 	{  SCSI, SCSI, SCSI, SCSI, SCSI },	/* SCSI */
 	{     0, INTC, INTD, INTA, INTB },	/* Slot 1 */
 	{  INTB, INTB, INTB, INTB, INTB },	/* VGA */
-	{     0,    0,    0,    0,    0 },	/* Unused */
+	{     0,    0,	  0,	0,    0 },	/* Unused */
 	{     0, INTB, INTC, INTD, INTA },	/* Slot 2 */
 	{     0, INTC, INTD, INTA, INTB },	/* Slot 3 */
 	{     0, INTD, INTA, INTB, INTC },	/* Slot 4 */
 };
 
-static char irq_tab_rm300e[5][5] __initdata = {
-	/*       INTA  INTB  INTC  INTD */
-	{     0,    0,    0,    0,    0 },	/* HOST bridge */
+static char irq_tab_rm300e[5][5] = {
+	/*	 INTA  INTB  INTC  INTD */
+	{     0,    0,	  0,	0,    0 },	/* HOST bridge */
 	{  SCSI, SCSI, SCSI, SCSI, SCSI },	/* SCSI */
 	{     0, INTC, INTD, INTA, INTB },	/* Bridge/i960 */
 	{     0, INTD, INTA, INTB, INTC },	/* Slot 1 */
@@ -96,31 +96,31 @@ static char irq_tab_rm300e[5][5] __initdata = {
 #define INTC	PCIT_IRQ_INTC
 #define INTD	PCIT_IRQ_INTD
 
-static char irq_tab_pcit[13][5] __initdata = {
-	/*       INTA  INTB  INTC  INTD */
-	{     0,     0,     0,     0,     0 },	/* HOST bridge */
+static char irq_tab_pcit[13][5] = {
+	/*	 INTA  INTB  INTC  INTD */
+	{     0,     0,	    0,	   0,	  0 },	/* HOST bridge */
 	{ SCSI0, SCSI0, SCSI0, SCSI0, SCSI0 },	/* SCSI */
 	{ SCSI1, SCSI1, SCSI1, SCSI1, SCSI1 },	/* SCSI */
-	{   ETH,   ETH,   ETH,   ETH,   ETH },	/* Ethernet */
-	{     0,  INTA,  INTB,  INTC,  INTD },	/* PCI-PCI bridge */
-	{     0,     0,     0,     0,     0 },	/* Unused */
-	{     0,     0,     0,     0,     0 },	/* Unused */
-	{     0,     0,     0,     0,     0 },	/* Unused */
-	{     0,  INTA,  INTB,  INTC,  INTD },	/* Slot 1 */
-	{     0,  INTB,  INTC,  INTD,  INTA },	/* Slot 2 */
-	{     0,  INTC,  INTD,  INTA,  INTB },	/* Slot 3 */
-	{     0,  INTD,  INTA,  INTB,  INTC },	/* Slot 4 */
-	{     0,  INTA,  INTB,  INTC,  INTD },	/* Slot 5 */
+	{   ETH,   ETH,	  ETH,	 ETH,	ETH },	/* Ethernet */
+	{     0,  INTA,	 INTB,	INTC,  INTD },	/* PCI-PCI bridge */
+	{     0,     0,	    0,	   0,	  0 },	/* Unused */
+	{     0,     0,	    0,	   0,	  0 },	/* Unused */
+	{     0,     0,	    0,	   0,	  0 },	/* Unused */
+	{     0,  INTA,	 INTB,	INTC,  INTD },	/* Slot 1 */
+	{     0,  INTB,	 INTC,	INTD,  INTA },	/* Slot 2 */
+	{     0,  INTC,	 INTD,	INTA,  INTB },	/* Slot 3 */
+	{     0,  INTD,	 INTA,	INTB,  INTC },	/* Slot 4 */
+	{     0,  INTA,	 INTB,	INTC,  INTD },	/* Slot 5 */
 };
 
-static char irq_tab_pcit_cplus[13][5] __initdata = {
-	/*       INTA  INTB  INTC  INTD */
-	{     0,     0,     0,     0,     0 },	/* HOST bridge */
-	{     0,  INTB,  INTC,  INTD,  INTA },	/* PCI Slot 9 */
-	{     0,     0,     0,     0,     0 },	/* PCI-EISA */
-	{     0,     0,     0,     0,     0 },	/* Unused */
-	{     0,  INTA,  INTB,  INTC,  INTD },	/* PCI-PCI bridge */
-	{     0,  INTB,  INTC,  INTD,  INTA },	/* fixup */
+static char irq_tab_pcit_cplus[13][5] = {
+	/*	 INTA  INTB  INTC  INTD */
+	{     0,     0,	    0,	   0,	  0 },	/* HOST bridge */
+	{     0,  INTB,	 INTC,	INTD,  INTA },	/* PCI Slot 9 */
+	{     0,     0,	    0,	   0,	  0 },	/* PCI-EISA */
+	{     0,     0,	    0,	   0,	  0 },	/* Unused */
+	{     0,  INTA,	 INTB,	INTC,  INTD },	/* PCI-PCI bridge */
+	{     0,  INTB,	 INTC,	INTD,  INTA },	/* fixup */
 };
 
 static inline int is_rm300_revd(void)
@@ -130,7 +130,7 @@ static inline int is_rm300_revd(void)
 	return (csmsr & 0xa0) == 0x20;
 }
 
-int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	switch (sni_brd_type) {
 	case SNI_BRD_PCI_TOWER_CPLUS:
@@ -146,18 +146,18 @@ int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 		}
 		return irq_tab_pcit_cplus[slot][pin];
 	case SNI_BRD_PCI_TOWER:
-	        return irq_tab_pcit[slot][pin];
+		return irq_tab_pcit[slot][pin];
 
 	case SNI_BRD_PCI_MTOWER:
-	        if (is_rm300_revd())
-		        return irq_tab_rm300d[slot][pin];
-	        /* fall through */
+		if (is_rm300_revd())
+			return irq_tab_rm300d[slot][pin];
+		/* fall through */
 
 	case SNI_BRD_PCI_DESKTOP:
-	        return irq_tab_rm200[slot][pin];
+		return irq_tab_rm200[slot][pin];
 
 	case SNI_BRD_PCI_MTOWER_CPLUS:
-	        return irq_tab_rm300e[slot][pin];
+		return irq_tab_rm300e[slot][pin];
 	}
 
 	return 0;

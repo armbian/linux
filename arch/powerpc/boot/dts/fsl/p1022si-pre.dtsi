@@ -33,6 +33,9 @@
  */
 
 /dts-v1/;
+
+/include/ "e500v2_power_isa.dtsi"
+
 / {
 	compatible = "fsl,P1022";
 	#address-cells = <2>;
@@ -47,6 +50,8 @@
 		pci0 = &pci0;
 		pci1 = &pci1;
 		pci2 = &pci2;
+		vga = &display;
+		display = &display;
 	};
 
 	cpus {

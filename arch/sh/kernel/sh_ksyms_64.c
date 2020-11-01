@@ -18,7 +18,7 @@
 #include <linux/screen_info.h>
 #include <asm/cacheflush.h>
 #include <asm/processor.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/checksum.h>
 #include <asm/io.h>
 #include <asm/delay.h>
@@ -32,8 +32,6 @@ EXPORT_SYMBOL(__get_user_asm_b);
 EXPORT_SYMBOL(__get_user_asm_w);
 EXPORT_SYMBOL(__get_user_asm_l);
 EXPORT_SYMBOL(__get_user_asm_q);
-EXPORT_SYMBOL(__strnlen_user);
-EXPORT_SYMBOL(__strncpy_from_user);
 EXPORT_SYMBOL(__clear_user);
 EXPORT_SYMBOL(copy_page);
 EXPORT_SYMBOL(__copy_user);

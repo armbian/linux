@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef FS_CEPH_IOCTL_H
 #define FS_CEPH_IOCTL_H
 
@@ -34,6 +35,8 @@
 struct ceph_ioctl_layout {
 	__u64 stripe_unit, stripe_count, object_size;
 	__u64 data_pool;
+
+	/* obsolete.  new values ignored, always return -1 */
 	__s64 preferred_osd;
 };
 

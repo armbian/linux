@@ -1,5 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0
 config PPC_MAPLE
-	depends on PPC64 && PPC_BOOK3S
+	depends on PPC64 && PPC_BOOK3S && CPU_BIG_ENDIAN
 	bool "Maple 970FX Evaluation Board"
 	select PCI
 	select MPIC

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* pci_msi.c: Sparc64 MSI support common layer.
  *
  * Copyright (C) 2007 David S. Miller (davem@davemloft.net)
@@ -111,10 +112,10 @@ static void free_msi(struct pci_pbm_info *pbm, int msi_num)
 
 static struct irq_chip msi_irq = {
 	.name		= "PCI-MSI",
-	.irq_mask	= mask_msi_irq,
-	.irq_unmask	= unmask_msi_irq,
-	.irq_enable	= unmask_msi_irq,
-	.irq_disable	= mask_msi_irq,
+	.irq_mask	= pci_msi_mask_irq,
+	.irq_unmask	= pci_msi_unmask_irq,
+	.irq_enable	= pci_msi_unmask_irq,
+	.irq_disable	= pci_msi_mask_irq,
 	/* XXX affinity XXX */
 };
 
@@ -161,7 +162,7 @@ static int sparc64_setup_msi_irq(unsigned int *irq_p,
 	msg.data = msi;
 
 	irq_set_msi_desc(*irq_p, entry);
-	write_msi_msg(*irq_p, &msg);
+	pci_write_msi_msg(*irq_p, &msg);
 
 	return 0;
 

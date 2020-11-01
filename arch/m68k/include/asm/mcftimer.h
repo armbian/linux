@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /****************************************************************************/
 
 /*
@@ -19,7 +20,7 @@
 #define	MCFTIMER_TRR		0x04		/* Timer Reference (r/w) */
 #define	MCFTIMER_TCR		0x08		/* Timer Capture reg (r/w) */
 #define	MCFTIMER_TCN		0x0C		/* Timer Counter reg (r/w) */
-#if defined(CONFIG_M532x)
+#if defined(CONFIG_M53xx) || defined(CONFIG_M5441x)
 #define	MCFTIMER_TER		0x03		/* Timer Event reg (r/w) */
 #else
 #define	MCFTIMER_TER		0x11		/* Timer Event reg (r/w) */
@@ -51,7 +52,7 @@
  *	Bit definitions for the Timer Event Registers (TER).
  */
 #define	MCFTIMER_TER_CAP	0x01		/* Capture event */
-#define	MCFTIMER_TER_REF	0x02		/* Refernece event */
+#define	MCFTIMER_TER_REF	0x02		/* Reference event */
 
 /****************************************************************************/
 #endif	/* mcftimer_h */

@@ -15,25 +15,26 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
+#include <linux/pwm.h>
 #include <linux/pwm_backlight.h>
+#include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 #include <linux/input.h>
 #include <linux/gpio.h>
 #include <linux/gpio_keys.h>
 #include <linux/leds-lp3944.h>
 #include <linux/i2c/pxa-i2c.h>
 
-#include <media/soc_camera.h>
-
 #include <asm/setup.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include <mach/pxa27x.h>
-#include <mach/pxafb.h>
-#include <mach/ohci.h>
+#include "pxa27x.h"
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/usb-ohci-pxa27x.h>
 #include <mach/hardware.h>
-#include <plat/pxa27x_keypad.h>
-#include <mach/camera.h>
+#include <linux/platform_data/keypad-pxa27x.h>
+#include <linux/platform_data/media/camera-pxa.h>
 
 #include "devices.h"
 #include "generic.h"
@@ -49,11 +50,15 @@
 #define GPIO19_GEN1_CAM_RST		19
 #define GPIO28_GEN2_CAM_RST		28
 
+static struct pwm_lookup ezx_pwm_lookup[] __maybe_unused = {
+	PWM_LOOKUP("pxa27x-pwm.0", 0, "pwm-backlight.0", NULL, 78700,
+		   PWM_POLARITY_NORMAL),
+};
+
 static struct platform_pwm_backlight_data ezx_backlight_data = {
-	.pwm_id		= 0,
 	.max_brightness	= 1023,
 	.dft_brightness	= 1023,
-	.pwm_period_ns	= 78770,
+	.enable_gpio	= -1,
 };
 
 static struct platform_device ezx_backlight_device = {
@@ -78,7 +83,7 @@ static struct pxafb_mode_info mode_ezx_old = {
 	.sync			= 0,
 };
 
-static struct pxafb_mach_info ezx_fb_info_1 = {
+static struct pxafb_mach_info ezx_fb_info_1 __maybe_unused = {
 	.modes		= &mode_ezx_old,
 	.num_modes	= 1,
 	.lcd_conn	= LCD_COLOR_TFT_16BPP,
@@ -99,17 +104,17 @@ static struct pxafb_mode_info mode_72r89803y01 = {
 	.sync			= 0,
 };
 
-static struct pxafb_mach_info ezx_fb_info_2 = {
+static struct pxafb_mach_info ezx_fb_info_2 __maybe_unused = {
 	.modes		= &mode_72r89803y01,
 	.num_modes	= 1,
 	.lcd_conn	= LCD_COLOR_TFT_18BPP,
 };
 
-static struct platform_device *ezx_devices[] __initdata = {
+static struct platform_device *ezx_devices[] __initdata __maybe_unused = {
 	&ezx_backlight_device,
 };
 
-static unsigned long ezx_pin_config[] __initdata = {
+static unsigned long ezx_pin_config[] __initdata __maybe_unused = {
 	/* PWM backlight */
 	GPIO16_PWM0_OUT,
 
@@ -392,7 +397,7 @@ static unsigned long e6_pin_config[] __initdata = {
 
 /* KEYPAD */
 #ifdef CONFIG_MACH_EZX_A780
-static unsigned int a780_key_map[] = {
+static const unsigned int a780_key_map[] = {
 	KEY(0, 0, KEY_SEND),
 	KEY(0, 1, KEY_BACK),
 	KEY(0, 2, KEY_END),
@@ -424,11 +429,15 @@ static unsigned int a780_key_map[] = {
 	KEY(4, 4, KEY_DOWN),
 };
 
+static struct matrix_keymap_data a780_matrix_keymap_data = {
+	.keymap			= a780_key_map,
+	.keymap_size		= ARRAY_SIZE(a780_key_map),
+};
+
 static struct pxa27x_keypad_platform_data a780_keypad_platform_data = {
 	.matrix_key_rows = 5,
 	.matrix_key_cols = 5,
-	.matrix_key_map = a780_key_map,
-	.matrix_key_map_size = ARRAY_SIZE(a780_key_map),
+	.matrix_keymap_data = &a780_matrix_keymap_data,
 
 	.direct_key_map = { KEY_CAMERA },
 	.direct_key_num = 1,
@@ -438,7 +447,7 @@ static struct pxa27x_keypad_platform_data a780_keypad_platform_data = {
 #endif /* CONFIG_MACH_EZX_A780 */
 
 #ifdef CONFIG_MACH_EZX_E680
-static unsigned int e680_key_map[] = {
+static const unsigned int e680_key_map[] = {
 	KEY(0, 0, KEY_UP),
 	KEY(0, 1, KEY_RIGHT),
 	KEY(0, 2, KEY_RESERVED),
@@ -455,11 +464,15 @@ static unsigned int e680_key_map[] = {
 	KEY(2, 3, KEY_KPENTER),
 };
 
+static struct matrix_keymap_data e680_matrix_keymap_data = {
+	.keymap			= e680_key_map,
+	.keymap_size		= ARRAY_SIZE(e680_key_map),
+};
+
 static struct pxa27x_keypad_platform_data e680_keypad_platform_data = {
 	.matrix_key_rows = 3,
 	.matrix_key_cols = 4,
-	.matrix_key_map = e680_key_map,
-	.matrix_key_map_size = ARRAY_SIZE(e680_key_map),
+	.matrix_keymap_data = &e680_matrix_keymap_data,
 
 	.direct_key_map = {
 		KEY_CAMERA,
@@ -476,7 +489,7 @@ static struct pxa27x_keypad_platform_data e680_keypad_platform_data = {
 #endif /* CONFIG_MACH_EZX_E680 */
 
 #ifdef CONFIG_MACH_EZX_A1200
-static unsigned int a1200_key_map[] = {
+static const unsigned int a1200_key_map[] = {
 	KEY(0, 0, KEY_RESERVED),
 	KEY(0, 1, KEY_RIGHT),
 	KEY(0, 2, KEY_PAGEDOWN),
@@ -513,18 +526,22 @@ static unsigned int a1200_key_map[] = {
 	KEY(4, 5, KEY_RESERVED),
 };
 
+static struct matrix_keymap_data a1200_matrix_keymap_data = {
+	.keymap			= a1200_key_map,
+	.keymap_size		= ARRAY_SIZE(a1200_key_map),
+};
+
 static struct pxa27x_keypad_platform_data a1200_keypad_platform_data = {
 	.matrix_key_rows = 5,
 	.matrix_key_cols = 6,
-	.matrix_key_map = a1200_key_map,
-	.matrix_key_map_size = ARRAY_SIZE(a1200_key_map),
+	.matrix_keymap_data = &a1200_matrix_keymap_data,
 
 	.debounce_interval = 30,
 };
 #endif /* CONFIG_MACH_EZX_A1200 */
 
 #ifdef CONFIG_MACH_EZX_E6
-static unsigned int e6_key_map[] = {
+static const unsigned int e6_key_map[] = {
 	KEY(0, 0, KEY_RESERVED),
 	KEY(0, 1, KEY_RIGHT),
 	KEY(0, 2, KEY_PAGEDOWN),
@@ -561,18 +578,22 @@ static unsigned int e6_key_map[] = {
 	KEY(4, 5, KEY_PREVIOUSSONG),
 };
 
+static struct matrix_keymap_data e6_keymap_data = {
+	.keymap			= e6_key_map,
+	.keymap_size		= ARRAY_SIZE(e6_key_map),
+};
+
 static struct pxa27x_keypad_platform_data e6_keypad_platform_data = {
 	.matrix_key_rows = 5,
 	.matrix_key_cols = 6,
-	.matrix_key_map = e6_key_map,
-	.matrix_key_map_size = ARRAY_SIZE(e6_key_map),
+	.matrix_keymap_data = &e6_keymap_data,
 
 	.debounce_interval = 30,
 };
 #endif /* CONFIG_MACH_EZX_E6 */
 
 #ifdef CONFIG_MACH_EZX_A910
-static unsigned int a910_key_map[] = {
+static const unsigned int a910_key_map[] = {
 	KEY(0, 0, KEY_NUMERIC_6),
 	KEY(0, 1, KEY_RIGHT),
 	KEY(0, 2, KEY_PAGEDOWN),
@@ -609,18 +630,22 @@ static unsigned int a910_key_map[] = {
 	KEY(4, 5, KEY_RESERVED),
 };
 
+static struct matrix_keymap_data a910_matrix_keymap_data = {
+	.keymap			= a910_key_map,
+	.keymap_size		= ARRAY_SIZE(a910_key_map),
+};
+
 static struct pxa27x_keypad_platform_data a910_keypad_platform_data = {
 	.matrix_key_rows = 5,
 	.matrix_key_cols = 6,
-	.matrix_key_map = a910_key_map,
-	.matrix_key_map_size = ARRAY_SIZE(a910_key_map),
+	.matrix_keymap_data = &a910_matrix_keymap_data,
 
 	.debounce_interval = 30,
 };
 #endif /* CONFIG_MACH_EZX_A910 */
 
 #ifdef CONFIG_MACH_EZX_E2
-static unsigned int e2_key_map[] = {
+static const unsigned int e2_key_map[] = {
 	KEY(0, 0, KEY_NUMERIC_6),
 	KEY(0, 1, KEY_RIGHT),
 	KEY(0, 2, KEY_NUMERIC_9),
@@ -657,15 +682,50 @@ static unsigned int e2_key_map[] = {
 	KEY(4, 5, KEY_RESERVED),
 };
 
+static struct matrix_keymap_data e2_matrix_keymap_data = {
+	.keymap			= e2_key_map,
+	.keymap_size		= ARRAY_SIZE(e2_key_map),
+};
+
 static struct pxa27x_keypad_platform_data e2_keypad_platform_data = {
 	.matrix_key_rows = 5,
 	.matrix_key_cols = 6,
-	.matrix_key_map = e2_key_map,
-	.matrix_key_map_size = ARRAY_SIZE(e2_key_map),
+	.matrix_keymap_data = &e2_matrix_keymap_data,
 
 	.debounce_interval = 30,
 };
 #endif /* CONFIG_MACH_EZX_E2 */
+
+#if defined(CONFIG_MACH_EZX_A780) || defined(CONFIG_MACH_EZX_A910)
+/* camera */
+static struct regulator_consumer_supply camera_dummy_supplies[] = {
+	REGULATOR_SUPPLY("vdd", "0-005d"),
+};
+
+static struct regulator_init_data camera_dummy_initdata = {
+	.consumer_supplies = camera_dummy_supplies,
+	.num_consumer_supplies = ARRAY_SIZE(camera_dummy_supplies),
+	.constraints = {
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static struct fixed_voltage_config camera_dummy_config = {
+	.supply_name		= "camera_vdd",
+	.microvolts		= 2800000,
+	.gpio			= GPIO50_nCAM_EN,
+	.enable_high		= 0,
+	.init_data		= &camera_dummy_initdata,
+};
+
+static struct platform_device camera_supply_dummy_device = {
+	.name	= "reg-fixed-voltage",
+	.id	= 1,
+	.dev	= {
+		.platform_data = &camera_dummy_config,
+	},
+};
+#endif
 
 #ifdef CONFIG_MACH_EZX_A780
 /* gpio_keys */
@@ -694,43 +754,6 @@ static struct platform_device a780_gpio_keys = {
 };
 
 /* camera */
-static int a780_camera_init(void)
-{
-	int err;
-
-	/*
-	 * GPIO50_nCAM_EN is active low
-	 * GPIO19_GEN1_CAM_RST is active on rising edge
-	 */
-	err = gpio_request(GPIO50_nCAM_EN, "nCAM_EN");
-	if (err) {
-		pr_err("%s: Failed to request nCAM_EN\n", __func__);
-		goto fail;
-	}
-
-	err = gpio_request(GPIO19_GEN1_CAM_RST, "CAM_RST");
-	if (err) {
-		pr_err("%s: Failed to request CAM_RST\n", __func__);
-		goto fail_gpio_cam_rst;
-	}
-
-	gpio_direction_output(GPIO50_nCAM_EN, 1);
-	gpio_direction_output(GPIO19_GEN1_CAM_RST, 0);
-
-	return 0;
-
-fail_gpio_cam_rst:
-	gpio_free(GPIO50_nCAM_EN);
-fail:
-	return err;
-}
-
-static int a780_camera_power(struct device *dev, int on)
-{
-	gpio_set_value(GPIO50_nCAM_EN, !on);
-	return 0;
-}
-
 static int a780_camera_reset(struct device *dev)
 {
 	gpio_set_value(GPIO19_GEN1_CAM_RST, 0);
@@ -740,35 +763,44 @@ static int a780_camera_reset(struct device *dev)
 	return 0;
 }
 
+static int a780_camera_init(void)
+{
+	int err;
+
+	/*
+	 * GPIO50_nCAM_EN is active low
+	 * GPIO19_GEN1_CAM_RST is active on rising edge
+	 */
+	err = gpio_request(GPIO19_GEN1_CAM_RST, "CAM_RST");
+	if (err) {
+		pr_err("%s: Failed to request CAM_RST\n", __func__);
+		return err;
+	}
+
+	gpio_direction_output(GPIO19_GEN1_CAM_RST, 0);
+	a780_camera_reset(NULL);
+
+	return 0;
+}
+
 struct pxacamera_platform_data a780_pxacamera_platform_data = {
 	.flags  = PXA_CAMERA_MASTER | PXA_CAMERA_DATAWIDTH_8 |
-		PXA_CAMERA_PCLK_EN | PXA_CAMERA_MCLK_EN,
+		PXA_CAMERA_PCLK_EN | PXA_CAMERA_MCLK_EN |
+		PXA_CAMERA_PCP,
 	.mclk_10khz = 5000,
+	.sensor_i2c_adapter_id = 0,
+	.sensor_i2c_address = 0x5d,
 };
 
-static struct i2c_board_info a780_camera_i2c_board_info = {
-	I2C_BOARD_INFO("mt9m111", 0x5d),
-};
-
-static struct soc_camera_link a780_iclink = {
-	.bus_id         = 0,
-	.flags          = SOCAM_SENSOR_INVERT_PCLK,
-	.i2c_adapter_id = 0,
-	.board_info     = &a780_camera_i2c_board_info,
-	.power          = a780_camera_power,
-	.reset          = a780_camera_reset,
-};
-
-static struct platform_device a780_camera = {
-	.name   = "soc-camera-pdrv",
-	.id     = 0,
-	.dev    = {
-		.platform_data = &a780_iclink,
+static struct i2c_board_info a780_i2c_board_info[] = {
+	{
+		I2C_BOARD_INFO("mt9m111", 0x5d),
 	},
 };
 
 static struct platform_device *a780_devices[] __initdata = {
 	&a780_gpio_keys,
+	&camera_supply_dummy_device,
 };
 
 static void __init a780_init(void)
@@ -782,18 +814,19 @@ static void __init a780_init(void)
 	pxa_set_stuart_info(NULL);
 
 	pxa_set_i2c_info(NULL);
+	i2c_register_board_info(0, ARRAY_AND_SIZE(a780_i2c_board_info));
 
 	pxa_set_fb_info(NULL, &ezx_fb_info_1);
 
 	pxa_set_keypad_info(&a780_keypad_platform_data);
 
-	if (a780_camera_init() == 0) {
+	if (a780_camera_init() == 0)
 		pxa_set_camera_info(&a780_pxacamera_platform_data);
-		platform_device_register(&a780_camera);
-	}
 
+	pwm_add_table(ezx_pwm_lookup, ARRAY_SIZE(ezx_pwm_lookup));
 	platform_add_devices(ARRAY_AND_SIZE(ezx_devices));
 	platform_add_devices(ARRAY_AND_SIZE(a780_devices));
+	regulator_has_full_constraints();
 }
 
 MACHINE_START(EZX_A780, "Motorola EZX A780")
@@ -802,7 +835,7 @@ MACHINE_START(EZX_A780, "Motorola EZX A780")
 	.nr_irqs	= EZX_NR_IRQS,
 	.init_irq       = pxa27x_init_irq,
 	.handle_irq       = pxa27x_handle_irq,
-	.timer          = &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine   = a780_init,
 	.restart	= pxa_restart,
 MACHINE_END
@@ -859,6 +892,7 @@ static void __init e680_init(void)
 
 	pxa_set_keypad_info(&e680_keypad_platform_data);
 
+	pwm_add_table(ezx_pwm_lookup, ARRAY_SIZE(ezx_pwm_lookup));
 	platform_add_devices(ARRAY_AND_SIZE(ezx_devices));
 	platform_add_devices(ARRAY_AND_SIZE(e680_devices));
 }
@@ -869,7 +903,7 @@ MACHINE_START(EZX_E680, "Motorola EZX E680")
 	.nr_irqs	= EZX_NR_IRQS,
 	.init_irq       = pxa27x_init_irq,
 	.handle_irq       = pxa27x_handle_irq,
-	.timer          = &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine   = e680_init,
 	.restart	= pxa_restart,
 MACHINE_END
@@ -926,6 +960,7 @@ static void __init a1200_init(void)
 
 	pxa_set_keypad_info(&a1200_keypad_platform_data);
 
+	pwm_add_table(ezx_pwm_lookup, ARRAY_SIZE(ezx_pwm_lookup));
 	platform_add_devices(ARRAY_AND_SIZE(ezx_devices));
 	platform_add_devices(ARRAY_AND_SIZE(a1200_devices));
 }
@@ -936,7 +971,7 @@ MACHINE_START(EZX_A1200, "Motorola EZX A1200")
 	.nr_irqs	= EZX_NR_IRQS,
 	.init_irq       = pxa27x_init_irq,
 	.handle_irq       = pxa27x_handle_irq,
-	.timer          = &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine   = a1200_init,
 	.restart	= pxa_restart,
 MACHINE_END
@@ -969,43 +1004,6 @@ static struct platform_device a910_gpio_keys = {
 };
 
 /* camera */
-static int a910_camera_init(void)
-{
-	int err;
-
-	/*
-	 * GPIO50_nCAM_EN is active low
-	 * GPIO28_GEN2_CAM_RST is active on rising edge
-	 */
-	err = gpio_request(GPIO50_nCAM_EN, "nCAM_EN");
-	if (err) {
-		pr_err("%s: Failed to request nCAM_EN\n", __func__);
-		goto fail;
-	}
-
-	err = gpio_request(GPIO28_GEN2_CAM_RST, "CAM_RST");
-	if (err) {
-		pr_err("%s: Failed to request CAM_RST\n", __func__);
-		goto fail_gpio_cam_rst;
-	}
-
-	gpio_direction_output(GPIO50_nCAM_EN, 1);
-	gpio_direction_output(GPIO28_GEN2_CAM_RST, 0);
-
-	return 0;
-
-fail_gpio_cam_rst:
-	gpio_free(GPIO50_nCAM_EN);
-fail:
-	return err;
-}
-
-static int a910_camera_power(struct device *dev, int on)
-{
-	gpio_set_value(GPIO50_nCAM_EN, !on);
-	return 0;
-}
-
 static int a910_camera_reset(struct device *dev)
 {
 	gpio_set_value(GPIO28_GEN2_CAM_RST, 0);
@@ -1015,30 +1013,33 @@ static int a910_camera_reset(struct device *dev)
 	return 0;
 }
 
+static int a910_camera_init(void)
+{
+	int err;
+
+	/*
+	 * GPIO50_nCAM_EN is active low
+	 * GPIO28_GEN2_CAM_RST is active on rising edge
+	 */
+	err = gpio_request(GPIO28_GEN2_CAM_RST, "CAM_RST");
+	if (err) {
+		pr_err("%s: Failed to request CAM_RST\n", __func__);
+		return err;
+	}
+
+	gpio_direction_output(GPIO28_GEN2_CAM_RST, 0);
+	a910_camera_reset(NULL);
+
+	return 0;
+}
+
 struct pxacamera_platform_data a910_pxacamera_platform_data = {
 	.flags  = PXA_CAMERA_MASTER | PXA_CAMERA_DATAWIDTH_8 |
-		PXA_CAMERA_PCLK_EN | PXA_CAMERA_MCLK_EN,
+		PXA_CAMERA_PCLK_EN | PXA_CAMERA_MCLK_EN |
+		PXA_CAMERA_PCP,
 	.mclk_10khz = 5000,
-};
-
-static struct i2c_board_info a910_camera_i2c_board_info = {
-	I2C_BOARD_INFO("mt9m111", 0x5d),
-};
-
-static struct soc_camera_link a910_iclink = {
-	.bus_id         = 0,
-	.i2c_adapter_id = 0,
-	.board_info     = &a910_camera_i2c_board_info,
-	.power          = a910_camera_power,
-	.reset          = a910_camera_reset,
-};
-
-static struct platform_device a910_camera = {
-	.name   = "soc-camera-pdrv",
-	.id     = 0,
-	.dev    = {
-		.platform_data = &a910_iclink,
-	},
+	.sensor_i2c_adapter_id = 0,
+	.sensor_i2c_address = 0x5d,
 };
 
 /* leds-lp3944 */
@@ -1090,10 +1091,14 @@ static struct i2c_board_info __initdata a910_i2c_board_info[] = {
 		I2C_BOARD_INFO("lp3944", 0x60),
 		.platform_data = &a910_lp3944_leds,
 	},
+	{
+		I2C_BOARD_INFO("mt9m111", 0x5d),
+	},
 };
 
 static struct platform_device *a910_devices[] __initdata = {
 	&a910_gpio_keys,
+	&camera_supply_dummy_device,
 };
 
 static void __init a910_init(void)
@@ -1113,13 +1118,13 @@ static void __init a910_init(void)
 
 	pxa_set_keypad_info(&a910_keypad_platform_data);
 
-	if (a910_camera_init() == 0) {
+	if (a910_camera_init() == 0)
 		pxa_set_camera_info(&a910_pxacamera_platform_data);
-		platform_device_register(&a910_camera);
-	}
 
+	pwm_add_table(ezx_pwm_lookup, ARRAY_SIZE(ezx_pwm_lookup));
 	platform_add_devices(ARRAY_AND_SIZE(ezx_devices));
 	platform_add_devices(ARRAY_AND_SIZE(a910_devices));
+	regulator_has_full_constraints();
 }
 
 MACHINE_START(EZX_A910, "Motorola EZX A910")
@@ -1128,7 +1133,7 @@ MACHINE_START(EZX_A910, "Motorola EZX A910")
 	.nr_irqs	= EZX_NR_IRQS,
 	.init_irq       = pxa27x_init_irq,
 	.handle_irq       = pxa27x_handle_irq,
-	.timer          = &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine   = a910_init,
 	.restart	= pxa_restart,
 MACHINE_END
@@ -1185,6 +1190,7 @@ static void __init e6_init(void)
 
 	pxa_set_keypad_info(&e6_keypad_platform_data);
 
+	pwm_add_table(ezx_pwm_lookup, ARRAY_SIZE(ezx_pwm_lookup));
 	platform_add_devices(ARRAY_AND_SIZE(ezx_devices));
 	platform_add_devices(ARRAY_AND_SIZE(e6_devices));
 }
@@ -1195,7 +1201,7 @@ MACHINE_START(EZX_E6, "Motorola EZX E6")
 	.nr_irqs	= EZX_NR_IRQS,
 	.init_irq       = pxa27x_init_irq,
 	.handle_irq       = pxa27x_handle_irq,
-	.timer          = &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine   = e6_init,
 	.restart	= pxa_restart,
 MACHINE_END
@@ -1226,6 +1232,7 @@ static void __init e2_init(void)
 
 	pxa_set_keypad_info(&e2_keypad_platform_data);
 
+	pwm_add_table(ezx_pwm_lookup, ARRAY_SIZE(ezx_pwm_lookup));
 	platform_add_devices(ARRAY_AND_SIZE(ezx_devices));
 	platform_add_devices(ARRAY_AND_SIZE(e2_devices));
 }
@@ -1236,7 +1243,7 @@ MACHINE_START(EZX_E2, "Motorola EZX E2")
 	.nr_irqs	= EZX_NR_IRQS,
 	.init_irq       = pxa27x_init_irq,
 	.handle_irq       = pxa27x_handle_irq,
-	.timer          = &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine   = e2_init,
 	.restart	= pxa_restart,
 MACHINE_END

@@ -20,8 +20,10 @@
 #include <linux/module.h>
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
-#include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/hotplug.h>
 #include <linux/atomic.h>
+#include <linux/clockchips.h>
 #include <asm/processor.h>
 #include <asm/mmu_context.h>
 #include <asm/smp.h>
@@ -37,7 +39,7 @@ struct plat_smp_ops *mp_ops = NULL;
 /* State of each CPU */
 DEFINE_PER_CPU(int, cpu_state) = { 0 };
 
-void __cpuinit register_smp_ops(struct plat_smp_ops *ops)
+void register_smp_ops(struct plat_smp_ops *ops)
 {
 	if (mp_ops)
 		printk(KERN_WARNING "Overriding previously set SMP ops\n");
@@ -45,7 +47,7 @@ void __cpuinit register_smp_ops(struct plat_smp_ops *ops)
 	mp_ops = ops;
 }
 
-static inline void __cpuinit smp_store_cpu_info(unsigned int cpu)
+static inline void smp_store_cpu_info(unsigned int cpu)
 {
 	struct sh_cpuinfo *c = cpu_data + cpu;
 
@@ -111,7 +113,7 @@ void play_dead_common(void)
 	irq_ctx_exit(raw_smp_processor_id());
 	mb();
 
-	__get_cpu_var(cpu_state) = CPU_DEAD;
+	__this_cpu_write(cpu_state, CPU_DEAD);
 	local_irq_disable();
 }
 
@@ -123,7 +125,6 @@ void native_play_dead(void)
 int __cpu_disable(void)
 {
 	unsigned int cpu = smp_processor_id();
-	struct task_struct *p;
 	int ret;
 
 	ret = mp_ops->cpu_disable(cpu);
@@ -142,22 +143,15 @@ int __cpu_disable(void)
 	migrate_irqs();
 
 	/*
-	 * Stop the local timer for this CPU.
-	 */
-	local_timer_stop(cpu);
-
-	/*
 	 * Flush user cache and TLB mappings, and then remove this CPU
 	 * from the vm mask set of all processes.
 	 */
 	flush_cache_all();
+#ifdef CONFIG_MMU
 	local_flush_tlb_all();
+#endif
 
-	read_lock(&tasklist_lock);
-	for_each_process(p)
-		if (p->mm)
-			cpumask_clear_cpu(cpu, mm_cpumask(p->mm));
-	read_unlock(&tasklist_lock);
+	clear_tasks_mm_cpumask(cpu);
 
 	return 0;
 }
@@ -179,17 +173,19 @@ void native_play_dead(void)
 }
 #endif
 
-asmlinkage void __cpuinit start_secondary(void)
+asmlinkage void start_secondary(void)
 {
 	unsigned int cpu = smp_processor_id();
 	struct mm_struct *mm = &init_mm;
 
 	enable_mmu();
-	atomic_inc(&mm->mm_count);
-	atomic_inc(&mm->mm_users);
+	mmgrab(mm);
+	mmget(mm);
 	current->active_mm = mm;
+#ifdef CONFIG_MMU
 	enter_lazy_tlb(mm, current);
 	local_flush_tlb_all();
+#endif
 
 	per_cpu_trap_init();
 
@@ -199,8 +195,6 @@ asmlinkage void __cpuinit start_secondary(void)
 
 	local_irq_enable();
 
-	/* Enable local timers */
-	local_timer_setup(cpu);
 	calibrate_delay();
 
 	smp_store_cpu_info(cpu);
@@ -208,7 +202,7 @@ asmlinkage void __cpuinit start_secondary(void)
 	set_cpu_online(cpu, true);
 	per_cpu(cpu_state, cpu) = CPU_ONLINE;
 
-	cpu_idle();
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 }
 
 extern struct {
@@ -220,21 +214,9 @@ extern struct {
 	void *thread_info;
 } stack_start;
 
-int __cpuinit __cpu_up(unsigned int cpu)
+int __cpu_up(unsigned int cpu, struct task_struct *tsk)
 {
-	struct task_struct *tsk;
 	unsigned long timeout;
-
-	tsk = cpu_data[cpu].idle;
-	if (!tsk) {
-		tsk = fork_idle(cpu);
-		if (IS_ERR(tsk)) {
-			pr_err("Failed forking idle task for cpu %d\n", cpu);
-			return PTR_ERR(tsk);
-		}
-
-		cpu_data[cpu].idle = tsk;
-	}
 
 	per_cpu(cpu_state, cpu) = CPU_UP_PREPARE;
 
@@ -302,7 +284,8 @@ void arch_send_call_function_single_ipi(int cpu)
 	mp_ops->send_ipi(cpu, SMP_MSG_FUNCTION_SINGLE);
 }
 
-void smp_timer_broadcast(const struct cpumask *mask)
+#ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
+void tick_broadcast(const struct cpumask *mask)
 {
 	int cpu;
 
@@ -313,9 +296,10 @@ void smp_timer_broadcast(const struct cpumask *mask)
 static void ipi_timer(void)
 {
 	irq_enter();
-	local_timer_interrupt();
+	tick_receive_broadcast();
 	irq_exit();
 }
+#endif
 
 void smp_message_recv(unsigned int msg)
 {
@@ -329,9 +313,11 @@ void smp_message_recv(unsigned int msg)
 	case SMP_MSG_FUNCTION_SINGLE:
 		generic_smp_call_function_single_interrupt();
 		break;
+#ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
 	case SMP_MSG_TIMER:
 		ipi_timer();
 		break;
+#endif
 	default:
 		printk(KERN_WARNING "SMP %d: %s(): unknown IPI %d\n",
 		       smp_processor_id(), __func__, msg);
@@ -344,6 +330,8 @@ int setup_profiling_timer(unsigned int multiplier)
 {
 	return 0;
 }
+
+#ifdef CONFIG_MMU
 
 static void flush_tlb_all_ipi(void *info)
 {
@@ -380,7 +368,7 @@ void flush_tlb_mm(struct mm_struct *mm)
 		smp_call_function(flush_tlb_mm_ipi, (void *)mm, 1);
 	} else {
 		int i;
-		for (i = 0; i < num_online_cpus(); i++)
+		for_each_online_cpu(i)
 			if (smp_processor_id() != i)
 				cpu_context(i, mm) = 0;
 	}
@@ -417,7 +405,7 @@ void flush_tlb_range(struct vm_area_struct *vma,
 		smp_call_function(flush_tlb_range_ipi, (void *)&fd, 1);
 	} else {
 		int i;
-		for (i = 0; i < num_online_cpus(); i++)
+		for_each_online_cpu(i)
 			if (smp_processor_id() != i)
 				cpu_context(i, mm) = 0;
 	}
@@ -460,7 +448,7 @@ void flush_tlb_page(struct vm_area_struct *vma, unsigned long page)
 		smp_call_function(flush_tlb_page_ipi, (void *)&fd, 1);
 	} else {
 		int i;
-		for (i = 0; i < num_online_cpus(); i++)
+		for_each_online_cpu(i)
 			if (smp_processor_id() != i)
 				cpu_context(i, vma->vm_mm) = 0;
 	}
@@ -484,3 +472,5 @@ void flush_tlb_one(unsigned long asid, unsigned long vaddr)
 	smp_call_function(flush_tlb_one_ipi, (void *)&fd, 1);
 	local_flush_tlb_one(asid, vaddr);
 }
+
+#endif

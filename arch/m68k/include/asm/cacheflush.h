@@ -1,5 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifdef __uClinux__
-#include "cacheflush_no.h"
+#include <asm/cacheflush_no.h>
 #else
-#include "cacheflush_mm.h"
+#include <asm/cacheflush_mm.h>
 #endif

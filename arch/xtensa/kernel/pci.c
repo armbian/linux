@@ -46,7 +46,6 @@
  * pcibios_fixups
  * pcibios_align_resource
  * pcibios_fixup_bus
- * pcibios_setup
  * pci_bus_add_device
  * pci_mmap_page_range
  */
@@ -78,9 +77,9 @@ pcibios_align_resource(void *data, const struct resource *res,
 
 	if (res->flags & IORESOURCE_IO) {
 		if (size > 0x100) {
-			printk(KERN_ERR "PCI: I/O Region %s/%d too large"
-			       " (%ld bytes)\n", pci_name(dev),
-			       dev->resource - res, size);
+			pr_err("PCI: I/O Region %s/%d too large (%u bytes)\n",
+					pci_name(dev), dev->resource - res,
+					size);
 		}
 
 		if (start & 0x300)
@@ -175,7 +174,7 @@ static int __init pcibios_init(void)
 	struct pci_controller *pci_ctrl;
 	struct list_head resources;
 	struct pci_bus *bus;
-	int next_busno = 0, i;
+	int next_busno = 0, ret;
 
 	printk("PCI: Probing PCI hardware\n");
 
@@ -186,19 +185,30 @@ static int __init pcibios_init(void)
 		pci_controller_apertures(pci_ctrl, &resources);
 		bus = pci_scan_root_bus(NULL, pci_ctrl->first_busno,
 					pci_ctrl->ops, pci_ctrl, &resources);
+		if (!bus)
+			continue;
+
 		pci_ctrl->bus = bus;
-		pci_ctrl->last_busno = bus->subordinate;
+		pci_ctrl->last_busno = bus->busn_res.end;
 		if (next_busno <= pci_ctrl->last_busno)
 			next_busno = pci_ctrl->last_busno+1;
 	}
 	pci_bus_count = next_busno;
+	ret = platform_pcibios_fixup();
+	if (ret)
+		return ret;
 
-	return platform_pcibios_fixup();
+	for (pci_ctrl = pci_ctrl_head; pci_ctrl; pci_ctrl = pci_ctrl->next) {
+		if (pci_ctrl->bus)
+			pci_bus_add_devices(pci_ctrl->bus);
+	}
+
+	return 0;
 }
 
 subsys_initcall(pcibios_init);
 
-void __init pcibios_fixup_bus(struct pci_bus *bus)
+void pcibios_fixup_bus(struct pci_bus *bus)
 {
 	if (bus->parent) {
 		/* This is a subordinate bridge */
@@ -206,22 +216,9 @@ void __init pcibios_fixup_bus(struct pci_bus *bus)
 	}
 }
 
-char __init *pcibios_setup(char *str)
-{
-	return str;
-}
-
 void pcibios_set_master(struct pci_dev *dev)
 {
 	/* No special bus mastering setup handling */
-}
-
-/* the next one is stolen from the alpha port... */
-
-void __init
-pcibios_update_irq(struct pci_dev *dev, int irq)
-{
-	pci_write_config_byte(dev, PCI_INTERRUPT_LINE, irq);
 }
 
 int pcibios_enable_device(struct pci_dev *dev, int mask)
@@ -337,25 +334,6 @@ __pci_mmap_make_offset(struct pci_dev *dev, struct vm_area_struct *vma,
 }
 
 /*
- * Set vm_page_prot of VMA, as appropriate for this architecture, for a pci
- * device mapping.
- */
-static __inline__ void
-__pci_mmap_set_pgprot(struct pci_dev *dev, struct vm_area_struct *vma,
-		      enum pci_mmap_state mmap_state, int write_combine)
-{
-	int prot = pgprot_val(vma->vm_page_prot);
-
-	/* Set to write-through */
-	prot &= ~_PAGE_NO_CACHE;
-#if 0
-	if (!write_combine)
-		prot |= _PAGE_WRITETHRU;
-#endif
-	vma->vm_page_prot = __pgprot(prot);
-}
-
-/*
  * Perform the actual remap of the pages for a PCI device mapping, as
  * appropriate for this architecture.  The region in the process to map
  * is described by vm_start and vm_end members of VMA, the base physical
@@ -365,7 +343,8 @@ __pci_mmap_set_pgprot(struct pci_dev *dev, struct vm_area_struct *vma,
  *
  * Returns a negative error code on failure, zero on success.
  */
-int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
+int pci_mmap_page_range(struct pci_dev *dev, int bar,
+			struct vm_area_struct *vma,
 			enum pci_mmap_state mmap_state,
 			int write_combine)
 {
@@ -375,7 +354,7 @@ int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
 	if (ret < 0)
 		return ret;
 
-	__pci_mmap_set_pgprot(dev, vma, mmap_state, write_combine);
+	vma->vm_page_prot = pgprot_device(vma->vm_page_prot);
 
 	ret = io_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			         vma->vm_end - vma->vm_start,vma->vm_page_prot);

@@ -25,11 +25,11 @@
 #include <linux/slab.h>
 #include <linux/ioport.h>
 #include <linux/module.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/es1688.h>
 #include <sound/initval.h>
 
-#include <asm/io.h>
 #include <asm/dma.h>
 
 MODULE_AUTHOR("Jaroslav Kysela <perex@perex.cz>");
@@ -290,7 +290,7 @@ static int snd_es1688_init(struct snd_es1688 * chip, int enable)
 
  */
 
-static struct snd_ratnum clocks[2] = {
+static const struct snd_ratnum clocks[2] = {
 	{
 		.num = 795444,
 		.den_min = 1,
@@ -305,7 +305,7 @@ static struct snd_ratnum clocks[2] = {
 	}
 };
 
-static struct snd_pcm_hw_constraint_ratnums hw_constraints_clocks  = {
+static const struct snd_pcm_hw_constraint_ratnums hw_constraints_clocks  = {
 	.nrats = 2,
 	.rats = clocks,
 };
@@ -526,7 +526,7 @@ static snd_pcm_uframes_t snd_es1688_capture_pointer(struct snd_pcm_substream *su
 
  */
 
-static struct snd_pcm_hardware snd_es1688_playback =
+static const struct snd_pcm_hardware snd_es1688_playback =
 {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_MMAP_VALID),
@@ -544,7 +544,7 @@ static struct snd_pcm_hardware snd_es1688_playback =
 	.fifo_size =		0,
 };
 
-static struct snd_pcm_hardware snd_es1688_capture =
+static const struct snd_pcm_hardware snd_es1688_capture =
 {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_MMAP_VALID),
@@ -612,10 +612,9 @@ static int snd_es1688_capture_close(struct snd_pcm_substream *substream)
 
 static int snd_es1688_free(struct snd_es1688 *chip)
 {
-	if (chip->res_port) {
+	if (chip->hardware != ES1688_HW_UNDEF)
 		snd_es1688_init(chip, 0);
-		release_and_free_resource(chip->res_port);
-	}
+	release_and_free_resource(chip->res_port);
 	if (chip->irq >= 0)
 		free_irq(chip->irq, (void *) chip);
 	if (chip->dma8 >= 0) {
@@ -657,19 +656,27 @@ int snd_es1688_create(struct snd_card *card,
 		return -ENOMEM;
 	chip->irq = -1;
 	chip->dma8 = -1;
+	chip->hardware = ES1688_HW_UNDEF;
 	
-	if ((chip->res_port = request_region(port + 4, 12, "ES1688")) == NULL) {
+	chip->res_port = request_region(port + 4, 12, "ES1688");
+	if (chip->res_port == NULL) {
 		snd_printk(KERN_ERR "es1688: can't grab port 0x%lx\n", port + 4);
-		return -EBUSY;
+		err = -EBUSY;
+		goto exit;
 	}
-	if (request_irq(irq, snd_es1688_interrupt, 0, "ES1688", (void *) chip)) {
+
+	err = request_irq(irq, snd_es1688_interrupt, 0, "ES1688", (void *) chip);
+	if (err < 0) {
 		snd_printk(KERN_ERR "es1688: can't grab IRQ %d\n", irq);
-		return -EBUSY;
+		goto exit;
 	}
+
 	chip->irq = irq;
-	if (request_dma(dma8, "ES1688")) {
+	err = request_dma(dma8, "ES1688");
+
+	if (err < 0) {
 		snd_printk(KERN_ERR "es1688: can't grab DMA8 %d\n", dma8);
-		return -EBUSY;
+		goto exit;
 	}
 	chip->dma8 = dma8;
 
@@ -685,17 +692,21 @@ int snd_es1688_create(struct snd_card *card,
 
 	err = snd_es1688_probe(chip);
 	if (err < 0)
-		return err;
+		goto exit;
 
 	err = snd_es1688_init(chip, 1);
 	if (err < 0)
-		return err;
+		goto exit;
 
 	/* Register device */
-	return snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops);
+	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops);
+exit:
+	if (err)
+		snd_es1688_free(chip);
+	return err;
 }
 
-static struct snd_pcm_ops snd_es1688_playback_ops = {
+static const struct snd_pcm_ops snd_es1688_playback_ops = {
 	.open =			snd_es1688_playback_open,
 	.close =		snd_es1688_playback_close,
 	.ioctl =		snd_es1688_ioctl,
@@ -706,7 +717,7 @@ static struct snd_pcm_ops snd_es1688_playback_ops = {
 	.pointer =		snd_es1688_playback_pointer,
 };
 
-static struct snd_pcm_ops snd_es1688_capture_ops = {
+static const struct snd_pcm_ops snd_es1688_capture_ops = {
 	.open =			snd_es1688_capture_open,
 	.close =		snd_es1688_capture_close,
 	.ioctl =		snd_es1688_ioctl,
@@ -717,8 +728,7 @@ static struct snd_pcm_ops snd_es1688_capture_ops = {
 	.pointer =		snd_es1688_capture_pointer,
 };
 
-int snd_es1688_pcm(struct snd_card *card, struct snd_es1688 *chip,
-		   int device, struct snd_pcm **rpcm)
+int snd_es1688_pcm(struct snd_card *card, struct snd_es1688 *chip, int device)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -732,15 +742,12 @@ int snd_es1688_pcm(struct snd_card *card, struct snd_es1688 *chip,
 
 	pcm->private_data = chip;
 	pcm->info_flags = SNDRV_PCM_INFO_HALF_DUPLEX;
-	sprintf(pcm->name, snd_es1688_chip_id(chip));
+	strcpy(pcm->name, snd_es1688_chip_id(chip));
 	chip->pcm = pcm;
 
 	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
 					      snd_dma_isa_data(),
 					      64*1024, 64*1024);
-
-	if (rpcm)
-		*rpcm = pcm;
 	return 0;
 }
 
@@ -750,18 +757,12 @@ int snd_es1688_pcm(struct snd_card *card, struct snd_es1688 *chip,
 
 static int snd_es1688_info_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo)
 {
-	static char *texts[9] = {
+	static const char * const texts[8] = {
 		"Mic", "Mic Master", "CD", "AOUT",
 		"Mic1", "Mix", "Line", "Master"
 	};
 
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 1;
-	uinfo->value.enumerated.items = 8;
-	if (uinfo->value.enumerated.item > 7)
-		uinfo->value.enumerated.item = 7;
-	strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
-	return 0;
+	return snd_ctl_enum_info(uinfo, 1, 8, texts);
 }
 
 static int snd_es1688_get_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)

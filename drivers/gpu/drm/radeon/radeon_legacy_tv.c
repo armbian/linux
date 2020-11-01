@@ -1,5 +1,6 @@
-#include "drmP.h"
-#include "drm_crtc_helper.h"
+// SPDX-License-Identifier: GPL-2.0
+#include <drm/drmP.h>
+#include <drm/drm_crtc_helper.h>
 #include "radeon.h"
 
 /*

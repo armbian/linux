@@ -12,10 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  *
  * File: usbpipe.h
  *
@@ -30,46 +26,19 @@
 #ifndef __USBPIPE_H__
 #define __USBPIPE_H__
 
-#include "ttype.h"
 #include "device.h"
 
-/*---------------------  Export Definitions -------------------------*/
+int vnt_control_out(struct vnt_private *priv, u8 request, u16 value,
+		    u16 index, u16 length, u8 *buffer);
+int vnt_control_in(struct vnt_private *priv, u8 request, u16 value,
+		   u16 index, u16 length,  u8 *buffer);
 
-/*---------------------  Export Classes  ----------------------------*/
+void vnt_control_out_u8(struct vnt_private *priv, u8 reg, u8 ref_off, u8 data);
+void vnt_control_in_u8(struct vnt_private *priv, u8 reg, u8 reg_off, u8 *data);
 
-/*---------------------  Export Variables  --------------------------*/
-
-/*---------------------  Export Functions  --------------------------*/
-
-int PIPEnsControlOut(
-     PSDevice     pDevice,
-     BYTE         byRequest,
-     WORD         wValue,
-     WORD         wIndex,
-     WORD         wLength,
-     PBYTE        pbyBuffer
-    );
-
-int PIPEnsControlOutAsyn(
-     PSDevice     pDevice,
-     BYTE         byRequest,
-     WORD         wValue,
-     WORD         wIndex,
-     WORD         wLength,
-     PBYTE        pbyBuffer
-    );
-
-int PIPEnsControlIn(
-     PSDevice     pDevice,
-     BYTE         byRequest,
-     WORD         wValue,
-     WORD         wIndex,
-     WORD         wLength,
-       PBYTE   pbyBuffer
-    );
-
-int PIPEnsInterruptRead(PSDevice pDevice);
-int PIPEnsBulkInUsbRead(PSDevice pDevice, PRCB pRCB);
-int PIPEnsSendBulkOut(PSDevice pDevice, PUSB_SEND_CONTEXT pContext);
+int vnt_start_interrupt_urb(struct vnt_private *priv);
+int vnt_submit_rx_urb(struct vnt_private *priv, struct vnt_rcb *rcb);
+int vnt_tx_context(struct vnt_private *priv,
+		   struct vnt_usb_send_context *context);
 
 #endif /* __USBPIPE_H__ */

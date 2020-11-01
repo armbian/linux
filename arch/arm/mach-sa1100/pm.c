@@ -23,6 +23,7 @@
  * 				Storage is local on the stack now.
  */
 #include <linux/init.h>
+#include <linux/io.h>
 #include <linux/suspend.h>
 #include <linux/errno.h>
 #include <linux/time.h>
@@ -72,7 +73,7 @@ static int sa11x0_pm_enter(suspend_state_t state)
 	RCSR = RCSR_HWR | RCSR_SWR | RCSR_WDR | RCSR_SMR;
 
 	/* set resume return address */
-	PSPR = virt_to_phys(cpu_resume);
+	PSPR = __pa_symbol(cpu_resume);
 
 	/* go zzz */
 	cpu_suspend(0, sa1100_finish_suspend);
@@ -118,10 +119,8 @@ static const struct platform_suspend_ops sa11x0_pm_ops = {
 	.valid		= suspend_valid_only_mem,
 };
 
-static int __init sa11x0_pm_init(void)
+int __init sa11x0_pm_init(void)
 {
 	suspend_set_ops(&sa11x0_pm_ops);
 	return 0;
 }
-
-late_initcall(sa11x0_pm_init);

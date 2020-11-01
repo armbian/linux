@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <asm/i8259.h>
 #include <linux/pci.h>
 #include "44x.h"
@@ -5,7 +6,7 @@
 /**
  * ml510_ail_quirk
  */
-static void __devinit ml510_ali_quirk(struct pci_dev *dev)
+static void ml510_ali_quirk(struct pci_dev *dev)
 {
 	/* Enable the IDE controller */
 	pci_write_config_byte(dev, 0x58, 0x4c);

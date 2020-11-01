@@ -1,7 +1,7 @@
 /*
  *  Collaborative memory management interface.
  *
- *    Copyright IBM Corp 2003,2010
+ *    Copyright IBM Corp 2003, 2010
  *    Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>,
  *
  */
@@ -10,6 +10,7 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/gfp.h>
 #include <linux/sched.h>
 #include <linux/sysctl.h>
@@ -253,12 +254,12 @@ static int cmm_skip_blanks(char *cp, char **endp)
 
 static struct ctl_table cmm_table[];
 
-static int cmm_pages_handler(ctl_table *ctl, int write, void __user *buffer,
-			     size_t *lenp, loff_t *ppos)
+static int cmm_pages_handler(struct ctl_table *ctl, int write,
+			     void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	char buf[16], *p;
+	unsigned int len;
 	long nr;
-	int len;
 
 	if (!*lenp || (*ppos && !write)) {
 		*lenp = 0;
@@ -293,12 +294,12 @@ static int cmm_pages_handler(ctl_table *ctl, int write, void __user *buffer,
 	return 0;
 }
 
-static int cmm_timeout_handler(ctl_table *ctl, int write,  void __user *buffer,
-			       size_t *lenp, loff_t *ppos)
+static int cmm_timeout_handler(struct ctl_table *ctl, int write,
+			       void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	char buf[64], *p;
 	long nr, seconds;
-	int len;
+	unsigned int len;
 
 	if (!*lenp || (*ppos && !write)) {
 		*lenp = 0;
@@ -306,16 +307,16 @@ static int cmm_timeout_handler(ctl_table *ctl, int write,  void __user *buffer,
 	}
 
 	if (write) {
-		len = *lenp;
-		if (copy_from_user(buf, buffer,
-				   len > sizeof(buf) ? sizeof(buf) : len))
+		len = min(*lenp, sizeof(buf));
+		if (copy_from_user(buf, buffer, len))
 			return -EFAULT;
-		buf[sizeof(buf) - 1] = '\0';
+		buf[len - 1] = '\0';
 		cmm_skip_blanks(buf, &p);
 		nr = simple_strtoul(p, &p, 0);
 		cmm_skip_blanks(p, &p);
 		seconds = simple_strtoul(p, &p, 0);
 		cmm_set_timeout(nr, seconds);
+		*ppos += *lenp;
 	} else {
 		len = sprintf(buf, "%ld %ld\n",
 			      cmm_timeout_pages, cmm_timeout_seconds);
@@ -323,9 +324,9 @@ static int cmm_timeout_handler(ctl_table *ctl, int write,  void __user *buffer,
 			len = *lenp;
 		if (copy_to_user(buffer, buf, len))
 			return -EFAULT;
+		*lenp = len;
+		*ppos += len;
 	}
-	*lenp = len;
-	*ppos += len;
 	return 0;
 }
 
@@ -458,12 +459,10 @@ static int __init cmm_init(void)
 	if (rc)
 		goto out_pm;
 	cmm_thread_ptr = kthread_run(cmm_thread, NULL, "cmmthread");
-	rc = IS_ERR(cmm_thread_ptr) ? PTR_ERR(cmm_thread_ptr) : 0;
-	if (rc)
-		goto out_kthread;
-	return 0;
+	if (!IS_ERR(cmm_thread_ptr))
+		return 0;
 
-out_kthread:
+	rc = PTR_ERR(cmm_thread_ptr);
 	unregister_pm_notifier(&cmm_power_notifier);
 out_pm:
 	unregister_oom_notifier(&cmm_oom_nb);

@@ -14,9 +14,7 @@
  */
 
 #include <linux/if_arp.h>
-#include <linux/if_tr.h>
 #include <linux/netdevice.h>
-#include <linux/trdevice.h>
 #include <linux/skbuff.h>
 #include <linux/export.h>
 #include <net/llc.h>
@@ -37,7 +35,6 @@ int llc_mac_hdr_init(struct sk_buff *skb,
 	int rc = -EINVAL;
 
 	switch (skb->dev->type) {
-	case ARPHRD_IEEE802_TR:
 	case ARPHRD_ETHER:
 	case ARPHRD_LOOPBACK:
 		rc = dev_hard_header(skb, skb->dev, ETH_P_802_2, da, sa,
@@ -46,7 +43,7 @@ int llc_mac_hdr_init(struct sk_buff *skb,
 			rc = 0;
 		break;
 	default:
-		WARN(1, "device type not supported: %d\n", skb->dev->type);
+		break;
 	}
 	return rc;
 }
@@ -75,6 +72,8 @@ int llc_build_and_send_ui_pkt(struct llc_sap *sap, struct sk_buff *skb,
 	rc = llc_mac_hdr_init(skb, skb->dev->dev_addr, dmac);
 	if (likely(!rc))
 		rc = dev_queue_xmit(skb);
+	else
+		kfree_skb(skb);
 	return rc;
 }
 

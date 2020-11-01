@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/m32r/boot/compressed/misc.c
  *
@@ -86,6 +87,7 @@ decompress_kernel(int mmu_on, unsigned char *zimage_data,
 	free_mem_end_ptr = free_mem_ptr + BOOT_HEAP_SIZE;
 
 	puts("\nDecompressing Linux... ");
-	decompress(input_data, input_len, NULL, NULL, output_data, NULL, error);
+	__decompress(input_data, input_len, NULL, NULL, output_data, 0,
+			NULL, error);
 	puts("done.\nBooting the kernel.\n");
 }

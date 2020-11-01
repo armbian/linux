@@ -26,7 +26,6 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
@@ -91,7 +90,7 @@ static int pcmcia_set_mode_8bit(struct ata_link *link,
 
 /**
  *	ata_data_xfer_8bit	 -	Transfer data by 8bit PIO
- *	@dev: device to target
+ *	@qc: queued command
  *	@buf: data buffer
  *	@buflen: buffer length
  *	@rw: read/write
@@ -102,10 +101,10 @@ static int pcmcia_set_mode_8bit(struct ata_link *link,
  *	Inherited from caller.
  */
 
-static unsigned int ata_data_xfer_8bit(struct ata_device *dev,
+static unsigned int ata_data_xfer_8bit(struct ata_queued_cmd *qc,
 				unsigned char *buf, unsigned int buflen, int rw)
 {
-	struct ata_port *ap = dev->link->ap;
+	struct ata_port *ap = qc->dev->link->ap;
 
 	if (rw == READ)
 		ioread8_rep(ap->ioaddr.data_addr, buf, buflen);
@@ -170,7 +169,8 @@ static int pcmcia_check_one_config(struct pcmcia_device *pdev, void *priv_data)
 {
 	int *is_kme = priv_data;
 
-	if (!(pdev->resource[0]->flags & IO_DATA_PATH_WIDTH_8)) {
+	if ((pdev->resource[0]->flags & IO_DATA_PATH_WIDTH)
+	    != IO_DATA_PATH_WIDTH_8) {
 		pdev->resource[0]->flags &= ~IO_DATA_PATH_WIDTH;
 		pdev->resource[0]->flags |= IO_DATA_PATH_WIDTH_AUTO;
 	}
@@ -386,21 +386,9 @@ static struct pcmcia_driver pcmcia_driver = {
 	.probe		= pcmcia_init_one,
 	.remove		= pcmcia_remove_one,
 };
-
-static int __init pcmcia_init(void)
-{
-	return pcmcia_register_driver(&pcmcia_driver);
-}
-
-static void __exit pcmcia_exit(void)
-{
-	pcmcia_unregister_driver(&pcmcia_driver);
-}
+module_pcmcia_driver(pcmcia_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for PCMCIA ATA");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
-
-module_init(pcmcia_init);
-module_exit(pcmcia_exit);

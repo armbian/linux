@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
 /*	From pas_card.c	*/
 int pas_set_intr(int mask);
@@ -15,3 +16,6 @@ int pas_init_mixer(void);
 /*	From pas_midi.c */
 void pas_midi_init(void);
 void pas_midi_interrupt(void);
+
+/*	From pas2_mixer.c*/
+void mix_write(unsigned char data, int ioaddr);

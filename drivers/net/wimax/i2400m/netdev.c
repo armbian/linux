@@ -156,7 +156,7 @@ void i2400m_wake_tx_work(struct work_struct *ws)
 	struct i2400m *i2400m = container_of(ws, struct i2400m, wake_tx_ws);
 	struct net_device *net_dev = i2400m->wimax_dev.net_dev;
 	struct device *dev = i2400m_dev(i2400m);
-	struct sk_buff *skb = i2400m->wake_tx_skb;
+	struct sk_buff *skb;
 	unsigned long flags;
 
 	spin_lock_irqsave(&i2400m->tx_lock, flags);
@@ -221,7 +221,7 @@ void i2400m_tx_prep_header(struct sk_buff *skb)
 {
 	struct i2400m_pl_data_hdr *pl_hdr;
 	skb_pull(skb, ETH_HLEN);
-	pl_hdr = (struct i2400m_pl_data_hdr *) skb_push(skb, sizeof(*pl_hdr));
+	pl_hdr = skb_push(skb, sizeof(*pl_hdr));
 	pl_hdr->reserved = 0;
 }
 
@@ -236,23 +236,26 @@ void i2400m_tx_prep_header(struct sk_buff *skb)
 void i2400m_net_wake_stop(struct i2400m *i2400m)
 {
 	struct device *dev = i2400m_dev(i2400m);
+	struct sk_buff *wake_tx_skb;
+	unsigned long flags;
 
 	d_fnstart(3, dev, "(i2400m %p)\n", i2400m);
-	/* See i2400m_hard_start_xmit(), references are taken there
-	 * and here we release them if the work was still
-	 * pending. Note we can't differentiate work not pending vs
-	 * never scheduled, so the NULL check does that. */
-	if (cancel_work_sync(&i2400m->wake_tx_ws) == 0
-	    && i2400m->wake_tx_skb != NULL) {
-		unsigned long flags;
-		struct sk_buff *wake_tx_skb;
-		spin_lock_irqsave(&i2400m->tx_lock, flags);
-		wake_tx_skb = i2400m->wake_tx_skb;	/* compat help */
-		i2400m->wake_tx_skb = NULL;	/* compat help */
-		spin_unlock_irqrestore(&i2400m->tx_lock, flags);
+	/*
+	 * See i2400m_hard_start_xmit(), references are taken there and
+	 * here we release them if the packet was still pending.
+	 */
+	cancel_work_sync(&i2400m->wake_tx_ws);
+
+	spin_lock_irqsave(&i2400m->tx_lock, flags);
+	wake_tx_skb = i2400m->wake_tx_skb;
+	i2400m->wake_tx_skb = NULL;
+	spin_unlock_irqrestore(&i2400m->tx_lock, flags);
+
+	if (wake_tx_skb) {
 		i2400m_put(i2400m);
 		kfree_skb(wake_tx_skb);
 	}
+
 	d_fnend(3, dev, "(i2400m %p) = void\n", i2400m);
 }
 
@@ -288,7 +291,7 @@ int i2400m_net_wake_tx(struct i2400m *i2400m, struct net_device *net_dev,
 	 * and if pending, release those resources. */
 	result = 0;
 	spin_lock_irqsave(&i2400m->tx_lock, flags);
-	if (!work_pending(&i2400m->wake_tx_ws)) {
+	if (!i2400m->wake_tx_skb) {
 		netif_stop_queue(net_dev);
 		i2400m_get(i2400m);
 		i2400m->wake_tx_skb = skb_get(skb);	/* transfer ref count */
@@ -331,7 +334,7 @@ int i2400m_net_tx(struct i2400m *i2400m, struct net_device *net_dev,
 	d_fnstart(3, dev, "(i2400m %p net_dev %p skb %p)\n",
 		  i2400m, net_dev, skb);
 	/* FIXME: check eth hdr, only IPv4 is routed by the device as of now */
-	net_dev->trans_start = jiffies;
+	netif_trans_update(net_dev);
 	i2400m_tx_prep_header(skb);
 	d_printf(3, dev, "NETTX: skb %p sending %d bytes to radio\n",
 		 skb, skb->len);
@@ -371,8 +374,7 @@ netdev_tx_t i2400m_hard_start_xmit(struct sk_buff *skb,
 
 	d_fnstart(3, dev, "(skb %p net_dev %p)\n", skb, net_dev);
 
-	if (skb_header_cloned(skb) && 
-	    pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
+	if (skb_cow_head(skb, 0))
 		goto drop;
 
 	if (i2400m->state == I2400M_SS_IDLE)
@@ -389,25 +391,6 @@ drop:
 	dev_kfree_skb(skb);
 	d_fnend(3, dev, "(skb %p net_dev %p) = %d\n", skb, net_dev, result);
 	return NETDEV_TX_OK;
-}
-
-
-static
-int i2400m_change_mtu(struct net_device *net_dev, int new_mtu)
-{
-	int result;
-	struct i2400m *i2400m = net_dev_to_i2400m(net_dev);
-	struct device *dev = i2400m_dev(i2400m);
-
-	if (new_mtu >= I2400M_MAX_MTU) {
-		dev_err(dev, "Cannot change MTU to %d (max is %d)\n",
-			new_mtu, I2400M_MAX_MTU);
-		result = -EINVAL;
-	} else {
-		net_dev->mtu = new_mtu;
-		result = 0;
-	}
-	return result;
 }
 
 
@@ -505,7 +488,7 @@ void i2400m_net_rx(struct i2400m *i2400m, struct sk_buff *skb_rx,
 			net_dev->stats.rx_dropped++;
 			goto error_skb_realloc;
 		}
-		memcpy(skb_put(skb, buf_len), buf, buf_len);
+		skb_put_data(skb, buf, buf_len);
 	}
 	i2400m_rx_fake_eth_header(i2400m->wimax_dev.net_dev,
 				  skb->data - ETH_HLEN,
@@ -588,7 +571,6 @@ static const struct net_device_ops i2400m_netdev_ops = {
 	.ndo_stop = i2400m_stop,
 	.ndo_start_xmit = i2400m_hard_start_xmit,
 	.ndo_tx_timeout = i2400m_tx_timeout,
-	.ndo_change_mtu = i2400m_change_mtu,
 };
 
 static void i2400m_get_drvinfo(struct net_device *net_dev,
@@ -596,12 +578,12 @@ static void i2400m_get_drvinfo(struct net_device *net_dev,
 {
 	struct i2400m *i2400m = net_dev_to_i2400m(net_dev);
 
-	strncpy(info->driver, KBUILD_MODNAME, sizeof(info->driver) - 1);
-	strncpy(info->fw_version,
-	        i2400m->fw_name ? : "", sizeof(info->fw_version) - 1);
+	strlcpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
+	strlcpy(info->fw_version, i2400m->fw_name ? : "",
+		sizeof(info->fw_version));
 	if (net_dev->dev.parent)
-		strncpy(info->bus_info, dev_name(net_dev->dev.parent),
-			sizeof(info->bus_info) - 1);
+		strlcpy(info->bus_info, dev_name(net_dev->dev.parent),
+			sizeof(info->bus_info));
 }
 
 static const struct ethtool_ops i2400m_ethtool_ops = {
@@ -619,6 +601,8 @@ void i2400m_netdev_setup(struct net_device *net_dev)
 	d_fnstart(3, NULL, "(net_dev %p)\n", net_dev);
 	ether_setup(net_dev);
 	net_dev->mtu = I2400M_MAX_MTU;
+	net_dev->min_mtu = 0;
+	net_dev->max_mtu = I2400M_MAX_MTU;
 	net_dev->tx_queue_len = I2400M_TX_QLEN;
 	net_dev->features =
 		  NETIF_F_VLAN_CHALLENGED

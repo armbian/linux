@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _VME_USER_H_
 #define _VME_USER_H_
 
@@ -7,19 +8,18 @@
  * VMEbus Master Window Configuration Structure
  */
 struct vme_master {
-	int enable;			/* State of Window */
-	unsigned long long vme_addr;	/* Starting Address on the VMEbus */
-	unsigned long long size;	/* Window Size */
-	u32 aspace;			/* Address Space */
-	u32 cycle;		/* Cycle properties */
-	u32 dwidth;		/* Maximum Data Width */
+	__u32 enable;		/* State of Window */
+	__u64 vme_addr;		/* Starting Address on the VMEbus */
+	__u64 size;		/* Window Size */
+	__u32 aspace;		/* Address Space */
+	__u32 cycle;		/* Cycle properties */
+	__u32 dwidth;		/* Maximum Data Width */
 #if 0
-	char prefetchEnable;		/* Prefetch Read Enable State */
-	int prefetchSize;		/* Prefetch Read Size (Cache Lines) */
-	char wrPostEnable;		/* Write Post State */
+	char prefetchenable;		/* Prefetch Read Enable State */
+	int prefetchsize;		/* Prefetch Read Size (Cache Lines) */
+	char wrpostenable;		/* Write Post State */
 #endif
-};
-
+} __packed;
 
 /*
  * IOCTL Commands and structures
@@ -28,20 +28,19 @@ struct vme_master {
 /* Magic number for use in ioctls */
 #define VME_IOC_MAGIC 0xAE
 
-
 /* VMEbus Slave Window Configuration Structure */
 struct vme_slave {
-	int enable;			/* State of Window */
-	unsigned long long vme_addr;	/* Starting Address on the VMEbus */
-	unsigned long long size;	/* Window Size */
-	u32 aspace;			/* Address Space */
-	u32 cycle;		/* Cycle properties */
+	__u32 enable;		/* State of Window */
+	__u64 vme_addr;		/* Starting Address on the VMEbus */
+	__u64 size;		/* Window Size */
+	__u32 aspace;		/* Address Space */
+	__u32 cycle;		/* Cycle properties */
 #if 0
-	char wrPostEnable;		/* Write Post State */
-	char rmwLock;			/* Lock PCI during RMW Cycles */
-	char data64BitCapable;		/* non-VMEbus capable of 64-bit Data */
+	char wrpostenable;		/* Write Post State */
+	char rmwlock;			/* Lock PCI during RMW Cycles */
+	char data64bitcapable;		/* non-VMEbus capable of 64-bit Data */
 #endif
-};
+} __packed;
 
 struct vme_irq_id {
 	__u8 level;

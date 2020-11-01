@@ -43,7 +43,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/nand_ecc.h>
 #include <asm/byteorder.h>
 #else
@@ -55,8 +55,7 @@ struct mtd_info;
 #define MODULE_AUTHOR(x)	/* x */
 #define MODULE_DESCRIPTION(x)	/* x */
 
-#define printk printf
-#define KERN_ERR		""
+#define pr_err printf
 #endif
 
 /*
@@ -425,7 +424,7 @@ int nand_calculate_ecc(struct mtd_info *mtd, const unsigned char *buf,
 		       unsigned char *code)
 {
 	__nand_calculate_ecc(buf,
-			((struct nand_chip *)mtd->priv)->ecc.size, code);
+			mtd_to_nand(mtd)->ecc.size, code);
 
 	return 0;
 }
@@ -507,8 +506,8 @@ int __nand_correct_data(unsigned char *buf,
 	if ((bitsperbyte[b0] + bitsperbyte[b1] + bitsperbyte[b2]) == 1)
 		return 1;	/* error in ECC data; no action needed */
 
-	printk(KERN_ERR "uncorrectable error : ");
-	return -1;
+	pr_err("%s: uncorrectable ECC error\n", __func__);
+	return -EBADMSG;
 }
 EXPORT_SYMBOL(__nand_correct_data);
 
@@ -525,7 +524,7 @@ int nand_correct_data(struct mtd_info *mtd, unsigned char *buf,
 		      unsigned char *read_ecc, unsigned char *calc_ecc)
 {
 	return __nand_correct_data(buf, read_ecc, calc_ecc,
-				   ((struct nand_chip *)mtd->priv)->ecc.size);
+				   mtd_to_nand(mtd)->ecc.size);
 }
 EXPORT_SYMBOL(nand_correct_data);
 

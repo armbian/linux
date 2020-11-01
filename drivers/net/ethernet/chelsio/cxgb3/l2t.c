@@ -96,7 +96,7 @@ static int setup_l2e_send_pending(struct t3cdev *dev, struct sk_buff *skb,
 			return -ENOMEM;
 	}
 
-	req = (struct cpl_l2t_write_req *)__skb_put(skb, sizeof(*req));
+	req = __skb_put(skb, sizeof(*req));
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_L2T_WRITE_REQ, e->idx));
 	req->params = htonl(V_L2T_W_IDX(e->idx) | V_L2T_W_IFF(e->smt_idx) |
@@ -299,7 +299,7 @@ static inline void reuse_entry(struct l2t_entry *e, struct neighbour *neigh)
 }
 
 struct l2t_entry *t3_l2t_get(struct t3cdev *cdev, struct dst_entry *dst,
-			     struct net_device *dev)
+			     struct net_device *dev, const void *daddr)
 {
 	struct l2t_entry *e = NULL;
 	struct neighbour *neigh;
@@ -311,7 +311,7 @@ struct l2t_entry *t3_l2t_get(struct t3cdev *cdev, struct dst_entry *dst,
 	int smt_idx;
 
 	rcu_read_lock();
-	neigh = dst_get_neighbour_noref(dst);
+	neigh = dst_neigh_lookup(dst, daddr);
 	if (!neigh)
 		goto done_rcu;
 
@@ -351,7 +351,7 @@ struct l2t_entry *t3_l2t_get(struct t3cdev *cdev, struct dst_entry *dst,
 		e->smt_idx = smt_idx;
 		atomic_set(&e->refcnt, 1);
 		neigh_replace(e, neigh);
-		if (neigh->dev->priv_flags & IFF_802_1Q_VLAN)
+		if (is_vlan_dev(neigh->dev))
 			e->vlan = vlan_dev_vlan_id(neigh->dev);
 		else
 			e->vlan = VLAN_NONE;
@@ -360,6 +360,8 @@ struct l2t_entry *t3_l2t_get(struct t3cdev *cdev, struct dst_entry *dst,
 done_unlock:
 	write_unlock_bh(&d->lock);
 done_rcu:
+	if (neigh)
+		neigh_release(neigh);
 	rcu_read_unlock();
 	return e;
 }
@@ -427,7 +429,7 @@ found:
 		} else {
 			e->state = neigh->nud_state & NUD_CONNECTED ?
 			    L2T_STATE_VALID : L2T_STATE_STALE;
-			if (memcmp(e->dmac, neigh->ha, 6))
+			if (!ether_addr_equal(e->dmac, neigh->ha))
 				setup_l2e_send_pending(dev, NULL, e);
 		}
 	}
@@ -442,7 +444,7 @@ struct l2t_data *t3_init_l2t(unsigned int l2t_capacity)
 	struct l2t_data *d;
 	int i, size = sizeof(*d) + l2t_capacity * sizeof(struct l2t_entry);
 
-	d = cxgb_alloc_mem(size);
+	d = kvzalloc(size, GFP_KERNEL);
 	if (!d)
 		return NULL;
 
@@ -460,9 +462,3 @@ struct l2t_data *t3_init_l2t(unsigned int l2t_capacity)
 	}
 	return d;
 }
-
-void t3_free_l2t(struct l2t_data *d)
-{
-	cxgb_free_mem(d);
-}
-

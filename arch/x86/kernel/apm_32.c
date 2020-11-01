@@ -201,6 +201,8 @@
  *    http://www.microsoft.com/whdc/archive/amp_12.mspx]
  */
 
+#define pr_fmt(fmt) "apm: " fmt
+
 #include <linux/module.h>
 
 #include <linux/poll.h>
@@ -216,7 +218,8 @@
 #include <linux/apm_bios.h>
 #include <linux/init.h>
 #include <linux/time.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/cputime.h>
 #include <linux/pm.h>
 #include <linux/capability.h>
 #include <linux/device.h>
@@ -230,12 +233,14 @@
 #include <linux/acpi.h>
 #include <linux/syscore_ops.h>
 #include <linux/i8253.h>
+#include <linux/cpuidle.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/desc.h>
 #include <asm/olpc.h>
 #include <asm/paravirt.h>
 #include <asm/reboot.h>
+#include <asm/nospec-branch.h>
 
 #if defined(CONFIG_APM_DISPLAY_BLANK) && defined(CONFIG_VT)
 extern int (*console_blank_hook)(int);
@@ -358,24 +363,43 @@ struct apm_user {
  * idle percentage above which bios idle calls are done
  */
 #ifdef CONFIG_APM_CPU_IDLE
-#warning deprecated CONFIG_APM_CPU_IDLE will be deleted in 2012
 #define DEFAULT_IDLE_THRESHOLD	95
 #else
 #define DEFAULT_IDLE_THRESHOLD	100
 #endif
 #define DEFAULT_IDLE_PERIOD	(100 / 3)
 
+static int apm_cpu_idle(struct cpuidle_device *dev,
+			struct cpuidle_driver *drv, int index);
+
+static struct cpuidle_driver apm_idle_driver = {
+	.name = "apm_idle",
+	.owner = THIS_MODULE,
+	.states = {
+		{ /* entry 0 is for polling */ },
+		{ /* entry 1 is for APM idle */
+			.name = "APM",
+			.desc = "APM idle",
+			.exit_latency = 250,	/* WAG */
+			.target_residency = 500,	/* WAG */
+			.enter = &apm_cpu_idle
+		},
+	},
+	.state_count = 2,
+};
+
+static struct cpuidle_device apm_cpuidle_device;
+
 /*
  * Local variables
  */
-static struct {
+__visible struct {
 	unsigned long	offset;
 	unsigned short	segment;
 } apm_bios_entry;
 static int clock_slowed;
 static int idle_threshold __read_mostly = DEFAULT_IDLE_THRESHOLD;
 static int idle_period __read_mostly = DEFAULT_IDLE_PERIOD;
-static int set_pm_idle;
 static int suspends_pending;
 static int standbys_pending;
 static int ignore_sys_suspend;
@@ -485,11 +509,11 @@ static void apm_error(char *str, int err)
 		if (error_table[i].key == err)
 			break;
 	if (i < ERROR_COUNT)
-		printk(KERN_NOTICE "apm: %s: %s\n", str, error_table[i].msg);
+		pr_notice("%s: %s\n", str, error_table[i].msg);
 	else if (err < 0)
-		printk(KERN_NOTICE "apm: %s: linux error code %i\n", str, err);
+		pr_notice("%s: linux error code %i\n", str, err);
 	else
-		printk(KERN_NOTICE "apm: %s: unknown error code %#2.2x\n",
+		pr_notice("%s: unknown error code %#2.2x\n",
 		       str, err);
 }
 
@@ -586,16 +610,18 @@ static long __apm_bios_call(void *_call)
 
 	cpu = get_cpu();
 	BUG_ON(cpu != 0);
-	gdt = get_cpu_gdt_table(cpu);
+	gdt = get_cpu_gdt_rw(cpu);
 	save_desc_40 = gdt[0x40 / 8];
 	gdt[0x40 / 8] = bad_bios_desc;
 
 	apm_irq_save(flags);
+	firmware_restrict_branch_speculation_start();
 	APM_DO_SAVE_SEGS;
 	apm_bios_call_asm(call->func, call->ebx, call->ecx,
 			  &call->eax, &call->ebx, &call->ecx, &call->edx,
 			  &call->esi);
 	APM_DO_RESTORE_SEGS;
+	firmware_restrict_branch_speculation_end();
 	apm_irq_restore(flags);
 	gdt[0x40 / 8] = save_desc_40;
 	put_cpu();
@@ -662,15 +688,17 @@ static long __apm_bios_call_simple(void *_call)
 
 	cpu = get_cpu();
 	BUG_ON(cpu != 0);
-	gdt = get_cpu_gdt_table(cpu);
+	gdt = get_cpu_gdt_rw(cpu);
 	save_desc_40 = gdt[0x40 / 8];
 	gdt[0x40 / 8] = bad_bios_desc;
 
 	apm_irq_save(flags);
+	firmware_restrict_branch_speculation_start();
 	APM_DO_SAVE_SEGS;
 	error = apm_bios_call_simple_asm(call->func, call->ebx, call->ecx,
 					 &call->eax);
 	APM_DO_RESTORE_SEGS;
+	firmware_restrict_branch_speculation_end();
 	apm_irq_restore(flags);
 	gdt[0x40 / 8] = save_desc_40;
 	put_cpu();
@@ -818,24 +846,12 @@ static int apm_do_idle(void)
 	u32 eax;
 	u8 ret = 0;
 	int idled = 0;
-	int polling;
 	int err = 0;
 
-	polling = !!(current_thread_info()->status & TS_POLLING);
-	if (polling) {
-		current_thread_info()->status &= ~TS_POLLING;
-		/*
-		 * TS_POLLING-cleared state must be visible before we
-		 * test NEED_RESCHED:
-		 */
-		smp_mb();
-	}
 	if (!need_resched()) {
 		idled = 1;
 		ret = apm_bios_call_simple(APM_FUNC_IDLE, 0, 0, &eax, &err);
 	}
-	if (polling)
-		current_thread_info()->status |= TS_POLLING;
 
 	if (!idled)
 		return 0;
@@ -882,8 +898,6 @@ static void apm_do_busy(void)
 #define IDLE_CALC_LIMIT	(HZ * 100)
 #define IDLE_LEAKY_MAX	16
 
-static void (*original_pm_idle)(void) __read_mostly;
-
 /**
  * apm_cpu_idle		-	cpu idling for APM capable Linux
  *
@@ -892,34 +906,35 @@ static void (*original_pm_idle)(void) __read_mostly;
  * Furthermore it calls the system default idle routine.
  */
 
-static void apm_cpu_idle(void)
+static int apm_cpu_idle(struct cpuidle_device *dev,
+	struct cpuidle_driver *drv, int index)
 {
 	static int use_apm_idle; /* = 0 */
 	static unsigned int last_jiffies; /* = 0 */
-	static unsigned int last_stime; /* = 0 */
+	static u64 last_stime; /* = 0 */
+	u64 stime, utime;
 
 	int apm_idle_done = 0;
 	unsigned int jiffies_since_last_check = jiffies - last_jiffies;
 	unsigned int bucket;
 
-	WARN_ONCE(1, "deprecated apm_cpu_idle will be deleted in 2012");
 recalc:
+	task_cputime(current, &utime, &stime);
 	if (jiffies_since_last_check > IDLE_CALC_LIMIT) {
 		use_apm_idle = 0;
-		last_jiffies = jiffies;
-		last_stime = current->stime;
 	} else if (jiffies_since_last_check > idle_period) {
 		unsigned int idle_percentage;
 
-		idle_percentage = current->stime - last_stime;
+		idle_percentage = nsecs_to_jiffies(stime - last_stime);
 		idle_percentage *= 100;
 		idle_percentage /= jiffies_since_last_check;
 		use_apm_idle = (idle_percentage > idle_threshold);
 		if (apm_info.forbid_idle)
 			use_apm_idle = 0;
-		last_jiffies = jiffies;
-		last_stime = current->stime;
 	}
+
+	last_jiffies = jiffies;
+	last_stime = stime;
 
 	bucket = IDLE_LEAKY_MAX;
 
@@ -948,10 +963,7 @@ recalc:
 				break;
 			}
 		}
-		if (original_pm_idle)
-			original_pm_idle();
-		else
-			default_idle();
+		default_idle();
 		local_irq_disable();
 		jiffies_since_last_check = jiffies - last_jiffies;
 		if (jiffies_since_last_check > idle_period)
@@ -961,7 +973,7 @@ recalc:
 	if (apm_idle_done)
 		apm_do_busy();
 
-	local_irq_enable();
+	return index;
 }
 
 /**
@@ -1036,8 +1048,11 @@ static int apm_get_power_status(u_short *status, u_short *bat, u_short *life)
 
 	if (apm_info.get_power_status_broken)
 		return APM_32_UNSUPPORTED;
-	if (apm_bios_call(&call))
+	if (apm_bios_call(&call)) {
+		if (!call.err)
+			return APM_NO_ERROR;
 		return call.err;
+	}
 	*status = call.ebx;
 	*bat = call.ecx;
 	if (apm_info.get_power_status_swabinminutes) {
@@ -1082,7 +1097,7 @@ static int apm_get_battery_status(u_short which, u_short *status,
  *	@device: identity of device
  *	@enable: on/off
  *
- *	Activate or deactive power management on either a specific device
+ *	Activate or deactivate power management on either a specific device
  *	or the entire system (%APM_DEVICE_ALL).
  */
 
@@ -1184,7 +1199,7 @@ static void queue_event(apm_event_t event, struct apm_user *sender)
 			static int notified;
 
 			if (notified++ == 0)
-			    printk(KERN_ERR "apm: an event queue overflowed\n");
+				pr_err("an event queue overflowed\n");
 			if (++as->event_tail >= APM_MAX_EVENTS)
 				as->event_tail = 0;
 		}
@@ -1447,7 +1462,7 @@ static void apm_mainloop(void)
 static int check_apm_user(struct apm_user *as, const char *func)
 {
 	if (as == NULL || as->magic != APM_BIOS_MAGIC) {
-		printk(KERN_ERR "apm: %s passed bad filp\n", func);
+		pr_err("%s passed bad filp\n", func);
 		return 1;
 	}
 	return 0;
@@ -1586,7 +1601,7 @@ static int do_release(struct inode *inode, struct file *filp)
 		     as1 = as1->next)
 			;
 		if (as1 == NULL)
-			printk(KERN_ERR "apm: filp not in user list\n");
+			pr_err("filp not in user list\n");
 		else
 			as1->next = as->next;
 	}
@@ -1600,11 +1615,9 @@ static int do_open(struct inode *inode, struct file *filp)
 	struct apm_user *as;
 
 	as = kmalloc(sizeof(*as), GFP_KERNEL);
-	if (as == NULL) {
-		printk(KERN_ERR "apm: cannot allocate struct of size %d bytes\n",
-		       sizeof(*as));
+	if (as == NULL)
 		return -ENOMEM;
-	}
+
 	as->magic = APM_BIOS_MAGIC;
 	as->event_tail = as->event_head = 0;
 	as->suspends_pending = as->standbys_pending = 0;
@@ -2035,7 +2048,7 @@ static int __init swab_apm_power_in_minutes(const struct dmi_system_id *d)
 	return 0;
 }
 
-static struct dmi_system_id __initdata apm_dmi_table[] = {
+static const struct dmi_system_id apm_dmi_table[] __initconst = {
 	{
 		print_if_true,
 		KERN_WARNING "IBM T23 - BIOS 1.03b+ and controller firmware 1.02+ may be needed for Linux APM.",
@@ -2263,7 +2276,7 @@ static int __init apm_init(void)
 
 	dmi_check_system(apm_dmi_table);
 
-	if (apm_info.bios.version == 0 || paravirt_enabled() || machine_is_olpc()) {
+	if (apm_info.bios.version == 0 || machine_is_olpc()) {
 		printk(KERN_INFO "apm: BIOS not found.\n");
 		return -ENODEV;
 	}
@@ -2313,16 +2326,16 @@ static int __init apm_init(void)
 	}
 
 	if (apm_info.disabled) {
-		printk(KERN_NOTICE "apm: disabled on user request.\n");
+		pr_notice("disabled on user request.\n");
 		return -ENODEV;
 	}
 	if ((num_online_cpus() > 1) && !power_off && !smp) {
-		printk(KERN_NOTICE "apm: disabled - APM is not SMP safe.\n");
+		pr_notice("disabled - APM is not SMP safe.\n");
 		apm_info.disabled = 1;
 		return -ENODEV;
 	}
 	if (!acpi_disabled) {
-		printk(KERN_NOTICE "apm: overridden by ACPI.\n");
+		pr_notice("overridden by ACPI.\n");
 		apm_info.disabled = 1;
 		return -ENODEV;
 	}
@@ -2344,7 +2357,7 @@ static int __init apm_init(void)
 	 * Note we only set APM segments on CPU zero, since we pin the APM
 	 * code to that CPU.
 	 */
-	gdt = get_cpu_gdt_table(0);
+	gdt = get_cpu_gdt_rw(0);
 	set_desc_base(&gdt[APM_CS >> 3],
 		 (unsigned long)__va((unsigned long)apm_info.bios.cseg << 4));
 	set_desc_base(&gdt[APM_CS_16 >> 3],
@@ -2356,8 +2369,7 @@ static int __init apm_init(void)
 
 	kapmd_task = kthread_create(apm, NULL, "kapmd");
 	if (IS_ERR(kapmd_task)) {
-		printk(KERN_ERR "apm: disabled - Unable to start kernel "
-				"thread.\n");
+		pr_err("disabled - Unable to start kernel thread\n");
 		err = PTR_ERR(kapmd_task);
 		kapmd_task = NULL;
 		remove_proc_entry("apm", NULL);
@@ -2382,9 +2394,10 @@ static int __init apm_init(void)
 	if (HZ != 100)
 		idle_period = (idle_period * HZ) / 100;
 	if (idle_threshold < 100) {
-		original_pm_idle = pm_idle;
-		pm_idle  = apm_cpu_idle;
-		set_pm_idle = 1;
+		cpuidle_poll_state_init(&apm_idle_driver);
+		if (!cpuidle_register_driver(&apm_idle_driver))
+			if (cpuidle_register_device(&apm_cpuidle_device))
+				cpuidle_unregister_driver(&apm_idle_driver);
 	}
 
 	return 0;
@@ -2394,15 +2407,9 @@ static void __exit apm_exit(void)
 {
 	int error;
 
-	if (set_pm_idle) {
-		pm_idle = original_pm_idle;
-		/*
-		 * We are about to unload the current idle thread pm callback
-		 * (pm_idle), Wait for all processors to update cached/local
-		 * copies of pm_idle before proceeding.
-		 */
-		cpu_idle_wait();
-	}
+	cpuidle_unregister_device(&apm_cpuidle_device);
+	cpuidle_unregister_driver(&apm_idle_driver);
+
 	if (((apm_info.bios.flags & APM_BIOS_DISENGAGED) == 0)
 	    && (apm_info.connection_version > 0x0100)) {
 		error = apm_engage_power_management(APM_DEVICE_ALL, 0);

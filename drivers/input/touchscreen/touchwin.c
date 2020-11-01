@@ -27,7 +27,6 @@
 #include <linux/slab.h>
 #include <linux/input.h>
 #include <linux/serio.h>
-#include <linux/init.h>
 
 #define DRIVER_DESC	"Touchwindow serial touchscreen driver"
 
@@ -160,7 +159,7 @@ static int tw_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static struct serio_device_id tw_serio_ids[] = {
+static const struct serio_device_id tw_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_TOUCHWIN,
@@ -183,19 +182,4 @@ static struct serio_driver tw_drv = {
 	.disconnect	= tw_disconnect,
 };
 
-/*
- * The functions for inserting/removing us as a module.
- */
-
-static int __init tw_init(void)
-{
-	return serio_register_driver(&tw_drv);
-}
-
-static void __exit tw_exit(void)
-{
-	serio_unregister_driver(&tw_drv);
-}
-
-module_init(tw_init);
-module_exit(tw_exit);
+module_serio_driver(tw_drv);

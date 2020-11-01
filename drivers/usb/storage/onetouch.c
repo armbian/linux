@@ -30,12 +30,14 @@
 
 #include <linux/kernel.h>
 #include <linux/input.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/usb/input.h>
 #include "usb.h"
 #include "debug.h"
+#include "scsiglue.h"
+
+#define DRV_NAME "ums-onetouch"
 
 MODULE_DESCRIPTION("Maxtor USB OneTouch hard drive button driver");
 MODULE_AUTHOR("Nick Sillik <n.sillik@temple.edu>");
@@ -67,7 +69,7 @@ struct usb_onetouch {
 		    vendorName, productName, useProtocol, useTransport, \
 		    initFunction, flags) \
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
-  .driver_info = (flags)|(USB_US_TYPE_STOR<<24) }
+  .driver_info = (flags) }
 
 static struct usb_device_id onetouch_usb_ids[] = {
 #	include "unusual_onetouch.h"
@@ -195,6 +197,7 @@ static int onetouch_connect_input(struct us_data *ss)
 
 	pipe = usb_rcvintpipe(udev, endpoint->bEndpointAddress);
 	maxp = usb_maxpacket(udev, pipe, usb_pipeout(pipe));
+	maxp = min(maxp, ONETOUCH_PKT_LEN);
 
 	onetouch = kzalloc(sizeof(struct usb_onetouch), GFP_KERNEL);
 	input_dev = input_allocate_device();
@@ -245,8 +248,7 @@ static int onetouch_connect_input(struct us_data *ss)
 	input_dev->open = usb_onetouch_open;
 	input_dev->close = usb_onetouch_close;
 
-	usb_fill_int_urb(onetouch->irq, udev, pipe, onetouch->data,
-			 (maxp > 8 ? 8 : maxp),
+	usb_fill_int_urb(onetouch->irq, udev, pipe, onetouch->data, maxp,
 			 usb_onetouch_irq, onetouch, endpoint->bInterval);
 	onetouch->irq->transfer_dma = onetouch->data_dma;
 	onetouch->irq->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
@@ -284,6 +286,8 @@ static void onetouch_release_input(void *onetouch_)
 	}
 }
 
+static struct scsi_host_template onetouch_host_template;
+
 static int onetouch_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -291,7 +295,8 @@ static int onetouch_probe(struct usb_interface *intf,
 	int result;
 
 	result = usb_stor_probe1(&us, intf, id,
-			(id - onetouch_usb_ids) + onetouch_unusual_dev_list);
+			(id - onetouch_usb_ids) + onetouch_unusual_dev_list,
+			&onetouch_host_template);
 	if (result)
 		return result;
 
@@ -302,7 +307,7 @@ static int onetouch_probe(struct usb_interface *intf,
 }
 
 static struct usb_driver onetouch_driver = {
-	.name =		"ums-onetouch",
+	.name =		DRV_NAME,
 	.probe =	onetouch_probe,
 	.disconnect =	usb_stor_disconnect,
 	.suspend =	usb_stor_suspend,
@@ -315,4 +320,4 @@ static struct usb_driver onetouch_driver = {
 	.no_dynamic_id = 1,
 };
 
-module_usb_driver(onetouch_driver);
+module_usb_stor_driver(onetouch_driver, onetouch_host_template, DRV_NAME);

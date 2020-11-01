@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _AHA1740_H
 
 /* $Id$
@@ -149,6 +150,5 @@ struct ecb {			/* Enhanced Control Block 6.1 */
 
 #define AHA1740_ECBS 32
 #define AHA1740_SCATTER 16
-#define AHA1740_CMDLUN 1
 
 #endif

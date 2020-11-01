@@ -10,7 +10,6 @@
  * for more details.
  */
 
-#include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -19,8 +18,6 @@
 #include <linux/interrupt.h>
 #include <linux/device.h>
 #include <linux/pcieport_if.h>
-#include <linux/acpi.h>
-#include <linux/pci-acpi.h>
 #include <linux/pm_runtime.h>
 
 #include "../pci.h"
@@ -47,7 +44,7 @@ struct pcie_pme_service_data {
 	spinlock_t lock;
 	struct pcie_device *srv;
 	struct work_struct work;
-	bool noirq; /* Don't enable the PME interrupt used by this service. */
+	bool noirq; /* If set, keep the PME interrupt disabled. */
 };
 
 /**
@@ -57,17 +54,12 @@ struct pcie_pme_service_data {
  */
 void pcie_pme_interrupt_enable(struct pci_dev *dev, bool enable)
 {
-	int rtctl_pos;
-	u16 rtctl;
-
-	rtctl_pos = pci_pcie_cap(dev) + PCI_EXP_RTCTL;
-
-	pci_read_config_word(dev, rtctl_pos, &rtctl);
 	if (enable)
-		rtctl |= PCI_EXP_RTCTL_PMEIE;
+		pcie_capability_set_word(dev, PCI_EXP_RTCTL,
+					 PCI_EXP_RTCTL_PMEIE);
 	else
-		rtctl &= ~PCI_EXP_RTCTL_PMEIE;
-	pci_write_config_word(dev, rtctl_pos, rtctl);
+		pcie_capability_clear_word(dev, PCI_EXP_RTCTL,
+					   PCI_EXP_RTCTL_PMEIE);
 }
 
 /**
@@ -120,7 +112,7 @@ static bool pcie_pme_from_pci_bridge(struct pci_bus *bus, u8 devfn)
 	if (!dev)
 		return false;
 
-	if (pci_is_pcie(dev) && dev->pcie_type == PCI_EXP_TYPE_PCI_BRIDGE) {
+	if (pci_is_pcie(dev) && pci_pcie_type(dev) == PCI_EXP_TYPE_PCI_BRIDGE) {
 		down_read(&pci_bus_sem);
 		if (pcie_pme_walk_bus(bus))
 			found = true;
@@ -206,8 +198,7 @@ static void pcie_pme_handle_request(struct pci_dev *port, u16 req_id)
 		 * assuming that the PME was reported by a PCIe-PCI bridge that
 		 * used devfn different from zero.
 		 */
-		dev_dbg(&port->dev, "PME interrupt generated for "
-			"non-existent device %02x:%02x.%d\n",
+		dev_dbg(&port->dev, "PME interrupt generated for non-existent device %02x:%02x.%d\n",
 			busnr, PCI_SLOT(devfn), PCI_FUNC(devfn));
 		found = pcie_pme_from_pci_bridge(bus, 0);
 	}
@@ -226,10 +217,7 @@ static void pcie_pme_work_fn(struct work_struct *work)
 	struct pcie_pme_service_data *data =
 			container_of(work, struct pcie_pme_service_data, work);
 	struct pci_dev *port = data->srv->port;
-	int rtsta_pos;
 	u32 rtsta;
-
-	rtsta_pos = pci_pcie_cap(port) + PCI_EXP_RTSTA;
 
 	spin_lock_irq(&data->lock);
 
@@ -237,7 +225,10 @@ static void pcie_pme_work_fn(struct work_struct *work)
 		if (data->noirq)
 			break;
 
-		pci_read_config_dword(port, rtsta_pos, &rtsta);
+		pcie_capability_read_dword(port, PCI_EXP_RTSTA, &rtsta);
+		if (rtsta == (u32) ~0)
+			break;
+
 		if (rtsta & PCI_EXP_RTSTA_PME) {
 			/*
 			 * Clear PME status of the port.  If there are other
@@ -276,19 +267,16 @@ static irqreturn_t pcie_pme_irq(int irq, void *context)
 {
 	struct pci_dev *port;
 	struct pcie_pme_service_data *data;
-	int rtsta_pos;
 	u32 rtsta;
 	unsigned long flags;
 
 	port = ((struct pcie_device *)context)->port;
 	data = get_service_data((struct pcie_device *)context);
 
-	rtsta_pos = pci_pcie_cap(port) + PCI_EXP_RTSTA;
-
 	spin_lock_irqsave(&data->lock, flags);
-	pci_read_config_dword(port, rtsta_pos, &rtsta);
+	pcie_capability_read_dword(port, PCI_EXP_RTSTA, &rtsta);
 
-	if (!(rtsta & PCI_EXP_RTSTA_PME)) {
+	if (rtsta == (u32) ~0 || !(rtsta & PCI_EXP_RTSTA_PME)) {
 		spin_unlock_irqrestore(&data->lock, flags);
 		return IRQ_NONE;
 	}
@@ -303,48 +291,29 @@ static irqreturn_t pcie_pme_irq(int irq, void *context)
 }
 
 /**
- * pcie_pme_set_native - Set the PME interrupt flag for given device.
+ * pcie_pme_can_wakeup - Set the wakeup capability flag.
  * @dev: PCI device to handle.
  * @ign: Ignored.
  */
-static int pcie_pme_set_native(struct pci_dev *dev, void *ign)
+static int pcie_pme_can_wakeup(struct pci_dev *dev, void *ign)
 {
-	dev_info(&dev->dev, "Signaling PME through PCIe PME interrupt\n");
-
-	device_set_run_wake(&dev->dev, true);
-	dev->pme_interrupt = true;
+	device_set_wakeup_capable(&dev->dev, true);
 	return 0;
 }
 
 /**
- * pcie_pme_mark_devices - Set the PME interrupt flag for devices below a port.
+ * pcie_pme_mark_devices - Set the wakeup flag for devices below a port.
  * @port: PCIe root port or event collector to handle.
  *
  * For each device below given root port, including the port itself (or for each
  * root complex integrated endpoint if @port is a root complex event collector)
- * set the flag indicating that it can signal run-time wake-up events via PCIe
- * PME interrupts.
+ * set the flag indicating that it can signal run-time wake-up events.
  */
 static void pcie_pme_mark_devices(struct pci_dev *port)
 {
-	pcie_pme_set_native(port, NULL);
-	if (port->subordinate) {
-		pci_walk_bus(port->subordinate, pcie_pme_set_native, NULL);
-	} else {
-		struct pci_bus *bus = port->bus;
-		struct pci_dev *dev;
-
-		/* Check if this is a root port event collector. */
-		if (port->pcie_type != PCI_EXP_TYPE_RC_EC || !bus)
-			return;
-
-		down_read(&pci_bus_sem);
-		list_for_each_entry(dev, &bus->devices, bus_list)
-			if (pci_is_pcie(dev)
-			    && dev->pcie_type == PCI_EXP_TYPE_RC_END)
-				pcie_pme_set_native(dev, NULL);
-		up_read(&pci_bus_sem);
-	}
+	pcie_pme_can_wakeup(port, NULL);
+	if (port->subordinate)
+		pci_walk_bus(port->subordinate, pcie_pme_can_wakeup, NULL);
 }
 
 /**
@@ -373,12 +342,39 @@ static int pcie_pme_probe(struct pcie_device *srv)
 	ret = request_irq(srv->irq, pcie_pme_irq, IRQF_SHARED, "PCIe PME", srv);
 	if (ret) {
 		kfree(data);
-	} else {
-		pcie_pme_mark_devices(port);
-		pcie_pme_interrupt_enable(port, true);
+		return ret;
 	}
 
-	return ret;
+	dev_info(&port->dev, "Signaling PME with IRQ %d\n", srv->irq);
+
+	pcie_pme_mark_devices(port);
+	pcie_pme_interrupt_enable(port, true);
+	return 0;
+}
+
+static bool pcie_pme_check_wakeup(struct pci_bus *bus)
+{
+	struct pci_dev *dev;
+
+	if (!bus)
+		return false;
+
+	list_for_each_entry(dev, &bus->devices, bus_list)
+		if (device_may_wakeup(&dev->dev)
+		    || pcie_pme_check_wakeup(dev->subordinate))
+			return true;
+
+	return false;
+}
+
+static void pcie_pme_disable_interrupt(struct pci_dev *port,
+				       struct pcie_pme_service_data *data)
+{
+	spin_lock_irq(&data->lock);
+	pcie_pme_interrupt_enable(port, false);
+	pcie_clear_root_pme_status(port);
+	data->noirq = true;
+	spin_unlock_irq(&data->lock);
 }
 
 /**
@@ -389,12 +385,23 @@ static int pcie_pme_suspend(struct pcie_device *srv)
 {
 	struct pcie_pme_service_data *data = get_service_data(srv);
 	struct pci_dev *port = srv->port;
+	bool wakeup;
+	int ret;
 
-	spin_lock_irq(&data->lock);
-	pcie_pme_interrupt_enable(port, false);
-	pcie_clear_root_pme_status(port);
-	data->noirq = true;
-	spin_unlock_irq(&data->lock);
+	if (device_may_wakeup(&port->dev)) {
+		wakeup = true;
+	} else {
+		down_read(&pci_bus_sem);
+		wakeup = pcie_pme_check_wakeup(port->subordinate);
+		up_read(&pci_bus_sem);
+	}
+	if (wakeup) {
+		ret = enable_irq_wake(srv->irq);
+		if (!ret)
+			return 0;
+	}
+
+	pcie_pme_disable_interrupt(port, data);
 
 	synchronize_irq(srv->irq);
 
@@ -408,12 +415,17 @@ static int pcie_pme_suspend(struct pcie_device *srv)
 static int pcie_pme_resume(struct pcie_device *srv)
 {
 	struct pcie_pme_service_data *data = get_service_data(srv);
-	struct pci_dev *port = srv->port;
 
 	spin_lock_irq(&data->lock);
-	data->noirq = false;
-	pcie_clear_root_pme_status(port);
-	pcie_pme_interrupt_enable(port, true);
+	if (data->noirq) {
+		struct pci_dev *port = srv->port;
+
+		pcie_clear_root_pme_status(port);
+		pcie_pme_interrupt_enable(port, true);
+		data->noirq = false;
+	} else {
+		disable_irq_wake(srv->irq);
+	}
 	spin_unlock_irq(&data->lock);
 
 	return 0;
@@ -421,19 +433,22 @@ static int pcie_pme_resume(struct pcie_device *srv)
 
 /**
  * pcie_pme_remove - Prepare PCIe PME service device for removal.
- * @srv - PCIe service device to resume.
+ * @srv - PCIe service device to remove.
  */
 static void pcie_pme_remove(struct pcie_device *srv)
 {
-	pcie_pme_suspend(srv);
+	struct pcie_pme_service_data *data = get_service_data(srv);
+
+	pcie_pme_disable_interrupt(srv->port, data);
 	free_irq(srv->irq, srv);
-	kfree(get_service_data(srv));
+	cancel_work_sync(&data->work);
+	kfree(data);
 }
 
 static struct pcie_port_service_driver pcie_pme_driver = {
 	.name		= "pcie_pme",
-	.port_type 	= PCI_EXP_TYPE_ROOT_PORT,
-	.service 	= PCIE_PORT_SERVICE_PME,
+	.port_type	= PCI_EXP_TYPE_ROOT_PORT,
+	.service	= PCIE_PORT_SERVICE_PME,
 
 	.probe		= pcie_pme_probe,
 	.suspend	= pcie_pme_suspend,
@@ -448,5 +463,4 @@ static int __init pcie_pme_service_init(void)
 {
 	return pcie_port_service_register(&pcie_pme_driver);
 }
-
-module_init(pcie_pme_service_init);
+device_initcall(pcie_pme_service_init);

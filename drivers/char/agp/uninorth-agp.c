@@ -10,7 +10,6 @@
 #include <linux/delay.h>
 #include <linux/vmalloc.h>
 #include <asm/uninorth.h>
-#include <asm/pci-bridge.h>
 #include <asm/prom.h>
 #include <asm/pmac_feature.h>
 #include "agp.h"
@@ -196,7 +195,7 @@ static int uninorth_insert_memory(struct agp_memory *mem, off_t pg_start, int ty
 	return 0;
 }
 
-int uninorth_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
+static int uninorth_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
 {
 	size_t i;
 	u32 *gp;
@@ -361,6 +360,10 @@ static int agp_uninorth_resume(struct pci_dev *pdev)
 }
 #endif /* CONFIG_PM */
 
+static struct {
+	struct page **pages_arr;
+} uninorth_priv;
+
 static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 {
 	char *table;
@@ -371,7 +374,6 @@ static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 	int i;
 	void *temp;
 	struct page *page;
-	struct page **pages;
 
 	/* We can't handle 2 level gatt's */
 	if (bridge->driver->size_type == LVL2_APER_SIZE)
@@ -400,8 +402,8 @@ static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 	if (table == NULL)
 		return -ENOMEM;
 
-	pages = kmalloc((1 << page_order) * sizeof(struct page*), GFP_KERNEL);
-	if (pages == NULL)
+	uninorth_priv.pages_arr = kmalloc((1 << page_order) * sizeof(struct page*), GFP_KERNEL);
+	if (uninorth_priv.pages_arr == NULL)
 		goto enomem;
 
 	table_end = table + ((PAGE_SIZE * (1 << page_order)) - 1);
@@ -409,14 +411,14 @@ static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 	for (page = virt_to_page(table), i = 0; page <= virt_to_page(table_end);
 	     page++, i++) {
 		SetPageReserved(page);
-		pages[i] = page;
+		uninorth_priv.pages_arr[i] = page;
 	}
 
 	bridge->gatt_table_real = (u32 *) table;
 	/* Need to clear out any dirty data still sitting in caches */
 	flush_dcache_range((unsigned long)table,
 			   (unsigned long)table_end + 1);
-	bridge->gatt_table = vmap(pages, (1 << page_order), 0, PAGE_KERNEL_NCG);
+	bridge->gatt_table = vmap(uninorth_priv.pages_arr, (1 << page_order), 0, PAGE_KERNEL_NCG);
 
 	if (bridge->gatt_table == NULL)
 		goto enomem;
@@ -434,7 +436,7 @@ static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 	return 0;
 
 enomem:
-	kfree(pages);
+	kfree(uninorth_priv.pages_arr);
 	if (table)
 		free_pages((unsigned long)table, page_order);
 	return -ENOMEM;
@@ -456,6 +458,7 @@ static int uninorth_free_gatt_table(struct agp_bridge_data *bridge)
 	 */
 
 	vunmap(bridge->gatt_table);
+	kfree(uninorth_priv.pages_arr);
 	table = (char *) bridge->gatt_table_real;
 	table_end = table + ((PAGE_SIZE * (1 << page_order)) - 1);
 
@@ -467,7 +470,7 @@ static int uninorth_free_gatt_table(struct agp_bridge_data *bridge)
 	return 0;
 }
 
-void null_cache_flush(void)
+static void null_cache_flush(void)
 {
 	mb();
 }
@@ -557,7 +560,7 @@ const struct agp_bridge_driver u3_agp_driver = {
 	.needs_scratch_page	= true,
 };
 
-static struct agp_device_ids uninorth_agp_device_ids[] __devinitdata = {
+static struct agp_device_ids uninorth_agp_device_ids[] = {
 	{
 		.device_id	= PCI_DEVICE_ID_APPLE_UNI_N_AGP,
 		.chipset_name	= "UniNorth",
@@ -592,8 +595,8 @@ static struct agp_device_ids uninorth_agp_device_ids[] __devinitdata = {
 	},
 };
 
-static int __devinit agp_uninorth_probe(struct pci_dev *pdev,
-					const struct pci_device_id *ent)
+static int agp_uninorth_probe(struct pci_dev *pdev,
+			      const struct pci_device_id *ent)
 {
 	struct agp_device_ids *devs = uninorth_agp_device_ids;
 	struct agp_bridge_data *bridge;
@@ -663,7 +666,7 @@ static int __devinit agp_uninorth_probe(struct pci_dev *pdev,
 	return agp_add_bridge(bridge);
 }
 
-static void __devexit agp_uninorth_remove(struct pci_dev *pdev)
+static void agp_uninorth_remove(struct pci_dev *pdev)
 {
 	struct agp_bridge_data *bridge = pci_get_drvdata(pdev);
 
@@ -676,7 +679,7 @@ static void __devexit agp_uninorth_remove(struct pci_dev *pdev)
 	agp_put_bridge(bridge);
 }
 
-static struct pci_device_id agp_uninorth_pci_table[] = {
+static const struct pci_device_id agp_uninorth_pci_table[] = {
 	{
 	.class		= (PCI_CLASS_BRIDGE_HOST << 8),
 	.class_mask	= ~0,

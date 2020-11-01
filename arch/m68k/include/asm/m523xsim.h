@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /****************************************************************************/
 
 /*
@@ -37,7 +38,8 @@
 #define	MCFINT_UART0		13		/* Interrupt number for UART0 */
 #define	MCFINT_UART1		14		/* Interrupt number for UART1 */
 #define	MCFINT_UART2		15		/* Interrupt number for UART2 */
-#define MCFINT_QSPI		18		/* Interrupt number for QSPI */
+#define	MCFINT_I2C0		17		/* Interrupt number for I2C */
+#define	MCFINT_QSPI		18		/* Interrupt number for QSPI */
 #define	MCFINT_FECRX0		23		/* Interrupt number for FEC */
 #define	MCFINT_FECTX0		27		/* Interrupt number for FEC */
 #define	MCFINT_FECENTC0		29		/* Interrupt number for FEC */
@@ -52,6 +54,8 @@
 #define	MCF_IRQ_FECENTC0	(MCFINT_VECBASE + MCFINT_FECENTC0)
 
 #define	MCF_IRQ_QSPI		(MCFINT_VECBASE + MCFINT_QSPI)
+#define MCF_IRQ_PIT1		(MCFINT_VECBASE + MCFINT_PIT1)
+#define	MCF_IRQ_I2C0		(MCFINT_VECBASE + MCFINT_I2C0)
 
 /*
  *	SDRAM configuration registers.
@@ -175,21 +179,29 @@
 /*
  * Generic GPIO support
  */
-#define MCFGPIO_PODR			MCFGPIO_PODR_ADDR
-#define MCFGPIO_PDDR			MCFGPIO_PDDR_ADDR
-#define MCFGPIO_PPDR			MCFGPIO_PPDSDR_ADDR
-#define MCFGPIO_SETR			MCFGPIO_PPDSDR_ADDR
-#define MCFGPIO_CLRR			MCFGPIO_PCLRR_ADDR
+#define MCFGPIO_PODR		MCFGPIO_PODR_ADDR
+#define MCFGPIO_PDDR		MCFGPIO_PDDR_ADDR
+#define MCFGPIO_PPDR		MCFGPIO_PPDSDR_ADDR
+#define MCFGPIO_SETR		MCFGPIO_PPDSDR_ADDR
+#define MCFGPIO_CLRR		MCFGPIO_PCLRR_ADDR
 
-#define MCFGPIO_PIN_MAX			107
-#define MCFGPIO_IRQ_MAX			8
-#define MCFGPIO_IRQ_VECBASE		MCFINT_VECBASE
+#define MCFGPIO_PIN_MAX		107
+#define MCFGPIO_IRQ_MAX		8
+#define MCFGPIO_IRQ_VECBASE	MCFINT_VECBASE
 
 /*
  * Pin Assignment
 */
+#define	MCFGPIO_PAR_AD		(MCF_IPSBAR + 0x100040)
+#define	MCFGPIO_PAR_BUSCTL	(MCF_IPSBAR + 0x100042)
+#define	MCFGPIO_PAR_BS		(MCF_IPSBAR + 0x100044)
+#define	MCFGPIO_PAR_CS		(MCF_IPSBAR + 0x100045)
+#define	MCFGPIO_PAR_SDRAM	(MCF_IPSBAR + 0x100046)
+#define	MCFGPIO_PAR_FECI2C	(MCF_IPSBAR + 0x100047)
+#define	MCFGPIO_PAR_UART	(MCF_IPSBAR + 0x100048)
 #define	MCFGPIO_PAR_QSPI	(MCF_IPSBAR + 0x10004A)
 #define	MCFGPIO_PAR_TIMER	(MCF_IPSBAR + 0x10004C)
+#define	MCFGPIO_PAR_ETPU	(MCF_IPSBAR + 0x10004E)
 
 /*
  * DMA unit base addresses.
@@ -198,6 +210,12 @@
 #define	MCFDMA_BASE1		(MCF_IPSBAR + 0x140)
 #define	MCFDMA_BASE2		(MCF_IPSBAR + 0x180)
 #define	MCFDMA_BASE3		(MCF_IPSBAR + 0x1C0)
+
+/*
+ * I2C module.
+ */
+#define	MCFI2C_BASE0		(MCF_IPSBAR + 0x300)
+#define	MCFI2C_SIZE0		0x40
 
 /****************************************************************************/
 #endif	/* m523xsim_h */

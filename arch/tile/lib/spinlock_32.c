@@ -62,14 +62,6 @@ int arch_spin_trylock(arch_spinlock_t *lock)
 }
 EXPORT_SYMBOL(arch_spin_trylock);
 
-void arch_spin_unlock_wait(arch_spinlock_t *lock)
-{
-	u32 iterations = 0;
-	while (arch_spin_is_locked(lock))
-		delay_backoff(iterations++);
-}
-EXPORT_SYMBOL(arch_spin_unlock_wait);
-
 /*
  * The low byte is always reserved to be the marker for a "tns" operation
  * since the low bit is set to "1" by a tns.  The next seven bits are
@@ -101,7 +93,7 @@ EXPORT_SYMBOL(arch_spin_unlock_wait);
  * preserve the semantic that the same read lock can be acquired in an
  * interrupt context.
  */
-inline int arch_read_trylock(arch_rwlock_t *rwlock)
+int arch_read_trylock(arch_rwlock_t *rwlock)
 {
 	u32 val;
 	__insn_mtspr(SPR_INTERRUPT_CRITICAL_SECTION, 1);

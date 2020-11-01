@@ -108,7 +108,7 @@ struct pcan_usb_msg_context {
 	u8 *end;
 	u8 rec_cnt;
 	u8 rec_idx;
-	u8 rec_data_idx;
+	u8 rec_ts_idx;
 	struct net_device *netdev;
 	struct pcan_usb *pdev;
 };
@@ -316,7 +316,7 @@ static int pcan_usb_get_serial(struct peak_usb_device *dev, u32 *serial_number)
 	if (err) {
 		netdev_err(dev->netdev, "getting serial failure: %d\n", err);
 	} else if (serial_number) {
-		u32 tmp32;
+		__le32 tmp32;
 
 		memcpy(&tmp32, args, 4);
 		*serial_number = le32_to_cpu(tmp32);
@@ -347,7 +347,7 @@ static int pcan_usb_get_device_id(struct peak_usb_device *dev, u32 *device_id)
  */
 static int pcan_usb_update_ts(struct pcan_usb_msg_context *mc)
 {
-	u16 tmp16;
+	__le16 tmp16;
 
 	if ((mc->ptr+2) > mc->end)
 		return -EINVAL;
@@ -371,7 +371,7 @@ static int pcan_usb_decode_ts(struct pcan_usb_msg_context *mc, u8 first_packet)
 {
 	/* only 1st packet supplies a word timestamp */
 	if (first_packet) {
-		u16 tmp16;
+		__le16 tmp16;
 
 		if ((mc->ptr + 2) > mc->end)
 			return -EINVAL;
@@ -441,8 +441,8 @@ static int pcan_usb_decode_error(struct pcan_usb_msg_context *mc, u8 n,
 		}
 		if ((n & PCAN_USB_ERROR_BUS_LIGHT) == 0) {
 			/* no error (back to active state) */
-			mc->pdev->dev.can.state = CAN_STATE_ERROR_ACTIVE;
-			return 0;
+			new_state = CAN_STATE_ERROR_ACTIVE;
+			break;
 		}
 		break;
 
@@ -465,9 +465,9 @@ static int pcan_usb_decode_error(struct pcan_usb_msg_context *mc, u8 n,
 		}
 
 		if ((n & PCAN_USB_ERROR_BUS_HEAVY) == 0) {
-			/* no error (back to active state) */
-			mc->pdev->dev.can.state = CAN_STATE_ERROR_ACTIVE;
-			return 0;
+			/* no error (back to warning state) */
+			new_state = CAN_STATE_ERROR_WARNING;
+			break;
 		}
 		break;
 
@@ -488,6 +488,7 @@ static int pcan_usb_decode_error(struct pcan_usb_msg_context *mc, u8 n,
 	switch (new_state) {
 	case CAN_STATE_BUS_OFF:
 		cf->can_id |= CAN_ERR_BUSOFF;
+		mc->pdev->dev.can.can_stats.bus_off++;
 		can_bus_off(mc->netdev);
 		break;
 
@@ -503,6 +504,11 @@ static int pcan_usb_decode_error(struct pcan_usb_msg_context *mc, u8 n,
 		cf->data[1] |= CAN_ERR_CRTL_TX_WARNING |
 			       CAN_ERR_CRTL_RX_WARNING;
 		mc->pdev->dev.can.can_stats.error_warning++;
+		break;
+
+	case CAN_STATE_ERROR_ACTIVE:
+		cf->can_id |= CAN_ERR_CRTL;
+		cf->data[1] = CAN_ERR_CRTL_ACTIVE;
 		break;
 
 	default:
@@ -525,9 +531,9 @@ static int pcan_usb_decode_error(struct pcan_usb_msg_context *mc, u8 n,
 		hwts->hwtstamp = timeval_to_ktime(tv);
 	}
 
-	netif_rx(skb);
 	mc->netdev->stats.rx_packets++;
 	mc->netdev->stats.rx_bytes += cf->can_dlc;
+	netif_rx(skb);
 
 	return 0;
 }
@@ -551,10 +557,15 @@ static int pcan_usb_decode_status(struct pcan_usb_msg_context *mc,
 	mc->ptr += PCAN_USB_CMD_ARGS;
 
 	if (status_len & PCAN_USB_STATUSLEN_TIMESTAMP) {
-		int err = pcan_usb_decode_ts(mc, !mc->rec_idx);
+		int err = pcan_usb_decode_ts(mc, !mc->rec_ts_idx);
 
 		if (err)
 			return err;
+
+		/* Next packet in the buffer will have a timestamp on a single
+		 * byte
+		 */
+		mc->rec_ts_idx++;
 	}
 
 	switch (f) {
@@ -614,7 +625,7 @@ static int pcan_usb_decode_data(struct pcan_usb_msg_context *mc, u8 status_len)
 		return -ENOMEM;
 
 	if (status_len & PCAN_USB_STATUSLEN_EXT_ID) {
-		u32 tmp32;
+		__le32 tmp32;
 
 		if ((mc->ptr + 4) > mc->end)
 			goto decode_failed;
@@ -622,9 +633,9 @@ static int pcan_usb_decode_data(struct pcan_usb_msg_context *mc, u8 status_len)
 		memcpy(&tmp32, mc->ptr, 4);
 		mc->ptr += 4;
 
-		cf->can_id = le32_to_cpu(tmp32 >> 3) | CAN_EFF_FLAG;
+		cf->can_id = (le32_to_cpu(tmp32) >> 3) | CAN_EFF_FLAG;
 	} else {
-		u16 tmp16;
+		__le16 tmp16;
 
 		if ((mc->ptr + 2) > mc->end)
 			goto decode_failed;
@@ -632,14 +643,17 @@ static int pcan_usb_decode_data(struct pcan_usb_msg_context *mc, u8 status_len)
 		memcpy(&tmp16, mc->ptr, 2);
 		mc->ptr += 2;
 
-		cf->can_id = le16_to_cpu(tmp16 >> 5);
+		cf->can_id = le16_to_cpu(tmp16) >> 5;
 	}
 
 	cf->can_dlc = get_can_dlc(rec_len);
 
-	/* first data packet timestamp is a word */
-	if (pcan_usb_decode_ts(mc, !mc->rec_data_idx))
+	/* Only first packet timestamp is a word */
+	if (pcan_usb_decode_ts(mc, !mc->rec_ts_idx))
 		goto decode_failed;
+
+	/* Next packet in the buffer will have a timestamp on a single byte */
+	mc->rec_ts_idx++;
 
 	/* read data */
 	memset(cf->data, 0x0, sizeof(cf->data));
@@ -658,12 +672,11 @@ static int pcan_usb_decode_data(struct pcan_usb_msg_context *mc, u8 status_len)
 	hwts = skb_hwtstamps(skb);
 	hwts->hwtstamp = timeval_to_ktime(tv);
 
-	/* push the skb */
-	netif_rx(skb);
-
 	/* update statistics */
 	mc->netdev->stats.rx_packets++;
 	mc->netdev->stats.rx_bytes += cf->can_dlc;
+	/* push the skb */
+	netif_rx(skb);
 
 	return 0;
 
@@ -695,7 +708,6 @@ static int pcan_usb_decode_msg(struct peak_usb_device *dev, u8 *ibuf, u32 lbuf)
 		/* handle normal can frames here */
 		} else {
 			err = pcan_usb_decode_data(&mc, sl);
-			mc.rec_data_idx++;
 		}
 	}
 
@@ -854,24 +866,27 @@ static int pcan_usb_probe(struct usb_interface *intf)
 /*
  * describe the PCAN-USB adapter
  */
-struct peak_usb_adapter pcan_usb = {
+static const struct can_bittiming_const pcan_usb_const = {
+	.name = "pcan_usb",
+	.tseg1_min = 1,
+	.tseg1_max = 16,
+	.tseg2_min = 1,
+	.tseg2_max = 8,
+	.sjw_max = 4,
+	.brp_min = 1,
+	.brp_max = 64,
+	.brp_inc = 1,
+};
+
+const struct peak_usb_adapter pcan_usb = {
 	.name = "PCAN-USB",
 	.device_id = PCAN_USB_PRODUCT_ID,
 	.ctrl_count = 1,
+	.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES | CAN_CTRLMODE_LISTENONLY,
 	.clock = {
 		.freq = PCAN_USB_CRYSTAL_HZ / 2 ,
 	},
-	.bittiming_const = {
-		.name = "pcan_usb",
-		.tseg1_min = 1,
-		.tseg1_max = 16,
-		.tseg2_min = 1,
-		.tseg2_max = 8,
-		.sjw_max = 4,
-		.brp_min = 1,
-		.brp_max = 64,
-		.brp_inc = 1,
-	},
+	.bittiming_const = &pcan_usb_const,
 
 	/* size of device private data */
 	.sizeof_dev_private = sizeof(struct pcan_usb),

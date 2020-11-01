@@ -1,8 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  include/asm-s390x/extmem.h
- *
  *  definitions for external memory segment support
- *  Copyright (C) 2003 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *  Copyright IBM Corp. 2003
  */
 
 #ifndef _ASM_S390X_DCSS_H

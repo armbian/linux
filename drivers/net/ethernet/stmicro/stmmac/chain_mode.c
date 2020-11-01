@@ -16,10 +16,6 @@
   FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
   more details.
 
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
   The full GNU General Public License is included in this distribution in
   the file called "COPYING".
 
@@ -28,15 +24,17 @@
 
 #include "stmmac.h"
 
-unsigned int stmmac_jumbo_frm(void *p, struct sk_buff *skb, int csum)
+static int stmmac_jumbo_frm(void *p, struct sk_buff *skb, int csum)
 {
-	struct stmmac_priv *priv = (struct stmmac_priv *) p;
-	unsigned int txsize = priv->dma_tx_size;
-	unsigned int entry = priv->cur_tx % txsize;
-	struct dma_desc *desc = priv->dma_tx + entry;
+	struct stmmac_tx_queue *tx_q = (struct stmmac_tx_queue *)p;
 	unsigned int nopaged_len = skb_headlen(skb);
-	unsigned int bmax;
+	struct stmmac_priv *priv = tx_q->priv_data;
+	unsigned int entry = tx_q->cur_tx;
+	unsigned int bmax, des2;
 	unsigned int i = 1, len;
+	struct dma_desc *desc;
+
+	desc = tx_q->dma_tx + entry;
 
 	if (priv->plat->enh_desc)
 		bmax = BUF_SIZE_8KiB;
@@ -45,35 +43,55 @@ unsigned int stmmac_jumbo_frm(void *p, struct sk_buff *skb, int csum)
 
 	len = nopaged_len - bmax;
 
-	desc->des2 = dma_map_single(priv->device, skb->data,
-				    bmax, DMA_TO_DEVICE);
-	priv->hw->desc->prepare_tx_desc(desc, 1, bmax, csum);
+	des2 = dma_map_single(priv->device, skb->data,
+			      bmax, DMA_TO_DEVICE);
+	desc->des2 = cpu_to_le32(des2);
+	if (dma_mapping_error(priv->device, des2))
+		return -1;
+	tx_q->tx_skbuff_dma[entry].buf = des2;
+	tx_q->tx_skbuff_dma[entry].len = bmax;
+	/* do not close the descriptor and do not set own bit */
+	priv->hw->desc->prepare_tx_desc(desc, 1, bmax, csum, STMMAC_CHAIN_MODE,
+					0, false, skb->len);
 
 	while (len != 0) {
-		entry = (++priv->cur_tx) % txsize;
-		desc = priv->dma_tx + entry;
+		tx_q->tx_skbuff[entry] = NULL;
+		entry = STMMAC_GET_ENTRY(entry, DMA_TX_SIZE);
+		desc = tx_q->dma_tx + entry;
 
 		if (len > bmax) {
-			desc->des2 = dma_map_single(priv->device,
-						    (skb->data + bmax * i),
-						    bmax, DMA_TO_DEVICE);
-			priv->hw->desc->prepare_tx_desc(desc, 0, bmax,
-							csum);
-			priv->hw->desc->set_tx_owner(desc);
-			priv->tx_skbuff[entry] = NULL;
+			des2 = dma_map_single(priv->device,
+					      (skb->data + bmax * i),
+					      bmax, DMA_TO_DEVICE);
+			desc->des2 = cpu_to_le32(des2);
+			if (dma_mapping_error(priv->device, des2))
+				return -1;
+			tx_q->tx_skbuff_dma[entry].buf = des2;
+			tx_q->tx_skbuff_dma[entry].len = bmax;
+			priv->hw->desc->prepare_tx_desc(desc, 0, bmax, csum,
+							STMMAC_CHAIN_MODE, 1,
+							false, skb->len);
 			len -= bmax;
 			i++;
 		} else {
-			desc->des2 = dma_map_single(priv->device,
-						    (skb->data + bmax * i), len,
-						    DMA_TO_DEVICE);
-			priv->hw->desc->prepare_tx_desc(desc, 0, len,
-							csum);
-			priv->hw->desc->set_tx_owner(desc);
-			priv->tx_skbuff[entry] = NULL;
+			des2 = dma_map_single(priv->device,
+					      (skb->data + bmax * i), len,
+					      DMA_TO_DEVICE);
+			desc->des2 = cpu_to_le32(des2);
+			if (dma_mapping_error(priv->device, des2))
+				return -1;
+			tx_q->tx_skbuff_dma[entry].buf = des2;
+			tx_q->tx_skbuff_dma[entry].len = len;
+			/* last descriptor can be set now */
+			priv->hw->desc->prepare_tx_desc(desc, 0, len, csum,
+							STMMAC_CHAIN_MODE, 1,
+							true, skb->len);
 			len = 0;
 		}
 	}
+
+	tx_q->cur_tx = entry;
+
 	return entry;
 }
 
@@ -89,49 +107,73 @@ static unsigned int stmmac_is_jumbo_frm(int len, int enh_desc)
 	return ret;
 }
 
-static void stmmac_refill_desc3(int bfsize, struct dma_desc *p)
-{
-}
-
-static void stmmac_init_desc3(int des3_as_data_buf, struct dma_desc *p)
-{
-}
-
-static void stmmac_clean_desc3(struct dma_desc *p)
-{
-}
-
-static void stmmac_init_dma_chain(struct dma_desc *des, dma_addr_t phy_addr,
-				  unsigned int size)
+static void stmmac_init_dma_chain(void *des, dma_addr_t phy_addr,
+				  unsigned int size, unsigned int extend_desc)
 {
 	/*
 	 * In chained mode the des3 points to the next element in the ring.
 	 * The latest element has to point to the head.
 	 */
 	int i;
-	struct dma_desc *p = des;
 	dma_addr_t dma_phy = phy_addr;
 
-	for (i = 0; i < (size - 1); i++) {
-		dma_phy += sizeof(struct dma_desc);
-		p->des3 = (unsigned int)dma_phy;
-		p++;
+	if (extend_desc) {
+		struct dma_extended_desc *p = (struct dma_extended_desc *)des;
+		for (i = 0; i < (size - 1); i++) {
+			dma_phy += sizeof(struct dma_extended_desc);
+			p->basic.des3 = cpu_to_le32((unsigned int)dma_phy);
+			p++;
+		}
+		p->basic.des3 = cpu_to_le32((unsigned int)phy_addr);
+
+	} else {
+		struct dma_desc *p = (struct dma_desc *)des;
+		for (i = 0; i < (size - 1); i++) {
+			dma_phy += sizeof(struct dma_desc);
+			p->des3 = cpu_to_le32((unsigned int)dma_phy);
+			p++;
+		}
+		p->des3 = cpu_to_le32((unsigned int)phy_addr);
 	}
-	p->des3 = (unsigned int)phy_addr;
 }
 
-static int stmmac_set_16kib_bfsize(int mtu)
+static void stmmac_refill_desc3(void *priv_ptr, struct dma_desc *p)
 {
-	/* Not supported */
-	return 0;
+	struct stmmac_rx_queue *rx_q = (struct stmmac_rx_queue *)priv_ptr;
+	struct stmmac_priv *priv = rx_q->priv_data;
+
+	if (priv->hwts_rx_en && !priv->extend_desc)
+		/* NOTE: Device will overwrite des3 with timestamp value if
+		 * 1588-2002 time stamping is enabled, hence reinitialize it
+		 * to keep explicit chaining in the descriptor.
+		 */
+		p->des3 = cpu_to_le32((unsigned int)(rx_q->dma_rx_phy +
+				      (((rx_q->dirty_rx) + 1) %
+				       DMA_RX_SIZE) *
+				      sizeof(struct dma_desc)));
 }
 
-const struct stmmac_ring_mode_ops ring_mode_ops = {
+static void stmmac_clean_desc3(void *priv_ptr, struct dma_desc *p)
+{
+	struct stmmac_tx_queue *tx_q = (struct stmmac_tx_queue *)priv_ptr;
+	struct stmmac_priv *priv = tx_q->priv_data;
+	unsigned int entry = tx_q->dirty_tx;
+
+	if (tx_q->tx_skbuff_dma[entry].last_segment && !priv->extend_desc &&
+	    priv->hwts_tx_en)
+		/* NOTE: Device will overwrite des3 with timestamp value if
+		 * 1588-2002 time stamping is enabled, hence reinitialize it
+		 * to keep explicit chaining in the descriptor.
+		 */
+		p->des3 = cpu_to_le32((unsigned int)((tx_q->dma_tx_phy +
+				      ((tx_q->dirty_tx + 1) % DMA_TX_SIZE))
+				      * sizeof(struct dma_desc)));
+}
+
+const struct stmmac_mode_ops chain_mode_ops = {
+	.init = stmmac_init_dma_chain,
 	.is_jumbo_frm = stmmac_is_jumbo_frm,
 	.jumbo_frm = stmmac_jumbo_frm,
 	.refill_desc3 = stmmac_refill_desc3,
-	.init_desc3 = stmmac_init_desc3,
-	.init_dma_chain = stmmac_init_dma_chain,
 	.clean_desc3 = stmmac_clean_desc3,
-	.set_16kib_bfsize = stmmac_set_16kib_bfsize,
 };

@@ -22,6 +22,8 @@
  * an SMP box will direct the access to CPU %d.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 
 #include <linux/types.h>
@@ -38,32 +40,11 @@
 #include <linux/uaccess.h>
 #include <linux/gfp.h>
 
-#include <asm/processor.h>
+#include <asm/cpufeature.h>
 #include <asm/msr.h>
 
 static struct class *msr_class;
-
-static loff_t msr_seek(struct file *file, loff_t offset, int orig)
-{
-	loff_t ret;
-	struct inode *inode = file->f_mapping->host;
-
-	mutex_lock(&inode->i_mutex);
-	switch (orig) {
-	case 0:
-		file->f_pos = offset;
-		ret = file->f_pos;
-		break;
-	case 1:
-		file->f_pos += offset;
-		ret = file->f_pos;
-		break;
-	default:
-		ret = -EINVAL;
-	}
-	mutex_unlock(&inode->i_mutex);
-	return ret;
-}
+static enum cpuhp_state cpuhp_msr_state;
 
 static ssize_t msr_read(struct file *file, char __user *buf,
 			size_t count, loff_t *ppos)
@@ -71,7 +52,7 @@ static ssize_t msr_read(struct file *file, char __user *buf,
 	u32 __user *tmp = (u32 __user *) buf;
 	u32 data[2];
 	u32 reg = *ppos;
-	int cpu = iminor(file->f_path.dentry->d_inode);
+	int cpu = iminor(file_inode(file));
 	int err = 0;
 	ssize_t bytes = 0;
 
@@ -99,7 +80,7 @@ static ssize_t msr_write(struct file *file, const char __user *buf,
 	const u32 __user *tmp = (const u32 __user *)buf;
 	u32 data[2];
 	u32 reg = *ppos;
-	int cpu = iminor(file->f_path.dentry->d_inode);
+	int cpu = iminor(file_inode(file));
 	int err = 0;
 	ssize_t bytes = 0;
 
@@ -125,7 +106,7 @@ static long msr_ioctl(struct file *file, unsigned int ioc, unsigned long arg)
 {
 	u32 __user *uregs = (u32 __user *)arg;
 	u32 regs[8];
-	int cpu = iminor(file->f_path.dentry->d_inode);
+	int cpu = iminor(file_inode(file));
 	int err;
 
 	switch (ioc) {
@@ -171,13 +152,12 @@ static long msr_ioctl(struct file *file, unsigned int ioc, unsigned long arg)
 
 static int msr_open(struct inode *inode, struct file *file)
 {
-	unsigned int cpu;
+	unsigned int cpu = iminor(file_inode(file));
 	struct cpuinfo_x86 *c;
 
 	if (!capable(CAP_SYS_RAWIO))
 		return -EPERM;
 
-	cpu = iminor(file->f_path.dentry->d_inode);
 	if (cpu >= nr_cpu_ids || !cpu_online(cpu))
 		return -ENXIO;	/* No such CPU */
 
@@ -193,7 +173,7 @@ static int msr_open(struct inode *inode, struct file *file)
  */
 static const struct file_operations msr_fops = {
 	.owner = THIS_MODULE,
-	.llseek = msr_seek,
+	.llseek = no_seek_end_llseek,
 	.read = msr_read,
 	.write = msr_write,
 	.open = msr_open,
@@ -201,42 +181,20 @@ static const struct file_operations msr_fops = {
 	.compat_ioctl = msr_ioctl,
 };
 
-static int __cpuinit msr_device_create(int cpu)
+static int msr_device_create(unsigned int cpu)
 {
 	struct device *dev;
 
 	dev = device_create(msr_class, NULL, MKDEV(MSR_MAJOR, cpu), NULL,
 			    "msr%d", cpu);
-	return IS_ERR(dev) ? PTR_ERR(dev) : 0;
+	return PTR_ERR_OR_ZERO(dev);
 }
 
-static void msr_device_destroy(int cpu)
+static int msr_device_destroy(unsigned int cpu)
 {
 	device_destroy(msr_class, MKDEV(MSR_MAJOR, cpu));
+	return 0;
 }
-
-static int __cpuinit msr_class_cpu_callback(struct notifier_block *nfb,
-				unsigned long action, void *hcpu)
-{
-	unsigned int cpu = (unsigned long)hcpu;
-	int err = 0;
-
-	switch (action) {
-	case CPU_UP_PREPARE:
-		err = msr_device_create(cpu);
-		break;
-	case CPU_UP_CANCELED:
-	case CPU_UP_CANCELED_FROZEN:
-	case CPU_DEAD:
-		msr_device_destroy(cpu);
-		break;
-	}
-	return notifier_from_errno(err);
-}
-
-static struct notifier_block __refdata msr_class_cpu_notifier = {
-	.notifier_call = msr_class_cpu_callback,
-};
 
 static char *msr_devnode(struct device *dev, umode_t *mode)
 {
@@ -245,14 +203,11 @@ static char *msr_devnode(struct device *dev, umode_t *mode)
 
 static int __init msr_init(void)
 {
-	int i, err = 0;
-	i = 0;
+	int err;
 
 	if (__register_chrdev(MSR_MAJOR, 0, NR_CPUS, "cpu/msr", &msr_fops)) {
-		printk(KERN_ERR "msr: unable to get major %d for msr\n",
-		       MSR_MAJOR);
-		err = -EBUSY;
-		goto out;
+		pr_err("unable to get major %d for msr\n", MSR_MAJOR);
+		return -EBUSY;
 	}
 	msr_class = class_create(THIS_MODULE, "msr");
 	if (IS_ERR(msr_class)) {
@@ -260,38 +215,28 @@ static int __init msr_init(void)
 		goto out_chrdev;
 	}
 	msr_class->devnode = msr_devnode;
-	for_each_online_cpu(i) {
-		err = msr_device_create(i);
-		if (err != 0)
-			goto out_class;
-	}
-	register_hotcpu_notifier(&msr_class_cpu_notifier);
 
-	err = 0;
-	goto out;
+	err  = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "x86/msr:online",
+				 msr_device_create, msr_device_destroy);
+	if (err < 0)
+		goto out_class;
+	cpuhp_msr_state = err;
+	return 0;
 
 out_class:
-	i = 0;
-	for_each_online_cpu(i)
-		msr_device_destroy(i);
 	class_destroy(msr_class);
 out_chrdev:
 	__unregister_chrdev(MSR_MAJOR, 0, NR_CPUS, "cpu/msr");
-out:
 	return err;
 }
+module_init(msr_init);
 
 static void __exit msr_exit(void)
 {
-	int cpu = 0;
-	for_each_online_cpu(cpu)
-		msr_device_destroy(cpu);
+	cpuhp_remove_state(cpuhp_msr_state);
 	class_destroy(msr_class);
 	__unregister_chrdev(MSR_MAJOR, 0, NR_CPUS, "cpu/msr");
-	unregister_hotcpu_notifier(&msr_class_cpu_notifier);
 }
-
-module_init(msr_init);
 module_exit(msr_exit)
 
 MODULE_AUTHOR("H. Peter Anvin <hpa@zytor.com>");

@@ -25,7 +25,8 @@
 #include <linux/dcookies.h>
 #include <linux/mutex.h>
 #include <linux/path.h>
-#include <asm/uaccess.h>
+#include <linux/compat.h>
+#include <linux/uaccess.h>
 
 /* The dcookies are allocated from a kmem_cache and
  * hashed onto a small number of lists. None of the
@@ -89,7 +90,7 @@ static void hash_dcookie(struct dcookie_struct * dcs)
 }
 
 
-static struct dcookie_struct *alloc_dcookie(struct path *path)
+static struct dcookie_struct *alloc_dcookie(const struct path *path)
 {
 	struct dcookie_struct *dcs = kmem_cache_alloc(dcookie_cache,
 							GFP_KERNEL);
@@ -112,7 +113,7 @@ static struct dcookie_struct *alloc_dcookie(struct path *path)
 /* This is the main kernel-side routine that retrieves the cookie
  * value for a dentry/vfsmnt pair.
  */
-int get_dcookie(struct path *path, unsigned long *cookie)
+int get_dcookie(const struct path *path, unsigned long *cookie)
 {
 	int err = 0;
 	struct dcookie_struct * dcs;
@@ -145,7 +146,7 @@ out:
 /* And here is where the userspace process can look up the cookie value
  * to retrieve the path.
  */
-SYSCALL_DEFINE(lookup_dcookie)(u64 cookie64, char __user * buf, size_t len)
+SYSCALL_DEFINE3(lookup_dcookie, u64, cookie64, char __user *, buf, size_t, len)
 {
 	unsigned long cookie = (unsigned long)cookie64;
 	int err = -EINVAL;
@@ -201,12 +202,16 @@ out:
 	mutex_unlock(&dcookie_mutex);
 	return err;
 }
-#ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
-asmlinkage long SyS_lookup_dcookie(u64 cookie64, long buf, long len)
+
+#ifdef CONFIG_COMPAT
+COMPAT_SYSCALL_DEFINE4(lookup_dcookie, u32, w0, u32, w1, char __user *, buf, compat_size_t, len)
 {
-	return SYSC_lookup_dcookie(cookie64, (char __user *) buf, (size_t) len);
+#ifdef __BIG_ENDIAN
+	return sys_lookup_dcookie(((u64)w0 << 32) | w1, buf, len);
+#else
+	return sys_lookup_dcookie(((u64)w1 << 32) | w0, buf, len);
+#endif
 }
-SYSCALL_ALIAS(sys_lookup_dcookie, SyS_lookup_dcookie);
 #endif
 
 static int dcookie_init(void)

@@ -1,5 +1,5 @@
 /*
- * debugfs.c - ACPI debugfs interface to userspace.
+ * custom_method.c - debugfs interface for customizing ACPI control method
  */
 
 #include <linux/init.h>
@@ -7,7 +7,7 @@
 #include <linux/kernel.h>
 #include <linux/uaccess.h>
 #include <linux/debugfs.h>
-#include <acpi/acpi_drivers.h>
+#include <linux/acpi.h>
 
 #include "internal.h"
 
@@ -48,8 +48,10 @@ static ssize_t cm_write(struct file *file, const char __user * user_buf,
 	if ((*ppos > max_size) ||
 	    (*ppos + count > max_size) ||
 	    (*ppos + count < count) ||
-	    (count > uncopied_bytes))
+	    (count > uncopied_bytes)) {
+		kfree(buf);
 		return -EINVAL;
+	}
 
 	if (copy_from_user(buf + (*ppos), user_buf, count)) {
 		kfree(buf);
@@ -66,9 +68,10 @@ static ssize_t cm_write(struct file *file, const char __user * user_buf,
 		buf = NULL;
 		if (ACPI_FAILURE(status))
 			return -EINVAL;
-		add_taint(TAINT_OVERRIDDEN_ACPI_TABLE);
+		add_taint(TAINT_OVERRIDDEN_ACPI_TABLE, LOCKDEP_NOW_UNRELIABLE);
 	}
 
+	kfree(buf);
 	return count;
 }
 

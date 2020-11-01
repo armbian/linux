@@ -46,14 +46,6 @@ static const char* version = "HDLC support module revision 1.22";
 
 static struct hdlc_proto *first_proto;
 
-int hdlc_change_mtu(struct net_device *dev, int new_mtu)
-{
-	if ((new_mtu < 68) || (new_mtu > HDLC_MAX_MTU))
-		return -EINVAL;
-	dev->mtu = new_mtu;
-	return 0;
-}
-
 static int hdlc_rcv(struct sk_buff *skb, struct net_device *dev,
 		    struct packet_type *p, struct net_device *orig_dev)
 {
@@ -99,7 +91,7 @@ static inline void hdlc_proto_stop(struct net_device *dev)
 static int hdlc_device_event(struct notifier_block *this, unsigned long event,
 			     void *ptr)
 {
-	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	hdlc_device *hdlc;
 	unsigned long flags;
 	int on;
@@ -237,6 +229,8 @@ static void hdlc_setup_dev(struct net_device *dev)
 	dev->flags		 = IFF_POINTOPOINT | IFF_NOARP;
 	dev->priv_flags		 = IFF_WAN_HDLC;
 	dev->mtu		 = HDLC_MAX_MTU;
+	dev->min_mtu		 = 68;
+	dev->max_mtu		 = HDLC_MAX_MTU;
 	dev->type		 = ARPHRD_RAWHDLC;
 	dev->hard_header_len	 = 16;
 	dev->addr_len		 = 0;
@@ -256,7 +250,8 @@ static void hdlc_setup(struct net_device *dev)
 struct net_device *alloc_hdlcdev(void *priv)
 {
 	struct net_device *dev;
-	dev = alloc_netdev(sizeof(struct hdlc_device), "hdlc%d", hdlc_setup);
+	dev = alloc_netdev(sizeof(struct hdlc_device), "hdlc%d",
+			   NET_NAME_UNKNOWN, hdlc_setup);
 	if (dev)
 		dev_to_hdlc(dev)->priv = priv;
 	return dev;
@@ -265,8 +260,8 @@ struct net_device *alloc_hdlcdev(void *priv)
 void unregister_hdlc_device(struct net_device *dev)
 {
 	rtnl_lock();
-	unregister_netdevice(dev);
 	detach_hdlc_protocol(dev);
+	unregister_netdevice(dev);
 	rtnl_unlock();
 }
 
@@ -275,29 +270,41 @@ void unregister_hdlc_device(struct net_device *dev)
 int attach_hdlc_protocol(struct net_device *dev, struct hdlc_proto *proto,
 			 size_t size)
 {
-	detach_hdlc_protocol(dev);
+	int err;
+
+	err = detach_hdlc_protocol(dev);
+	if (err)
+		return err;
 
 	if (!try_module_get(proto->module))
 		return -ENOSYS;
 
-	if (size)
-		if ((dev_to_hdlc(dev)->state = kmalloc(size,
-						       GFP_KERNEL)) == NULL) {
-			netdev_warn(dev,
-				    "Memory squeeze on hdlc_proto_attach()\n");
+	if (size) {
+		dev_to_hdlc(dev)->state = kmalloc(size, GFP_KERNEL);
+		if (dev_to_hdlc(dev)->state == NULL) {
 			module_put(proto->module);
 			return -ENOBUFS;
 		}
+	}
 	dev_to_hdlc(dev)->proto = proto;
+
 	return 0;
 }
 
 
-void detach_hdlc_protocol(struct net_device *dev)
+int detach_hdlc_protocol(struct net_device *dev)
 {
 	hdlc_device *hdlc = dev_to_hdlc(dev);
+	int err;
 
 	if (hdlc->proto) {
+		err = call_netdevice_notifiers(NETDEV_PRE_TYPE_CHANGE, dev);
+		err = notifier_to_errno(err);
+		if (err) {
+			netdev_err(dev, "Refused to change device type\n");
+			return err;
+		}
+
 		if (hdlc->proto->detach)
 			hdlc->proto->detach(dev);
 		module_put(hdlc->proto->module);
@@ -306,6 +313,8 @@ void detach_hdlc_protocol(struct net_device *dev)
 	kfree(hdlc->state);
 	hdlc->state = NULL;
 	hdlc_setup_dev(dev);
+
+	return 0;
 }
 
 
@@ -338,7 +347,6 @@ MODULE_AUTHOR("Krzysztof Halasa <khc@pm.waw.pl>");
 MODULE_DESCRIPTION("HDLC support module");
 MODULE_LICENSE("GPL v2");
 
-EXPORT_SYMBOL(hdlc_change_mtu);
 EXPORT_SYMBOL(hdlc_start_xmit);
 EXPORT_SYMBOL(hdlc_open);
 EXPORT_SYMBOL(hdlc_close);

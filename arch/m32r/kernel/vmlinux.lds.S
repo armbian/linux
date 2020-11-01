@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* ld script to make M32R Linux kernel
  */
 
@@ -31,6 +32,7 @@ SECTIONS
 	HEAD_TEXT
 	TEXT_TEXT
 	SCHED_TEXT
+	CPUIDLE_TEXT
 	LOCK_TEXT
 	*(.fixup)
 	*(.gnu.warning)

@@ -427,7 +427,7 @@ Memhscx_empty_fifo(struct BCState *bcs, int count)
 		t += sprintf(t, "hscx_empty_fifo %c cnt %d",
 			     bcs->hw.hscx.hscx ? 'B' : 'A', count);
 		QuickHex(t, ptr, count);
-		debugl1(cs, bcs->blog);
+		debugl1(cs, "%s", bcs->blog);
 	}
 }
 
@@ -469,7 +469,7 @@ Memhscx_fill_fifo(struct BCState *bcs)
 		t += sprintf(t, "hscx_fill_fifo %c cnt %d",
 			     bcs->hw.hscx.hscx ? 'B' : 'A', count);
 		QuickHex(t, ptr, count);
-		debugl1(cs, bcs->blog);
+		debugl1(cs, "%s", bcs->blog);
 	}
 }
 
@@ -511,7 +511,8 @@ Memhscx_interrupt(struct IsdnCardState *cs, u_char val, u_char hscx)
 				if (!(skb = dev_alloc_skb(count)))
 					printk(KERN_WARNING "HSCX: receive out of memory\n");
 				else {
-					memcpy(skb_put(skb, count), bcs->hw.hscx.rcvbuf, count);
+					skb_put_data(skb, bcs->hw.hscx.rcvbuf,
+						     count);
 					skb_queue_tail(&bcs->rqueue, skb);
 				}
 			}
@@ -526,7 +527,8 @@ Memhscx_interrupt(struct IsdnCardState *cs, u_char val, u_char hscx)
 			if (!(skb = dev_alloc_skb(fifo_size)))
 				printk(KERN_WARNING "HiSax: receive out of memory\n");
 			else {
-				memcpy(skb_put(skb, fifo_size), bcs->hw.hscx.rcvbuf, fifo_size);
+				skb_put_data(skb, bcs->hw.hscx.rcvbuf,
+					     fifo_size);
 				skb_queue_tail(&bcs->rqueue, skb);
 			}
 			bcs->hw.hscx.rcvidx = 0;
@@ -904,7 +906,7 @@ Diva_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 	return (0);
 }
 
-static int __devinit setup_diva_common(struct IsdnCardState *cs)
+static int setup_diva_common(struct IsdnCardState *cs)
 {
 	int bytecnt;
 	u_char val;
@@ -976,9 +978,8 @@ static int __devinit setup_diva_common(struct IsdnCardState *cs)
 		printk(KERN_INFO "Diva: IPACX Design Id: %x\n",
 		       MemReadISAC_IPACX(cs, IPACX_ID) & 0x3F);
 	} else { /* DIVA 2.0 */
-		cs->hw.diva.tl.function = (void *) diva_led_handler;
-		cs->hw.diva.tl.data = (long) cs;
-		init_timer(&cs->hw.diva.tl);
+		setup_timer(&cs->hw.diva.tl, (void *)diva_led_handler,
+			    (long)cs);
 		cs->readisac  = &ReadISAC;
 		cs->writeisac = &WriteISAC;
 		cs->readisacfifo  = &ReadISACfifo;
@@ -997,7 +998,7 @@ static int __devinit setup_diva_common(struct IsdnCardState *cs)
 
 #ifdef CONFIG_ISA
 
-static int __devinit setup_diva_isa(struct IsdnCard *card)
+static int setup_diva_isa(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	u_char val;
@@ -1033,7 +1034,7 @@ static int __devinit setup_diva_isa(struct IsdnCard *card)
 
 #else	/* if !CONFIG_ISA */
 
-static int __devinit setup_diva_isa(struct IsdnCard *card)
+static int setup_diva_isa(struct IsdnCard *card)
 {
 	return (-1);	/* card not found; continue search */
 }
@@ -1041,7 +1042,7 @@ static int __devinit setup_diva_isa(struct IsdnCard *card)
 #endif	/* CONFIG_ISA */
 
 #ifdef __ISAPNP__
-static struct isapnp_device_id diva_ids[] __devinitdata = {
+static struct isapnp_device_id diva_ids[] = {
 	{ ISAPNP_VENDOR('G', 'D', 'I'), ISAPNP_FUNCTION(0x51),
 	  ISAPNP_VENDOR('G', 'D', 'I'), ISAPNP_FUNCTION(0x51),
 	  (unsigned long) "Diva picola" },
@@ -1063,10 +1064,10 @@ static struct isapnp_device_id diva_ids[] __devinitdata = {
 	{ 0, }
 };
 
-static struct isapnp_device_id *ipid __devinitdata = &diva_ids[0];
-static struct pnp_card *pnp_c __devinitdata = NULL;
+static struct isapnp_device_id *ipid = &diva_ids[0];
+static struct pnp_card *pnp_c = NULL;
 
-static int __devinit setup_diva_isapnp(struct IsdnCard *card)
+static int setup_diva_isapnp(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	struct pnp_dev *pnp_d;
@@ -1141,7 +1142,7 @@ static int __devinit setup_diva_isapnp(struct IsdnCard *card)
 
 #else	/* if !ISAPNP */
 
-static int __devinit setup_diva_isapnp(struct IsdnCard *card)
+static int setup_diva_isapnp(struct IsdnCard *card)
 {
 	return (-1);	/* card not found; continue search */
 }
@@ -1149,12 +1150,12 @@ static int __devinit setup_diva_isapnp(struct IsdnCard *card)
 #endif	/* ISAPNP */
 
 #ifdef CONFIG_PCI
-static struct pci_dev *dev_diva __devinitdata = NULL;
-static struct pci_dev *dev_diva_u __devinitdata = NULL;
-static struct pci_dev *dev_diva201 __devinitdata = NULL;
-static struct pci_dev *dev_diva202 __devinitdata = NULL;
+static struct pci_dev *dev_diva = NULL;
+static struct pci_dev *dev_diva_u = NULL;
+static struct pci_dev *dev_diva201 = NULL;
+static struct pci_dev *dev_diva202 = NULL;
 
-static int __devinit setup_diva_pci(struct IsdnCard *card)
+static int setup_diva_pci(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 
@@ -1231,15 +1232,14 @@ static int __devinit setup_diva_pci(struct IsdnCard *card)
 
 #else	/* if !CONFIG_PCI */
 
-static int __devinit setup_diva_pci(struct IsdnCard *card)
+static int setup_diva_pci(struct IsdnCard *card)
 {
 	return (-1);	/* card not found; continue search */
 }
 
 #endif	/* CONFIG_PCI */
 
-int __devinit
-setup_diva(struct IsdnCard *card)
+int setup_diva(struct IsdnCard *card)
 {
 	int rc, have_card = 0;
 	struct IsdnCardState *cs = card->cs;

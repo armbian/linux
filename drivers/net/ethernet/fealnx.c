@@ -88,11 +88,11 @@ static int full_duplex[MAX_UNITS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 
 #include <asm/processor.h>	/* Processor type for cache alignment. */
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/byteorder.h>
 
 /* These identify the driver base version and may not be removed. */
-static const char version[] __devinitconst =
+static const char version[] =
 	KERN_INFO DRV_NAME ".c:v" DRV_VERSION " " DRV_RELDATE "\n";
 
 
@@ -150,7 +150,7 @@ struct chip_info {
 	int flags;
 };
 
-static const struct chip_info skel_netdrv_tbl[] __devinitdata = {
+static const struct chip_info skel_netdrv_tbl[] = {
  	{ "100/10M Ethernet PCI Adapter",	HAS_MII_XCVR },
 	{ "100/10M Ethernet PCI Adapter",	HAS_CHIP_XCVR },
 	{ "1000/100/10M Ethernet PCI Adapter",	HAS_MII_XCVR },
@@ -257,8 +257,8 @@ enum rx_desc_status_bits {
 	RXFSD = 0x00000800,	/* first descriptor */
 	RXLSD = 0x00000400,	/* last descriptor */
 	ErrorSummary = 0x80,	/* error summary */
-	RUNT = 0x40,		/* runt packet received */
-	LONG = 0x20,		/* long packet received */
+	RUNTPKT = 0x40,		/* runt packet received */
+	LONGPKT = 0x20,		/* long packet received */
 	FAE = 0x10,		/* frame align error */
 	CRC = 0x08,		/* crc error */
 	RXER = 0x04,		/* receive error */
@@ -472,13 +472,12 @@ static const struct net_device_ops netdev_ops = {
 	.ndo_set_rx_mode	= set_rx_mode,
 	.ndo_do_ioctl		= mii_ioctl,
 	.ndo_tx_timeout		= fealnx_tx_timeout,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
 
-static int __devinit fealnx_init_one(struct pci_dev *pdev,
-				     const struct pci_device_id *ent)
+static int fealnx_init_one(struct pci_dev *pdev,
+			   const struct pci_device_id *ent)
 {
 	struct netdev_private *np;
 	int i, option, err, irq;
@@ -544,9 +543,6 @@ static int __devinit fealnx_init_one(struct pci_dev *pdev,
 
 	/* Reset the chip to erase previous misconfiguration. */
 	iowrite32(0x00000001, ioaddr + BCR);
-
-	dev->base_addr = (unsigned long)ioaddr;
-	dev->irq = irq;
 
 	/* Make certain the descriptor lists are aligned. */
 	np = netdev_priv(dev);
@@ -687,7 +683,7 @@ err_out_res:
 }
 
 
-static void __devexit fealnx_remove_one(struct pci_dev *pdev)
+static void fealnx_remove_one(struct pci_dev *pdev)
 {
 	struct net_device *dev = pci_get_drvdata(pdev);
 
@@ -702,7 +698,6 @@ static void __devexit fealnx_remove_one(struct pci_dev *pdev)
 		pci_iounmap(pdev, np->mem);
 		free_netdev(dev);
 		pci_release_regions(pdev);
-		pci_set_drvdata(pdev, NULL);
 	} else
 		printk(KERN_ERR "fealnx: remove for unknown device\n");
 }
@@ -832,11 +827,13 @@ static int netdev_open(struct net_device *dev)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	void __iomem *ioaddr = np->mem;
-	int i;
+	const int irq = np->pci_dev->irq;
+	int rc, i;
 
 	iowrite32(0x00000001, ioaddr + BCR);	/* Reset */
 
-	if (request_irq(dev->irq, intr_handler, IRQF_SHARED, dev->name, dev))
+	rc = request_irq(irq, intr_handler, IRQF_SHARED, dev->name, dev);
+	if (rc)
 		return -EAGAIN;
 
 	for (i = 0; i < 3; i++)
@@ -924,8 +921,7 @@ static int netdev_open(struct net_device *dev)
 	np->reset_timer.data = (unsigned long) dev;
 	np->reset_timer.function = reset_timer;
 	np->reset_timer_armed = 0;
-
-	return 0;
+	return rc;
 }
 
 
@@ -1230,7 +1226,7 @@ static void fealnx_tx_timeout(struct net_device *dev)
 
 	spin_unlock_irqrestore(&np->lock, flags);
 
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	dev->stats.tx_errors++;
 	netif_wake_queue(dev); /* or .._start_.. ?? */
 }
@@ -1636,7 +1632,7 @@ static int netdev_rx(struct net_device *dev)
 					       dev->name, rx_status);
 
 				dev->stats.rx_errors++;	/* end of a packet. */
-				if (rx_status & (LONG | RUNT))
+				if (rx_status & (LONGPKT | RUNTPKT))
 					dev->stats.rx_length_errors++;
 				if (rx_status & RXER)
 					dev->stats.rx_frame_errors++;
@@ -1715,8 +1711,8 @@ static int netdev_rx(struct net_device *dev)
 					np->cur_rx->skbuff->data, pkt_len);
 				skb_put(skb, pkt_len);
 #else
-				memcpy(skb_put(skb, pkt_len),
-					np->cur_rx->skbuff->data, pkt_len);
+				skb_put_data(skb, np->cur_rx->skbuff->data,
+					     pkt_len);
 #endif
 				pci_dma_sync_single_for_device(np->pci_dev,
 							       np->cur_rx->buffer,
@@ -1821,25 +1817,26 @@ static void netdev_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *i
 	strlcpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
 }
 
-static int netdev_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int netdev_get_link_ksettings(struct net_device *dev,
+				     struct ethtool_link_ksettings *cmd)
 {
 	struct netdev_private *np = netdev_priv(dev);
-	int rc;
 
 	spin_lock_irq(&np->lock);
-	rc = mii_ethtool_gset(&np->mii, cmd);
+	mii_ethtool_get_link_ksettings(&np->mii, cmd);
 	spin_unlock_irq(&np->lock);
 
-	return rc;
+	return 0;
 }
 
-static int netdev_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int netdev_set_link_ksettings(struct net_device *dev,
+				     const struct ethtool_link_ksettings *cmd)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	int rc;
 
 	spin_lock_irq(&np->lock);
-	rc = mii_ethtool_sset(&np->mii, cmd);
+	rc = mii_ethtool_set_link_ksettings(&np->mii, cmd);
 	spin_unlock_irq(&np->lock);
 
 	return rc;
@@ -1869,12 +1866,12 @@ static void netdev_set_msglevel(struct net_device *dev, u32 value)
 
 static const struct ethtool_ops netdev_ethtool_ops = {
 	.get_drvinfo		= netdev_get_drvinfo,
-	.get_settings		= netdev_get_settings,
-	.set_settings		= netdev_set_settings,
 	.nway_reset		= netdev_nway_reset,
 	.get_link		= netdev_get_link,
 	.get_msglevel		= netdev_get_msglevel,
 	.set_msglevel		= netdev_set_msglevel,
+	.get_link_ksettings	= netdev_get_link_ksettings,
+	.set_link_ksettings	= netdev_set_link_ksettings,
 };
 
 static int mii_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
@@ -1910,7 +1907,7 @@ static int netdev_close(struct net_device *dev)
 	del_timer_sync(&np->timer);
 	del_timer_sync(&np->reset_timer);
 
-	free_irq(dev->irq, dev);
+	free_irq(np->pci_dev->irq, dev);
 
 	/* Free all the skbuffs in the Rx queue. */
 	for (i = 0; i < RX_RING_SIZE; i++) {
@@ -1939,7 +1936,7 @@ static int netdev_close(struct net_device *dev)
 	return 0;
 }
 
-static DEFINE_PCI_DEVICE_TABLE(fealnx_pci_tbl) = {
+static const struct pci_device_id fealnx_pci_tbl[] = {
 	{0x1516, 0x0800, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{0x1516, 0x0803, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 1},
 	{0x1516, 0x0891, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 2},
@@ -1952,7 +1949,7 @@ static struct pci_driver fealnx_driver = {
 	.name		= "fealnx",
 	.id_table	= fealnx_pci_tbl,
 	.probe		= fealnx_init_one,
-	.remove		= __devexit_p(fealnx_remove_one),
+	.remove		= fealnx_remove_one,
 };
 
 static int __init fealnx_init(void)

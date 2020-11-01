@@ -10,33 +10,30 @@
 #include <linux/module.h>
 #include <linux/compat.h>
 #include <linux/mount.h>
-#include <linux/time.h>
-#include <linux/buffer_head.h>
-#include <linux/writeback.h>
-#include <linux/backing-dev.h>
 #include <linux/blkdev.h>
+#include <linux/backing-dev.h>
 #include <linux/fsnotify.h>
 #include <linux/security.h>
-#include "fat.h"         
-#ifdef CONFIG_FAT_PRE_FALLOCATE
-#include <linux/falloc.h>        
-static long fat_fallocate(struct file *file, int mode, loff_t offset, loff_t len);
-#endif
+#include <linux/falloc.h>
+#include "fat.h"
+
+static long fat_fallocate(struct file *file, int mode,
+			  loff_t offset, loff_t len);
 
 static int fat_ioctl_get_attributes(struct inode *inode, u32 __user *user_attr)
 {
 	u32 attr;
 
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 	attr = fat_make_attrs(inode);
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 
 	return put_user(attr, user_attr);
 }
 
 static int fat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 {
-	struct inode *inode = file->f_path.dentry->d_inode;
+	struct inode *inode = file_inode(file);
 	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
 	int is_dir = S_ISDIR(inode->i_mode);
 	u32 attr, oldattr;
@@ -47,10 +44,10 @@ static int fat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 	if (err)
 		goto out;
 
-	mutex_lock(&inode->i_mutex);
 	err = mnt_want_write_file(file);
 	if (err)
-		goto out_unlock_inode;
+		goto out;
+	inode_lock(inode);
 
 	/*
 	 * ATTR_VOLUME and ATTR_DIR cannot be changed; this also
@@ -66,7 +63,7 @@ static int fat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 
 	/* Equivalent to a chmod() */
 	ia.ia_valid = ATTR_MODE | ATTR_CTIME;
-	ia.ia_ctime = current_fs_time(inode->i_sb);
+	ia.ia_ctime = current_time(inode);
 	if (is_dir)
 		ia.ia_mode = fat_make_mode(sbi, attr, S_IRWXUGO);
 	else {
@@ -77,14 +74,14 @@ static int fat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 	/* The root directory has no attributes */
 	if (inode->i_ino == MSDOS_ROOT_INO && attr != ATTR_DIR) {
 		err = -EINVAL;
-		goto out_drop_write;
+		goto out_unlock_inode;
 	}
 
 	if (sbi->options.sys_immutable &&
 	    ((attr | oldattr) & ATTR_SYS) &&
 	    !capable(CAP_LINUX_IMMUTABLE)) {
 		err = -EPERM;
-		goto out_drop_write;
+		goto out_unlock_inode;
 	}
 
 	/*
@@ -94,12 +91,12 @@ static int fat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 	 */
 	err = security_inode_setattr(file->f_path.dentry, &ia);
 	if (err)
-		goto out_drop_write;
+		goto out_unlock_inode;
 
 	/* This MUST be done before doing anything irreversible... */
 	err = fat_setattr(file->f_path.dentry, &ia);
 	if (err)
-		goto out_drop_write;
+		goto out_unlock_inode;
 
 	fsnotify_change(file->f_path.dentry, ia.ia_valid);
 	if (sbi->options.sys_immutable) {
@@ -111,17 +108,22 @@ static int fat_ioctl_set_attributes(struct file *file, u32 __user *user_attr)
 
 	fat_save_attrs(inode, attr);
 	mark_inode_dirty(inode);
-out_drop_write:
-	mnt_drop_write_file(file);
 out_unlock_inode:
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
+	mnt_drop_write_file(file);
 out:
 	return err;
 }
 
+static int fat_ioctl_get_volume_id(struct inode *inode, u32 __user *user_attr)
+{
+	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
+	return put_user(sbi->vol_id, user_attr);
+}
+
 long fat_generic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct inode *inode = filp->f_path.dentry->d_inode;
+	struct inode *inode = file_inode(filp);
 	u32 __user *user_attr = (u32 __user *)arg;
 
 	switch (cmd) {
@@ -129,6 +131,8 @@ long fat_generic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return fat_ioctl_get_attributes(inode, user_attr);
 	case FAT_IOCTL_SET_ATTRIBUTES:
 		return fat_ioctl_set_attributes(filp, user_attr);
+	case FAT_IOCTL_GET_VOLUME_ID:
+		return fat_ioctl_get_volume_id(inode, user_attr);
 	default:
 		return -ENOTTY;	/* Inappropriate ioctl for device */
 	}
@@ -156,21 +160,24 @@ static int fat_file_release(struct inode *inode, struct file *filp)
 int fat_file_fsync(struct file *filp, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = filp->f_mapping->host;
-	int res, err;
+	int err;
 
-	res = generic_file_fsync(filp, start, end, datasync);
+	err = __generic_file_fsync(filp, start, end, datasync);
+	if (err)
+		return err;
+
 	err = sync_mapping_buffers(MSDOS_SB(inode->i_sb)->fat_inode->i_mapping);
+	if (err)
+		return err;
 
-	return res ? res : err;
+	return blkdev_issue_flush(inode->i_sb->s_bdev, GFP_KERNEL, NULL);
 }
 
 
 const struct file_operations fat_file_operations = {
 	.llseek		= generic_file_llseek,
-	.read		= do_sync_read,
-	.write		= do_sync_write,
-	.aio_read	= generic_file_aio_read,
-	.aio_write	= generic_file_aio_write,
+	.read_iter	= generic_file_read_iter,
+	.write_iter	= generic_file_write_iter,
 	.mmap		= generic_file_mmap,
 	.release	= fat_file_release,
 	.unlocked_ioctl	= fat_generic_ioctl,
@@ -179,9 +186,7 @@ const struct file_operations fat_file_operations = {
 #endif
 	.fsync		= fat_file_fsync,
 	.splice_read	= generic_file_splice_read,
-#ifdef CONFIG_FAT_PRE_FALLOCATE
-	.fallocate		= fat_fallocate,
-#endif
+	.fallocate	= fat_fallocate,
 };
 
 static int fat_cont_expand(struct inode *inode, loff_t size)
@@ -194,7 +199,7 @@ static int fat_cont_expand(struct inode *inode, loff_t size)
 	if (err)
 		goto out;
 
-	inode->i_ctime = inode->i_mtime = CURRENT_TIME_SEC;
+	inode->i_ctime = inode->i_mtime = current_time(inode);
 	mark_inode_dirty(inode);
 	if (IS_SYNC(inode)) {
 		int err2;
@@ -219,71 +224,62 @@ static int fat_cont_expand(struct inode *inode, loff_t size)
 out:
 	return err;
 }
-#ifdef CONFIG_FAT_PRE_FALLOCATE
-static long fat_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
-{      
-	int err = 0;
+
+/*
+ * Preallocate space for a file. This implements fat's fallocate file
+ * operation, which gets called from sys_fallocate system call. User
+ * space requests len bytes at offset. If FALLOC_FL_KEEP_SIZE is set
+ * we just allocate clusters without zeroing them out. Otherwise we
+ * allocate and zero out clusters via an expanding truncate.
+ */
+static long fat_fallocate(struct file *file, int mode,
+			  loff_t offset, loff_t len)
+{
+	int nr_cluster; /* Number of clusters to be allocated */
+	loff_t mm_bytes; /* Number of bytes to be allocated for file */
+	loff_t ondisksize; /* block aligned on-disk size in bytes*/
 	struct inode *inode = file->f_mapping->host;
-	int cluster, nr_cluster, fclus, dclus, free_bytes, nr_bytes;
 	struct super_block *sb = inode->i_sb;
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	int err = 0;
+
+	/* No support for hole punch or other fallocate flags. */
 	if (mode & ~FALLOC_FL_KEEP_SIZE)
 		return -EOPNOTSUPP;
-	if ((offset + len) <= MSDOS_I(inode)->mmu_private) {
-		fat_msg(sb, KERN_ERR,
-				"fat_fallocate():Blocks already allocated");
-		return -EINVAL;
-	}
-	if ((mode & FALLOC_FL_KEEP_SIZE)) {
-		if (inode->i_size > 0) {
-			err = fat_get_cluster(inode, FAT_ENT_EOF,
-					&fclus, &dclus);
-			if (err < 0) {
-				fat_msg(sb, KERN_ERR,
-						"fat_fallocate():fat_get_cluster() error");
-				return err;
-			}
-			free_bytes = ((fclus+1) << sbi->cluster_bits) -
-				(inode->i_size);
-			nr_bytes = (offset + len - inode->i_size) - free_bytes;
-		} else
-			nr_bytes = (offset + len - inode->i_size);
-		nr_cluster = (nr_bytes + (sbi->cluster_size - 1)) >>
-			sbi->cluster_bits;
-		mutex_lock(&inode->i_mutex);
-		while (nr_cluster-- > 0) {
-			err = fat_alloc_clusters(inode, &cluster, 1);
-			if (err) {
-				fat_msg(sb, KERN_ERR,
-						"fat_fallocate():fat_alloc_clusters() error");
-				goto error;
-			}
-			err = fat_chain_add(inode, cluster, 1);
-			if (err) {
-				fat_free_clusters(inode, cluster);
-				goto error;
-			}
-		}
-		err = fat_get_cluster(inode, FAT_ENT_EOF, &fclus, &dclus);
-		if (err < 0) {
-			fat_msg(sb, KERN_ERR,
-					"fat_fallocate():fat_get_cluster() error");
+
+	/* No support for dir */
+	if (!S_ISREG(inode->i_mode))
+		return -EOPNOTSUPP;
+
+	inode_lock(inode);
+	if (mode & FALLOC_FL_KEEP_SIZE) {
+		ondisksize = inode->i_blocks << 9;
+		if ((offset + len) <= ondisksize)
 			goto error;
+
+		/* First compute the number of clusters to be allocated */
+		mm_bytes = offset + len - ondisksize;
+		nr_cluster = (mm_bytes + (sbi->cluster_size - 1)) >>
+			sbi->cluster_bits;
+
+		/* Start the allocation.We are not zeroing out the clusters */
+		while (nr_cluster-- > 0) {
+			err = fat_add_cluster(inode);
+			if (err)
+				goto error;
 		}
-		MSDOS_I(inode)->mmu_private = (fclus + 1) << sbi->cluster_bits;
 	} else {
-		mutex_lock(&inode->i_mutex);
+		if ((offset + len) <= i_size_read(inode))
+			goto error;
+
+		/* This is just an expanding truncate */
 		err = fat_cont_expand(inode, (offset + len));
-		if (err) {
-			fat_msg(sb, KERN_ERR,
-					"fat_fallocate():fat_cont_expand() error");
-		}
 	}
+
 error:
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 	return err;
 }
-#endif
 
 /* Free all clusters after the skip'th cluster. */
 static int fat_free(struct inode *inode, int skip)
@@ -306,7 +302,7 @@ static int fat_free(struct inode *inode, int skip)
 		MSDOS_I(inode)->i_logstart = 0;
 	}
 	MSDOS_I(inode)->i_attrs |= ATTR_ARCH;
-	inode->i_ctime = inode->i_mtime = CURRENT_TIME_SEC;
+	inode->i_ctime = inode->i_mtime = current_time(inode);
 	if (wait) {
 		err = fat_sync_inode(inode);
 		if (err) {
@@ -374,11 +370,17 @@ void fat_truncate_blocks(struct inode *inode, loff_t offset)
 	fat_flush_inodes(inode->i_sb, inode, NULL);
 }
 
-int fat_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
+int fat_getattr(const struct path *path, struct kstat *stat,
+		u32 request_mask, unsigned int flags)
 {
-	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(path->dentry);
 	generic_fillattr(inode, stat);
 	stat->blksize = MSDOS_SB(inode->i_sb)->cluster_size;
+
+	if (MSDOS_SB(inode->i_sb)->options.nfs == FAT_NFS_NOSTALE_RO) {
+		/* Use i_pos for ino. This is used as fileid of nfs. */
+		stat->ino = fat_i_pos_read(MSDOS_SB(inode->i_sb), inode);
+	}
 	return 0;
 }
 EXPORT_SYMBOL_GPL(fat_getattr);
@@ -425,7 +427,7 @@ static int fat_allow_set_time(struct msdos_sb_info *sbi, struct inode *inode)
 {
 	umode_t allow_utime = sbi->options.allow_utime;
 
-	if (current_fsuid() != inode->i_uid) {
+	if (!uid_eq(current_fsuid(), inode->i_uid)) {
 		if (in_group_p(inode->i_gid))
 			allow_utime >>= 3;
 		if (allow_utime & MAY_WRITE)
@@ -443,7 +445,7 @@ static int fat_allow_set_time(struct msdos_sb_info *sbi, struct inode *inode)
 int fat_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(dentry->d_sb);
-	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	unsigned int ia_valid;
 	int error;
 
@@ -454,7 +456,7 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 			attr->ia_valid &= ~TIMES_SET_FLAGS;
 	}
 
-	error = inode_change_ok(inode, attr);
+	error = setattr_prepare(dentry, attr);
 	attr->ia_valid = ia_valid;
 	if (error) {
 		if (sbi->options.quiet)
@@ -480,9 +482,9 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 	}
 
 	if (((attr->ia_valid & ATTR_UID) &&
-	     (attr->ia_uid != sbi->options.fs_uid)) ||
+	     (!uid_eq(attr->ia_uid, sbi->options.fs_uid))) ||
 	    ((attr->ia_valid & ATTR_GID) &&
-	     (attr->ia_gid != sbi->options.fs_gid)) ||
+	     (!gid_eq(attr->ia_gid, sbi->options.fs_gid))) ||
 	    ((attr->ia_valid & ATTR_MODE) &&
 	     (attr->ia_mode & ~FAT_VALID_MODE)))
 		error = -EPERM;
@@ -503,6 +505,9 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 	}
 
 	if (attr->ia_valid & ATTR_SIZE) {
+		error = fat_block_truncate_page(inode, attr->ia_size);
+		if (error)
+			goto out;
 		down_write(&MSDOS_I(inode)->truncate_lock);
 		truncate_setsize(inode, attr->ia_size);
 		fat_truncate_blocks(inode, attr->ia_size);

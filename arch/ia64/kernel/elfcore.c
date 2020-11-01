@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/elf.h>
 #include <linux/coredump.h>
 #include <linux/fs.h>
@@ -11,8 +12,7 @@ Elf64_Half elf_core_extra_phdrs(void)
 	return GATE_EHDR->e_phnum;
 }
 
-int elf_core_write_extra_phdrs(struct file *file, loff_t offset, size_t *size,
-			       unsigned long limit)
+int elf_core_write_extra_phdrs(struct coredump_params *cprm, loff_t offset)
 {
 	const struct elf_phdr *const gate_phdrs =
 		(const struct elf_phdr *) (GATE_ADDR + GATE_EHDR->e_phoff);
@@ -35,15 +35,13 @@ int elf_core_write_extra_phdrs(struct file *file, loff_t offset, size_t *size,
 			phdr.p_offset += ofs;
 		}
 		phdr.p_paddr = 0; /* match other core phdrs */
-		*size += sizeof(phdr);
-		if (*size > limit || !dump_write(file, &phdr, sizeof(phdr)))
+		if (!dump_emit(cprm, &phdr, sizeof(phdr)))
 			return 0;
 	}
 	return 1;
 }
 
-int elf_core_write_extra_data(struct file *file, size_t *size,
-			      unsigned long limit)
+int elf_core_write_extra_data(struct coredump_params *cprm)
 {
 	const struct elf_phdr *const gate_phdrs =
 		(const struct elf_phdr *) (GATE_ADDR + GATE_EHDR->e_phoff);
@@ -54,8 +52,7 @@ int elf_core_write_extra_data(struct file *file, size_t *size,
 			void *addr = (void *)gate_phdrs[i].p_vaddr;
 			size_t memsz = PAGE_ALIGN(gate_phdrs[i].p_memsz);
 
-			*size += memsz;
-			if (*size > limit || !dump_write(file, addr, memsz))
+			if (!dump_emit(cprm, addr, memsz))
 				return 0;
 			break;
 		}

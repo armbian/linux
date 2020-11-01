@@ -30,7 +30,6 @@
 
 #include <linux/module.h>
 
-#include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -177,10 +176,10 @@ static irqreturn_t bfin_kpad_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int __devinit bfin_kpad_probe(struct platform_device *pdev)
+static int bfin_kpad_probe(struct platform_device *pdev)
 {
 	struct bf54x_kpad *bf54x_kpad;
-	struct bfin_kpad_platform_data *pdata = pdev->dev.platform_data;
+	struct bfin_kpad_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct input_dev *input;
 	int i, error;
 
@@ -269,8 +268,6 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 	input->phys = "bf54x-keys/input0";
 	input->dev.parent = &pdev->dev;
 
-	input_set_drvdata(input, bf54x_kpad);
-
 	input->id.bustype = BUS_HOST;
 	input->id.vendor = 0x0001;
 	input->id.product = 0x0001;
@@ -289,7 +286,8 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 		__set_bit(EV_REP, input->evbit);
 
 	for (i = 0; i < input->keycodemax; i++)
-		__set_bit(bf54x_kpad->keycode[i] & KEY_MAX, input->keybit);
+		if (bf54x_kpad->keycode[i] <= KEY_MAX)
+			__set_bit(bf54x_kpad->keycode[i], input->keybit);
 	__clear_bit(KEY_RESERVED, input->keybit);
 
 	error = input_register_device(input);
@@ -326,14 +324,13 @@ out0:
 	kfree(bf54x_kpad->keycode);
 out:
 	kfree(bf54x_kpad);
-	platform_set_drvdata(pdev, NULL);
 
 	return error;
 }
 
-static int __devexit bfin_kpad_remove(struct platform_device *pdev)
+static int bfin_kpad_remove(struct platform_device *pdev)
 {
-	struct bfin_kpad_platform_data *pdata = pdev->dev.platform_data;
+	struct bfin_kpad_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct bf54x_kpad *bf54x_kpad = platform_get_drvdata(pdev);
 
 	del_timer_sync(&bf54x_kpad->timer);
@@ -346,7 +343,6 @@ static int __devexit bfin_kpad_remove(struct platform_device *pdev)
 
 	kfree(bf54x_kpad->keycode);
 	kfree(bf54x_kpad);
-	platform_set_drvdata(pdev, NULL);
 
 	return 0;
 }
@@ -387,10 +383,9 @@ static int bfin_kpad_resume(struct platform_device *pdev)
 static struct platform_driver bfin_kpad_device_driver = {
 	.driver		= {
 		.name	= DRV_NAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= bfin_kpad_probe,
-	.remove		= __devexit_p(bfin_kpad_remove),
+	.remove		= bfin_kpad_remove,
 	.suspend	= bfin_kpad_suspend,
 	.resume		= bfin_kpad_resume,
 };

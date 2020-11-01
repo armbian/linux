@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_STP_H
 #define _NET_STP_H
 
@@ -8,7 +9,7 @@ struct stp_proto {
 	void		*data;
 };
 
-extern int stp_proto_register(const struct stp_proto *proto);
-extern void stp_proto_unregister(const struct stp_proto *proto);
+int stp_proto_register(const struct stp_proto *proto);
+void stp_proto_unregister(const struct stp_proto *proto);
 
 #endif /* _NET_STP_H */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASMARM_SMP_TWD_H
 #define __ASMARM_SMP_TWD_H
 
@@ -33,13 +34,5 @@ struct twd_local_timer name __initdata = {	\
 };
 
 int twd_local_timer_register(struct twd_local_timer *);
-
-#ifdef CONFIG_HAVE_ARM_TWD
-void twd_local_timer_of_register(void);
-#else
-static inline void twd_local_timer_of_register(void)
-{
-}
-#endif
 
 #endif

@@ -15,9 +15,10 @@
 #define pr_fmt(fmt) DRV_MODULE_NAME ": " fmt
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <asm/io.h>
 
 #include "hlwd-pic.h"
@@ -34,6 +35,8 @@
  */
 #define HW_BROADWAY_ICR		0x00
 #define HW_BROADWAY_IMR		0x04
+#define HW_STARLET_ICR		0x08
+#define HW_STARLET_IMR		0x0c
 
 
 /*
@@ -73,6 +76,9 @@ static void hlwd_pic_unmask(struct irq_data *d)
 	void __iomem *io_base = irq_data_get_irq_chip_data(d);
 
 	setbits32(io_base + HW_BROADWAY_IMR, 1 << irq);
+
+	/* Make sure the ARM (aka. Starlet) doesn't handle this interrupt. */
+	clrbits32(io_base + HW_STARLET_IMR, 1 << irq);
 }
 
 
@@ -113,17 +119,16 @@ static unsigned int __hlwd_pic_get_irq(struct irq_domain *h)
 	irq_status = in_be32(io_base + HW_BROADWAY_ICR) &
 		     in_be32(io_base + HW_BROADWAY_IMR);
 	if (irq_status == 0)
-		return NO_IRQ;	/* no more IRQs pending */
+		return 0;	/* no more IRQs pending */
 
 	irq = __ffs(irq_status);
 	return irq_linear_revmap(h, irq);
 }
 
-static void hlwd_pic_irq_cascade(unsigned int cascade_virq,
-				      struct irq_desc *desc)
+static void hlwd_pic_irq_cascade(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
-	struct irq_domain *irq_domain = irq_get_handler_data(cascade_virq);
+	struct irq_domain *irq_domain = irq_desc_get_handler_data(desc);
 	unsigned int virq;
 
 	raw_spin_lock(&desc->lock);
@@ -131,7 +136,7 @@ static void hlwd_pic_irq_cascade(unsigned int cascade_virq,
 	raw_spin_unlock(&desc->lock);
 
 	virq = __hlwd_pic_get_irq(irq_domain);
-	if (virq != NO_IRQ)
+	if (virq)
 		generic_handle_irq(virq);
 	else
 		pr_err("spurious interrupt!\n");
@@ -181,6 +186,7 @@ struct irq_domain *hlwd_pic_init(struct device_node *np)
 					   &hlwd_irq_domain_ops, io_base);
 	if (!irq_domain) {
 		pr_err("failed to allocate irq_domain\n");
+		iounmap(io_base);
 		return NULL;
 	}
 

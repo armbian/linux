@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_PAGE_H
 #define _ASM_PAGE_H
 
@@ -7,9 +8,6 @@
 #include <asm/setup.h>
 
 #ifndef __ASSEMBLY__
-
-#define get_user_page(vaddr)			__get_free_page(GFP_KERNEL)
-#define free_user_page(page, addr)		free_page(addr)
 
 #define clear_page(pgaddr)			memset((pgaddr), 0, PAGE_SIZE)
 #define copy_page(to,from)			memcpy((to), (from), PAGE_SIZE)
@@ -34,7 +32,7 @@ typedef struct page *pgtable_t;
 #define pgprot_val(x)	((x).pgprot)
 
 #define __pte(x)	((pte_t) { (x) } )
-#define __pmd(x)	((pmd_t) { (x) } )
+#define __pmd(x)	((pmd_t) { { (x) } } )
 #define __pud(x)	((pud_t) { (x) } )
 #define __pgd(x)	((pgd_t) { (x) } )
 #define __pgprot(x)	((pgprot_t) { (x) } )

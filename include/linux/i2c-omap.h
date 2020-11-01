@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __I2C_OMAP_H__
 #define __I2C_OMAP_H__
 
@@ -20,8 +21,6 @@
 #define OMAP_I2C_FLAG_NO_FIFO			BIT(0)
 #define OMAP_I2C_FLAG_SIMPLE_CLOCK		BIT(1)
 #define OMAP_I2C_FLAG_16BIT_DATA_REG		BIT(2)
-#define OMAP_I2C_FLAG_RESET_REGS_POSTIDLE	BIT(3)
-#define OMAP_I2C_FLAG_APPLY_ERRATA_I207	BIT(4)
 #define OMAP_I2C_FLAG_ALWAYS_ARMXOR_CLK	BIT(5)
 #define OMAP_I2C_FLAG_FORCE_19200_INT_CLK	BIT(6)
 /* how the CPU address bus must be translated for I2C unit access */

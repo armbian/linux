@@ -21,7 +21,12 @@
 #include <linux/gfp.h>
 #include <linux/raid/xor.h>
 #include <linux/jiffies.h>
+#include <linux/preempt.h>
 #include <asm/xor.h>
+
+#ifndef XOR_SELECT_TEMPLATE
+#define XOR_SELECT_TEMPLATE(x) (x)
+#endif
 
 /* The xor routines to use.  */
 static struct xor_block_template *active_template;
@@ -55,19 +60,21 @@ xor_blocks(unsigned int src_count, unsigned int bytes, void *dest, void **srcs)
 EXPORT_SYMBOL(xor_blocks);
 
 /* Set of all registered templates.  */
-static struct xor_block_template *template_list;
+static struct xor_block_template *__initdata template_list;
 
 #define BENCH_SIZE (PAGE_SIZE)
 
-static void
+static void __init
 do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
 {
 	int speed;
-	unsigned long now;
+	unsigned long now, j;
 	int i, count, max;
 
 	tmpl->next = template_list;
 	template_list = tmpl;
+
+	preempt_disable();
 
 	/*
 	 * Count the number of XORs done during a whole jiffy, and use
@@ -76,9 +83,11 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
 	 */
 	max = 0;
 	for (i = 0; i < 5; i++) {
-		now = jiffies;
+		j = jiffies;
 		count = 0;
-		while (jiffies == now) {
+		while ((now = jiffies) == j)
+			cpu_relax();
+		while (time_before(jiffies, now + 1)) {
 			mb(); /* prevent loop optimzation */
 			tmpl->do_2(BENCH_SIZE, b1, b2);
 			mb();
@@ -88,6 +97,8 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
 		if (count > max)
 			max = count;
 	}
+
+	preempt_enable();
 
 	speed = max * (HZ * BENCH_SIZE / 1024);
 	tmpl->speed = speed;
@@ -102,12 +113,16 @@ calibrate_xor_blocks(void)
 	void *b1, *b2;
 	struct xor_block_template *f, *fastest;
 
-	/*
-	 * Note: Since the memory is not actually used for _anything_ but to
-	 * test the XOR speed, we don't really want kmemcheck to warn about
-	 * reading uninitialized bytes here.
-	 */
-	b1 = (void *) __get_free_pages(GFP_KERNEL | __GFP_NOTRACK, 2);
+	fastest = XOR_SELECT_TEMPLATE(NULL);
+
+	if (fastest) {
+		printk(KERN_INFO "xor: automatically using best "
+				 "checksumming function   %-10s\n",
+		       fastest->name);
+		goto out;
+	}
+
+	b1 = (void *) __get_free_pages(GFP_KERNEL, 2);
 	if (!b1) {
 		printk(KERN_WARNING "xor: Yikes!  No memory available.\n");
 		return -ENOMEM;
@@ -119,27 +134,14 @@ calibrate_xor_blocks(void)
 	 * all the possible functions, just test the best one
 	 */
 
-	fastest = NULL;
-
-#ifdef XOR_SELECT_TEMPLATE
-		fastest = XOR_SELECT_TEMPLATE(fastest);
-#endif
-
 #define xor_speed(templ)	do_xor_speed((templ), b1, b2)
 
-	if (fastest) {
-		printk(KERN_INFO "xor: automatically using best "
-			"checksumming function: %s\n",
-			fastest->name);
-		xor_speed(fastest);
-	} else {
-		printk(KERN_INFO "xor: measuring software checksum speed\n");
-		XOR_TRY_TEMPLATES;
-		fastest = template_list;
-		for (f = fastest; f; f = f->next)
-			if (f->speed > fastest->speed)
-				fastest = f;
-	}
+	printk(KERN_INFO "xor: measuring software checksum speed\n");
+	XOR_TRY_TEMPLATES;
+	fastest = template_list;
+	for (f = fastest; f; f = f->next)
+		if (f->speed > fastest->speed)
+			fastest = f;
 
 	printk(KERN_INFO "xor: using function: %s (%d.%03d MB/sec)\n",
 	       fastest->name, fastest->speed / 1000, fastest->speed % 1000);
@@ -147,7 +149,7 @@ calibrate_xor_blocks(void)
 #undef xor_speed
 
 	free_pages((unsigned long)b1, 2);
-
+out:
 	active_template = fastest;
 	return 0;
 }

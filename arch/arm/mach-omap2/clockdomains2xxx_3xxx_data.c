@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * OMAP2/3 clockdomain common data
  *
@@ -88,14 +89,5 @@ struct clockdomain wkup_common_clkdm = {
 	.name		= "wkup_clkdm",
 	.pwrdm		= { .name = "wkup_pwrdm" },
 	.dep_bit	= OMAP_EN_WKUP_SHIFT,
-};
-
-struct clockdomain prm_common_clkdm = {
-	.name		= "prm_clkdm",
-	.pwrdm		= { .name = "wkup_pwrdm" },
-};
-
-struct clockdomain cm_common_clkdm = {
-	.name		= "cm_clkdm",
-	.pwrdm		= { .name = "core_pwrdm" },
+	.flags		= CLKDM_ACTIVE_WITH_MPU,
 };

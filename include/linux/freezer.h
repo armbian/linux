@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* Freezer declarations */
 
 #ifndef FREEZER_H_INCLUDED
@@ -12,6 +13,11 @@
 extern atomic_t system_freezing_cnt;	/* nr of freezing conds in effect */
 extern bool pm_freezing;		/* PM freezing in effect */
 extern bool pm_nosig_freezing;		/* PM nosig freezing in effect */
+
+/*
+ * Timeout for stopping processes
+ */
+extern unsigned int freeze_timeout_msecs;
 
 /*
  * Check if a process has been frozen
@@ -41,17 +47,6 @@ extern int freeze_processes(void);
 extern int freeze_kernel_threads(void);
 extern void thaw_processes(void);
 extern void thaw_kernel_threads(void);
-
-/*
- * HACK: prevent sleeping while atomic warnings due to ARM signal handling
- * disabling irqs
- */
-static inline bool try_to_freeze_nowarn(void)
-{
-	if (likely(!freezing(current)))
-		return false;
-	return __refrigerator(false);
-}
 
 /*
  * DO NOT ADD ANY NEW CALLERS OF THIS FUNCTION
@@ -165,10 +160,9 @@ static inline bool freezer_should_skip(struct task_struct *p)
 }
 
 /*
- * These functions are intended to be used whenever you want allow a task that's
- * sleeping in TASK_UNINTERRUPTIBLE or TASK_KILLABLE state to be frozen. Note
- * that neither return any clear indication of whether a freeze event happened
- * while in this function.
+ * These functions are intended to be used whenever you want allow a sleeping
+ * task to be frozen. Note that neither return any clear indication of
+ * whether a freeze event happened while in this function.
  */
 
 /* Like schedule(), but should not block the freezer. */
@@ -238,7 +232,7 @@ static inline long freezable_schedule_timeout_killable_unsafe(long timeout)
  * call this with locks held.
  */
 static inline int freezable_schedule_hrtimeout_range(ktime_t *expires,
-		unsigned long delta, const enum hrtimer_mode mode)
+		u64 delta, const enum hrtimer_mode mode)
 {
 	int __retval;
 	freezer_do_not_count();
@@ -253,15 +247,6 @@ static inline int freezable_schedule_hrtimeout_range(ktime_t *expires,
  * defined in <linux/wait.h>
  */
 
-#define wait_event_freezekillable(wq, condition)			\
-({									\
-	int __retval;							\
-	freezer_do_not_count();						\
-	__retval = wait_event_killable(wq, (condition));		\
-	freezer_count();						\
-	__retval;							\
-})
-
 /* DO NOT ADD ANY NEW CALLERS OF THIS FUNCTION */
 #define wait_event_freezekillable_unsafe(wq, condition)			\
 ({									\
@@ -271,35 +256,6 @@ static inline int freezable_schedule_hrtimeout_range(ktime_t *expires,
 	freezer_count_unsafe();						\
 	__retval;							\
 })
-
-#define wait_event_freezable(wq, condition)				\
-({									\
-	int __retval;							\
-	freezer_do_not_count();						\
-	__retval = wait_event_interruptible(wq, (condition));		\
-	freezer_count();						\
-	__retval;							\
-})
-
-#define wait_event_freezable_timeout(wq, condition, timeout)		\
-({									\
-	long __retval = timeout;					\
-	freezer_do_not_count();						\
-	__retval = wait_event_interruptible_timeout(wq,	(condition),	\
-				__retval);				\
-	freezer_count();						\
-	__retval;							\
-})
-
-#define wait_event_freezable_exclusive(wq, condition)			\
-({									\
-	int __retval;							\
-	freezer_do_not_count();						\
-	__retval = wait_event_interruptible_exclusive(wq, condition);	\
-	freezer_count();						\
-	__retval;							\
-})
-
 
 #else /* !CONFIG_FREEZER */
 static inline bool frozen(struct task_struct *p) { return false; }
@@ -337,18 +293,6 @@ static inline void set_freezable(void) {}
 
 #define freezable_schedule_hrtimeout_range(expires, delta, mode)	\
 	schedule_hrtimeout_range(expires, delta, mode)
-
-#define wait_event_freezable(wq, condition)				\
-		wait_event_interruptible(wq, condition)
-
-#define wait_event_freezable_timeout(wq, condition, timeout)		\
-		wait_event_interruptible_timeout(wq, condition, timeout)
-
-#define wait_event_freezable_exclusive(wq, condition)			\
-		wait_event_interruptible_exclusive(wq, condition)
-
-#define wait_event_freezekillable(wq, condition)		\
-		wait_event_killable(wq, condition)
 
 #define wait_event_freezekillable_unsafe(wq, condition)			\
 		wait_event_killable(wq, condition)

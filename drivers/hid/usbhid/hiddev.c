@@ -27,6 +27,7 @@
 
 #include <linux/poll.h>
 #include <linux/slab.h>
+#include <linux/sched/signal.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/input.h>
@@ -34,6 +35,8 @@
 #include <linux/hid.h>
 #include <linux/hiddev.h>
 #include <linux/compat.h>
+#include <linux/vmalloc.h>
+#include <linux/nospec.h>
 #include "usbhid.h"
 
 #ifdef CONFIG_USB_DYNAMIC_MINORS
@@ -44,16 +47,6 @@
 #define HIDDEV_MINORS		16
 #endif
 #define HIDDEV_BUFFER_SIZE	2048
-
-struct hiddev {
-	int exist;
-	int open;
-	struct mutex existancelock;
-	wait_queue_head_t wait;
-	struct hid_device *hid;
-	struct list_head list;
-	spinlock_t list_lock;
-};
 
 struct hiddev_list {
 	struct hiddev_usage_ref buffer[HIDDEV_BUFFER_SIZE];
@@ -245,20 +238,60 @@ static int hiddev_release(struct inode * inode, struct file * file)
 	mutex_lock(&list->hiddev->existancelock);
 	if (!--list->hiddev->open) {
 		if (list->hiddev->exist) {
-			usbhid_close(list->hiddev->hid);
-			usbhid_put_power(list->hiddev->hid);
+			hid_hw_close(list->hiddev->hid);
+			hid_hw_power(list->hiddev->hid, PM_HINT_NORMAL);
 		} else {
 			mutex_unlock(&list->hiddev->existancelock);
 			kfree(list->hiddev);
-			kfree(list);
+			vfree(list);
 			return 0;
 		}
 	}
 
 	mutex_unlock(&list->hiddev->existancelock);
-	kfree(list);
+	vfree(list);
 
 	return 0;
+}
+
+static int __hiddev_open(struct hiddev *hiddev, struct file *file)
+{
+	struct hiddev_list *list;
+	int error;
+
+	lockdep_assert_held(&hiddev->existancelock);
+
+	list = vzalloc(sizeof(*list));
+	if (!list)
+		return -ENOMEM;
+
+	mutex_init(&list->thread_lock);
+	list->hiddev = hiddev;
+
+	if (!hiddev->open++) {
+		error = hid_hw_power(hiddev->hid, PM_HINT_FULLON);
+		if (error < 0)
+			goto err_drop_count;
+
+		error = hid_hw_open(hiddev->hid);
+		if (error < 0)
+			goto err_normal_power;
+	}
+
+	spin_lock_irq(&hiddev->list_lock);
+	list_add_tail(&list->node, &hiddev->list);
+	spin_unlock_irq(&hiddev->list_lock);
+
+	file->private_data = list;
+
+	return 0;
+
+err_normal_power:
+	hid_hw_power(hiddev->hid, PM_HINT_NORMAL);
+err_drop_count:
+	hiddev->open--;
+	vfree(list);
+	return error;
 }
 
 /*
@@ -266,7 +299,6 @@ static int hiddev_release(struct inode * inode, struct file * file)
  */
 static int hiddev_open(struct inode *inode, struct file *file)
 {
-	struct hiddev_list *list;
 	struct usb_interface *intf;
 	struct hid_device *hid;
 	struct hiddev *hiddev;
@@ -275,54 +307,14 @@ static int hiddev_open(struct inode *inode, struct file *file)
 	intf = usbhid_find_interface(iminor(inode));
 	if (!intf)
 		return -ENODEV;
+
 	hid = usb_get_intfdata(intf);
 	hiddev = hid->hiddev;
 
-	if (!(list = kzalloc(sizeof(struct hiddev_list), GFP_KERNEL)))
-		return -ENOMEM;
-	mutex_init(&list->thread_lock);
-	list->hiddev = hiddev;
-	file->private_data = list;
-
-	/*
-	 * no need for locking because the USB major number
-	 * is shared which usbcore guards against disconnect
-	 */
-	if (list->hiddev->exist) {
-		if (!list->hiddev->open++) {
-			res = usbhid_open(hiddev->hid);
-			if (res < 0) {
-				res = -EIO;
-				goto bail;
-			}
-		}
-	} else {
-		res = -ENODEV;
-		goto bail;
-	}
-
-	spin_lock_irq(&list->hiddev->list_lock);
-	list_add_tail(&list->node, &hiddev->list);
-	spin_unlock_irq(&list->hiddev->list_lock);
-
 	mutex_lock(&hiddev->existancelock);
-	if (!list->hiddev->open++)
-		if (list->hiddev->exist) {
-			struct hid_device *hid = hiddev->hid;
-			res = usbhid_get_power(hid);
-			if (res < 0) {
-				res = -EIO;
-				goto bail_unlock;
-			}
-			usbhid_open(hid);
-		}
+	res = hiddev->exist ? __hiddev_open(hiddev, file) : -ENODEV;
 	mutex_unlock(&hiddev->existancelock);
-	return 0;
-bail_unlock:
-	mutex_unlock(&hiddev->existancelock);
-bail:
-	file->private_data = NULL;
-	kfree(list);
+
 	return res;
 }
 
@@ -360,16 +352,16 @@ static ssize_t hiddev_read(struct file * file, char __user * buffer, size_t coun
 			prepare_to_wait(&list->hiddev->wait, &wait, TASK_INTERRUPTIBLE);
 
 			while (list->head == list->tail) {
-				if (file->f_flags & O_NONBLOCK) {
-					retval = -EAGAIN;
-					break;
-				}
 				if (signal_pending(current)) {
 					retval = -ERESTARTSYS;
 					break;
 				}
 				if (!list->hiddev->exist) {
 					retval = -EIO;
+					break;
+				}
+				if (file->f_flags & O_NONBLOCK) {
+					retval = -EAGAIN;
 					break;
 				}
 
@@ -477,10 +469,14 @@ static noinline int hiddev_ioctl_usage(struct hiddev *hiddev, unsigned int cmd, 
 
 		if (uref->field_index >= report->maxfield)
 			goto inval;
+		uref->field_index = array_index_nospec(uref->field_index,
+						       report->maxfield);
 
 		field = report->field[uref->field_index];
 		if (uref->usage_index >= field->maxusage)
 			goto inval;
+		uref->usage_index = array_index_nospec(uref->usage_index,
+						       field->maxusage);
 
 		uref->usage_code = field->usage[uref->usage_index].hid;
 
@@ -507,19 +503,31 @@ static noinline int hiddev_ioctl_usage(struct hiddev *hiddev, unsigned int cmd, 
 
 			if (uref->field_index >= report->maxfield)
 				goto inval;
+			uref->field_index = array_index_nospec(uref->field_index,
+							       report->maxfield);
 
 			field = report->field[uref->field_index];
 
 			if (cmd == HIDIOCGCOLLECTIONINDEX) {
 				if (uref->usage_index >= field->maxusage)
 					goto inval;
+				uref->usage_index =
+					array_index_nospec(uref->usage_index,
+							   field->maxusage);
 			} else if (uref->usage_index >= field->report_count)
 				goto inval;
+		}
 
-			else if ((cmd == HIDIOCGUSAGES || cmd == HIDIOCSUSAGES) &&
-				 (uref_multi->num_values > HID_MAX_MULTI_USAGES ||
-				  uref->usage_index + uref_multi->num_values > field->report_count))
+		if (cmd == HIDIOCGUSAGES || cmd == HIDIOCSUSAGES) {
+			if (uref_multi->num_values > HID_MAX_MULTI_USAGES ||
+			    uref->usage_index + uref_multi->num_values >
+			    field->report_count)
 				goto inval;
+
+			uref->usage_index =
+				array_index_nospec(uref->usage_index,
+						   field->report_count -
+						   uref_multi->num_values);
 		}
 
 		switch (cmd) {
@@ -624,7 +632,7 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case HIDIOCAPPLICATION:
-		if (arg < 0 || arg >= hid->maxapplication)
+		if (arg >= hid->maxapplication)
 			break;
 
 		for (i = 0; i < hid->maxcollection; i++)
@@ -688,6 +696,7 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case HIDIOCINITREPORT:
 		usbhid_init_reports(hid);
+		hiddev->initialized = true;
 		r = 0;
 		break;
 
@@ -704,8 +713,8 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (report == NULL)
 			break;
 
-		usbhid_submit_report(hid, report, USB_DIR_IN);
-		usbhid_wait_io(hid);
+		hid_hw_request(hid, report, HID_REQ_GET_REPORT);
+		hid_hw_wait(hid);
 
 		r = 0;
 		break;
@@ -723,8 +732,8 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (report == NULL)
 			break;
 
-		usbhid_submit_report(hid, report, USB_DIR_OUT);
-		usbhid_wait_io(hid);
+		hid_hw_request(hid, report, HID_REQ_SET_REPORT);
+		hid_hw_wait(hid);
 
 		r = 0;
 		break;
@@ -760,6 +769,8 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 		if (finfo.field_index >= report->maxfield)
 			break;
+		finfo.field_index = array_index_nospec(finfo.field_index,
+						       report->maxfield);
 
 		field = report->field[finfo.field_index];
 		memset(&finfo, 0, sizeof(finfo));
@@ -789,6 +800,10 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case HIDIOCGUSAGES:
 	case HIDIOCSUSAGES:
 	case HIDIOCGCOLLECTIONINDEX:
+		if (!hiddev->initialized) {
+			usbhid_init_reports(hid);
+			hiddev->initialized = true;
+		}
 		r = hiddev_ioctl_usage(hiddev, cmd, user_arg);
 		break;
 
@@ -800,6 +815,8 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 		if (cinfo.index >= hid->maxcollection)
 			break;
+		cinfo.index = array_index_nospec(cinfo.index,
+						 hid->maxcollection);
 
 		cinfo.type = hid->collection[cinfo.index].type;
 		cinfo.usage = hid->collection[cinfo.index].usage;
@@ -909,6 +926,15 @@ int hiddev_connect(struct hid_device *hid, unsigned int force)
 		kfree(hiddev);
 		return -1;
 	}
+
+	/*
+	 * If HID_QUIRK_NO_INIT_REPORTS is set, make sure we don't initialize
+	 * the reports.
+	 */
+	hiddev->initialized = hid->quirks & HID_QUIRK_NO_INIT_REPORTS;
+
+	hiddev->minor = usbhid->intf->minor;
+
 	return 0;
 }
 
@@ -928,9 +954,9 @@ void hiddev_disconnect(struct hid_device *hid)
 	hiddev->exist = 0;
 
 	if (hiddev->open) {
-		mutex_unlock(&hiddev->existancelock);
-		usbhid_close(hiddev->hid);
+		hid_hw_close(hiddev->hid);
 		wake_up_interruptible(&hiddev->wait);
+		mutex_unlock(&hiddev->existancelock);
 	} else {
 		mutex_unlock(&hiddev->existancelock);
 		kfree(hiddev);

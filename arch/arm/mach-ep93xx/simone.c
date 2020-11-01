@@ -20,12 +20,16 @@
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
 #include <linux/i2c-gpio.h>
+#include <linux/mmc/host.h>
+#include <linux/spi/spi.h>
+#include <linux/spi/mmc_spi.h>
+#include <linux/platform_data/video-ep93xx.h>
+#include <linux/platform_data/spi-ep93xx.h>
+#include <linux/gpio.h>
 
 #include <mach/hardware.h>
-#include <mach/fb.h>
 #include <mach/gpio-ep93xx.h>
 
-#include <asm/hardware/vic.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
@@ -36,9 +40,93 @@ static struct ep93xx_eth_data __initdata simone_eth_data = {
 };
 
 static struct ep93xxfb_mach_info __initdata simone_fb_info = {
-	.num_modes	= EP93XXFB_USE_MODEDB,
-	.bpp		= 16,
 	.flags		= EP93XXFB_USE_SDCSN0 | EP93XXFB_PCLK_FALLING,
+};
+
+/*
+ * GPIO lines used for MMC card detection.
+ */
+#define MMC_CARD_DETECT_GPIO EP93XX_GPIO_LINE_EGPIO0
+
+/*
+ * MMC card detection GPIO setup.
+ */
+
+static int simone_mmc_spi_init(struct device *dev,
+	irqreturn_t (*irq_handler)(int, void *), void *mmc)
+{
+	unsigned int gpio = MMC_CARD_DETECT_GPIO;
+	int irq, err;
+
+	err = gpio_request(gpio, dev_name(dev));
+	if (err)
+		return err;
+
+	err = gpio_direction_input(gpio);
+	if (err)
+		goto fail;
+
+	irq = gpio_to_irq(gpio);
+	if (irq < 0)
+		goto fail;
+
+	err = request_irq(irq, irq_handler, IRQF_TRIGGER_FALLING,
+			  "MMC card detect", mmc);
+	if (err)
+		goto fail;
+
+	printk(KERN_INFO "%s: using irq %d for MMC card detection\n",
+	       dev_name(dev), irq);
+
+	return 0;
+fail:
+	gpio_free(gpio);
+	return err;
+}
+
+static void simone_mmc_spi_exit(struct device *dev, void *mmc)
+{
+	unsigned int gpio = MMC_CARD_DETECT_GPIO;
+
+	free_irq(gpio_to_irq(gpio), mmc);
+	gpio_free(gpio);
+}
+
+static struct mmc_spi_platform_data simone_mmc_spi_data = {
+	.init		= simone_mmc_spi_init,
+	.exit		= simone_mmc_spi_exit,
+	.detect_delay	= 500,
+	.ocr_mask	= MMC_VDD_32_33 | MMC_VDD_33_34,
+};
+
+static struct spi_board_info simone_spi_devices[] __initdata = {
+	{
+		.modalias		= "mmc_spi",
+		.platform_data		= &simone_mmc_spi_data,
+		/*
+		 * We use 10 MHz even though the maximum is 3.7 MHz. The driver
+		 * will limit it automatically to max. frequency.
+		 */
+		.max_speed_hz		= 10 * 1000 * 1000,
+		.bus_num		= 0,
+		.chip_select		= 0,
+		.mode			= SPI_MODE_3,
+	},
+};
+
+/*
+ * Up to v1.3, the Sim.One used SFRMOUT as SD card chip select, but this goes
+ * low between multi-message command blocks. From v1.4, it uses a GPIO instead.
+ * v1.3 parts will still work, since the signal on SFRMOUT is automatic.
+ */
+static int simone_spi_chipselects[] __initdata = {
+	EP93XX_GPIO_LINE_EGPIO1,
+};
+
+static struct ep93xx_spi_info simone_spi_info __initdata = {
+	.chipselect	= simone_spi_chipselects,
+	.num_chipselect	= ARRAY_SIZE(simone_spi_chipselects),
+	.use_dma = 1,
 };
 
 static struct i2c_gpio_platform_data __initdata simone_i2c_gpio_data = {
@@ -75,6 +163,8 @@ static void __init simone_init_machine(void)
 	ep93xx_register_fb(&simone_fb_info);
 	ep93xx_register_i2c(&simone_i2c_gpio_data, simone_i2c_board_info,
 			    ARRAY_SIZE(simone_i2c_board_info));
+	ep93xx_register_spi(&simone_spi_info, simone_spi_devices,
+			    ARRAY_SIZE(simone_spi_devices));
 	simone_register_audio();
 }
 
@@ -83,8 +173,8 @@ MACHINE_START(SIM_ONE, "Simplemachines Sim.One Board")
 	.atag_offset	= 0x100,
 	.map_io		= ep93xx_map_io,
 	.init_irq	= ep93xx_init_irq,
-	.handle_irq	= vic_handle_irq,
-	.timer		= &ep93xx_timer,
+	.init_time	= ep93xx_timer_init,
 	.init_machine	= simone_init_machine,
+	.init_late	= ep93xx_init_late,
 	.restart	= ep93xx_restart,
 MACHINE_END

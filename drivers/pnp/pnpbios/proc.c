@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * /proc/bus/pnp interface for Plug and Play devices
  *
@@ -26,7 +27,7 @@
 #include <linux/seq_file.h>
 #include <linux/init.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "pnpbios.h"
 
@@ -185,10 +186,9 @@ static int pnp_devices_proc_show(struct seq_file *m, void *v)
 
 		if (pnp_bios_get_dev_node(&nodenum, PNPMODE_DYNAMIC, node))
 			break;
-		seq_printf(m, "%02x\t%08x\t%02x:%02x:%02x\t%04x\n",
+		seq_printf(m, "%02x\t%08x\t%3phC\t%04x\n",
 			     node->handle, node->eisa_id,
-			     node->type_code[0], node->type_code[1],
-			     node->type_code[2], node->flags);
+			     node->type_code, node->flags);
 		if (nodenum <= thisnodenum) {
 			printk(KERN_ERR
 			       "%s Node number 0x%x is out of sequence following node 0x%x. Aborting.\n",
@@ -238,13 +238,13 @@ static int pnpbios_proc_show(struct seq_file *m, void *v)
 
 static int pnpbios_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, pnpbios_proc_show, PDE(inode)->data);
+	return single_open(file, pnpbios_proc_show, PDE_DATA(inode));
 }
 
 static ssize_t pnpbios_proc_write(struct file *file, const char __user *buf,
 				  size_t count, loff_t *pos)
 {
-	void *data = PDE(file->f_path.dentry->d_inode)->data;
+	void *data = PDE_DATA(file_inode(file));
 	struct pnp_bios_node *node;
 	int boot = (long)data >> 8;
 	u8 nodenum = (long)data;

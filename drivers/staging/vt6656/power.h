@@ -12,9 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  * File: power.h
  *
@@ -29,33 +26,10 @@
 #ifndef __POWER_H__
 #define __POWER_H__
 
+#define C_PWBT	1000 /* micro sec. power up before TBTT */
 
-/*---------------------  Export Definitions -------------------------*/
-#define     C_PWBT                   1000      // micro sec. power up before TBTT
-#define     PS_FAST_INTERVAL         1         // Fast power saving listen interval
-#define     PS_MAX_INTERVAL          4         // MAX power saving listen interval
-
-/*---------------------  Export Classes  ----------------------------*/
-
-/*---------------------  Export Variables  --------------------------*/
-
-
-/*---------------------  Export Types  ------------------------------*/
-
-
-/*---------------------  Export Functions  --------------------------*/
-
-/*  PSDevice pDevice */
-/*  PSDevice hDeviceContext */
-
-BOOL PSbConsiderPowerDown(void *hDeviceContext,
-			  BOOL bCheckRxDMA,
-			  BOOL bCheckCountToWakeUp);
-
-void PSvDisablePowerSaving(void *hDeviceContext);
-void PSvEnablePowerSaving(void *hDeviceContext, WORD wListenInterval);
-void PSvSendPSPOLL(void *hDeviceContext);
-BOOL PSbSendNullPacket(void *hDeviceContext);
-BOOL PSbIsNextTBTTWakeUp(void *hDeviceContext);
+void vnt_disable_power_saving(struct vnt_private *priv);
+void vnt_enable_power_saving(struct vnt_private *priv, u16 listen_interval);
+int vnt_next_tbtt_wakeup(struct vnt_private *priv);
 
 #endif /* __POWER_H__ */

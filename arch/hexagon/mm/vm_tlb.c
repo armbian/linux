@@ -1,7 +1,7 @@
 /*
  * Hexagon Virtual Machine TLB functions
  *
- * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,6 +24,7 @@
  * be instantiated for it, differently from a native build.
  */
 #include <linux/mm.h>
+#include <linux/sched.h>
 #include <asm/page.h>
 #include <asm/hexagon_vm.h>
 

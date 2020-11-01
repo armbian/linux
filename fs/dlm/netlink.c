@@ -14,13 +14,9 @@
 #include "dlm_internal.h"
 
 static uint32_t dlm_nl_seqnum;
-static uint32_t listener_nlpid;
+static uint32_t listener_nlportid;
 
-static struct genl_family family = {
-	.id		= GENL_ID_GENERATE,
-	.name		= DLM_GENL_NAME,
-	.version	= DLM_GENL_VERSION,
-};
+static struct genl_family family;
 
 static int prepare_data(u8 cmd, struct sk_buff **skbp, size_t size)
 {
@@ -56,32 +52,37 @@ static int send_data(struct sk_buff *skb)
 {
 	struct genlmsghdr *genlhdr = nlmsg_data((struct nlmsghdr *)skb->data);
 	void *data = genlmsg_data(genlhdr);
-	int rv;
 
-	rv = genlmsg_end(skb, data);
-	if (rv < 0) {
-		nlmsg_free(skb);
-		return rv;
-	}
+	genlmsg_end(skb, data);
 
-	return genlmsg_unicast(&init_net, skb, listener_nlpid);
+	return genlmsg_unicast(&init_net, skb, listener_nlportid);
 }
 
 static int user_cmd(struct sk_buff *skb, struct genl_info *info)
 {
-	listener_nlpid = info->snd_pid;
-	printk("user_cmd nlpid %u\n", listener_nlpid);
+	listener_nlportid = info->snd_portid;
+	printk("user_cmd nlpid %u\n", listener_nlportid);
 	return 0;
 }
 
-static struct genl_ops dlm_nl_ops = {
-	.cmd		= DLM_CMD_HELLO,
-	.doit		= user_cmd,
+static const struct genl_ops dlm_nl_ops[] = {
+	{
+		.cmd	= DLM_CMD_HELLO,
+		.doit	= user_cmd,
+	},
+};
+
+static struct genl_family family __ro_after_init = {
+	.name		= DLM_GENL_NAME,
+	.version	= DLM_GENL_VERSION,
+	.ops		= dlm_nl_ops,
+	.n_ops		= ARRAY_SIZE(dlm_nl_ops),
+	.module		= THIS_MODULE,
 };
 
 int __init dlm_netlink_init(void)
 {
-	return genl_register_family_with_ops(&family, &dlm_nl_ops, 1);
+	return genl_register_family(&family);
 }
 
 void dlm_netlink_exit(void)

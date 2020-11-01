@@ -261,11 +261,13 @@ static unsigned get_mcountsym(Elf_Sym const *const sym0,
 		&sym0[Elf_r_sym(relp)];
 	char const *symname = &str0[w(symp->st_name)];
 	char const *mcount = gpfx == '_' ? "_mcount" : "mcount";
+	char const *fentry = "__fentry__";
 
 	if (symname[0] == '.')
 		++symname;  /* ppc64 hack */
 	if (strcmp(mcount, symname) == 0 ||
-	    (altmcount && strcmp(altmcount, symname) == 0))
+	    (altmcount && strcmp(altmcount, symname) == 0) ||
+	    (strcmp(fentry, symname) == 0))
 		mcountsym = Elf_r_sym(relp);
 
 	return mcountsym;
@@ -324,7 +326,8 @@ static uint_t *sift_rel_mcount(uint_t *mlocp,
 		if (!mcountsym)
 			mcountsym = get_mcountsym(sym0, relp, str0);
 
-		if (mcountsym == Elf_r_sym(relp) && !is_fake_mcount(relp)) {
+		if (mcountsym && mcountsym == Elf_r_sym(relp) &&
+				!is_fake_mcount(relp)) {
 			uint_t const addend =
 				_w(_w(relp->r_offset) - recval + mcount_adjust);
 			mrelp->r_offset = _w(offbase

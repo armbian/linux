@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/m68k/sun3x/time.c
  *
@@ -15,10 +16,10 @@
 
 #include <asm/irq.h>
 #include <asm/io.h>
+#include <asm/machdep.h>
 #include <asm/traps.h>
 #include <asm/sun3x.h>
 #include <asm/sun3ints.h>
-#include <asm/rtc.h>
 
 #include "time.h"
 
@@ -71,21 +72,25 @@ int sun3x_hwclk(int set, struct rtc_time *t)
 	return 0;
 }
 /* Not much we can do here */
-unsigned long sun3x_gettimeoffset (void)
+u32 sun3x_gettimeoffset(void)
 {
     return 0L;
 }
 
 #if 0
-static void sun3x_timer_tick(int irq, void *dev_id, struct pt_regs *regs)
+static irqreturn_t sun3x_timer_tick(int irq, void *dev_id)
 {
-    void (*vector)(int, void *, struct pt_regs *) = dev_id;
+	irq_handler_t timer_routine = dev_id;
+	unsigned long flags;
 
-    /* Clear the pending interrupt - pulse the enable line low */
-    disable_irq(5);
-    enable_irq(5);
+	local_irq_save(flags);
+	/* Clear the pending interrupt - pulse the enable line low */
+	disable_irq(5);
+	enable_irq(5);
+	timer_routine(0, NULL);
+	local_irq_restore(flags);
 
-    vector(irq, NULL, regs);
+	return IRQ_HANDLED;
 }
 #endif
 

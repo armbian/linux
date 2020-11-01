@@ -2,7 +2,7 @@
  * A policy database (policydb) specifies the
  * configuration data for the security policy.
  *
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
+ * Author : Stephen Smalley, <sds@tycho.nsa.gov>
  */
 
 /*
@@ -60,6 +60,20 @@ struct class_datum {
 	struct symtab permissions;	/* class-specific permission symbol table */
 	struct constraint_node *constraints;	/* constraints on class permissions */
 	struct constraint_node *validatetrans;	/* special transition rules */
+/* Options how a new object user, role, and type should be decided */
+#define DEFAULT_SOURCE         1
+#define DEFAULT_TARGET         2
+	char default_user;
+	char default_role;
+	char default_type;
+/* Options how a new object range should be decided */
+#define DEFAULT_SOURCE_LOW     1
+#define DEFAULT_SOURCE_HIGH    2
+#define DEFAULT_SOURCE_LOW_HIGH        3
+#define DEFAULT_TARGET_LOW     4
+#define DEFAULT_TARGET_HIGH    5
+#define DEFAULT_TARGET_LOW_HIGH        6
+	char default_range;
 };
 
 /* Role attributes */
@@ -140,6 +154,17 @@ struct cond_bool_datum {
 struct cond_node;
 
 /*
+ * type set preserves data needed to determine constraint info from
+ * policy source. This is not used by the kernel policy but allows
+ * utilities such as audit2allow to determine constraint denials.
+ */
+struct type_set {
+	struct ebitmap types;
+	struct ebitmap negset;
+	u32 flags;
+};
+
+/*
  * The configuration data includes security contexts for
  * initial SIDs, unlabeled file systems, TCP and UDP port numbers,
  * network interfaces, and nodes.  This structure stores the
@@ -162,6 +187,15 @@ struct ocontext {
 			u32 addr[4];
 			u32 mask[4];
 		} node6;        /* IPv6 node information */
+		struct {
+			u64 subnet_prefix;
+			u16 low_pkey;
+			u16 high_pkey;
+		} ibpkey;
+		struct {
+			char *dev_name;
+			u8 port;
+		} ibendport;
 	} u;
 	union {
 		u32 sclass;  /* security class for genfs */
@@ -190,14 +224,16 @@ struct genfs {
 #define SYM_NUM     8
 
 /* object context array indices */
-#define OCON_ISID  0	/* initial SIDs */
-#define OCON_FS    1	/* unlabeled file systems */
-#define OCON_PORT  2	/* TCP and UDP port numbers */
-#define OCON_NETIF 3	/* network interfaces */
-#define OCON_NODE  4	/* nodes */
-#define OCON_FSUSE 5	/* fs_use */
-#define OCON_NODE6 6	/* IPv6 nodes */
-#define OCON_NUM   7
+#define OCON_ISID	0 /* initial SIDs */
+#define OCON_FS		1 /* unlabeled file systems */
+#define OCON_PORT	2 /* TCP and UDP port numbers */
+#define OCON_NETIF	3 /* network interfaces */
+#define OCON_NODE	4 /* nodes */
+#define OCON_FSUSE	5 /* fs_use */
+#define OCON_NODE6	6 /* IPv6 nodes */
+#define OCON_IBPKEY	7 /* Infiniband PKeys */
+#define OCON_IBENDPORT	8 /* Infiniband end ports */
+#define OCON_NUM	9
 
 /* The policy database */
 struct policydb {

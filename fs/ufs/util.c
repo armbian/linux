@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ufs/util.c
  *
@@ -26,8 +27,7 @@ struct ufs_buffer_head * _ubh_bread_ (struct ufs_sb_private_info * uspi,
 	count = size >> uspi->s_fshift;
 	if (count > UFS_MAXFRAG)
 		return NULL;
-	ubh = (struct ufs_buffer_head *)
-		kmalloc (sizeof (struct ufs_buffer_head), GFP_NOFS);
+	ubh = kmalloc (sizeof (struct ufs_buffer_head), GFP_NOFS);
 	if (!ubh)
 		return NULL;
 	ubh->fragment = fragment;
@@ -119,7 +119,7 @@ void ubh_sync_block(struct ufs_buffer_head *ubh)
 		unsigned i;
 
 		for (i = 0; i < ubh->count; i++)
-			write_dirty_buffer(ubh->bh[i], WRITE);
+			write_dirty_buffer(ubh->bh[i], 0);
 
 		for (i = 0; i < ubh->count; i++)
 			wait_on_buffer(ubh->bh[i]);
@@ -244,9 +244,8 @@ ufs_set_inode_dev(struct super_block *sb, struct ufs_inode_info *ufsi, dev_t dev
 struct page *ufs_get_locked_page(struct address_space *mapping,
 				 pgoff_t index)
 {
-	struct page *page;
-
-	page = find_lock_page(mapping, index);
+	struct inode *inode = mapping->host;
+	struct page *page = find_lock_page(mapping, index);
 	if (!page) {
 		page = read_mapping_page(mapping, index, NULL);
 
@@ -254,7 +253,7 @@ struct page *ufs_get_locked_page(struct address_space *mapping,
 			printk(KERN_ERR "ufs_change_blocknr: "
 			       "read_mapping_page error: ino %lu, index: %lu\n",
 			       mapping->host->i_ino, index);
-			goto out;
+			return page;
 		}
 
 		lock_page(page);
@@ -262,22 +261,22 @@ struct page *ufs_get_locked_page(struct address_space *mapping,
 		if (unlikely(page->mapping == NULL)) {
 			/* Truncate got there first */
 			unlock_page(page);
-			page_cache_release(page);
-			page = NULL;
-			goto out;
+			put_page(page);
+			return NULL;
 		}
 
 		if (!PageUptodate(page) || PageError(page)) {
 			unlock_page(page);
-			page_cache_release(page);
+			put_page(page);
 
 			printk(KERN_ERR "ufs_change_blocknr: "
 			       "can not read page: ino %lu, index: %lu\n",
-			       mapping->host->i_ino, index);
+			       inode->i_ino, index);
 
-			page = ERR_PTR(-EIO);
+			return ERR_PTR(-EIO);
 		}
 	}
-out:
+	if (!page_has_buffers(page))
+		create_empty_buffers(page, 1 << inode->i_blkbits, 0);
 	return page;
 }

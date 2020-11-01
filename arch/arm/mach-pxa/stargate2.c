@@ -26,8 +26,8 @@
 #include <linux/mtd/partitions.h>
 
 #include <linux/i2c/pxa-i2c.h>
-#include <linux/i2c/pcf857x.h>
-#include <linux/i2c/at24.h>
+#include <linux/platform_data/pcf857x.h>
+#include <linux/platform_data/at24.h>
 #include <linux/smc91x.h>
 #include <linux/gpio.h>
 #include <linux/leds.h>
@@ -43,16 +43,16 @@
 #include <asm/mach/irq.h>
 #include <asm/mach/flash.h>
 
-#include <mach/pxa27x.h>
-#include <mach/mmc.h>
-#include <mach/udc.h>
-#include <mach/pxa27x-udc.h>
+#include "pxa27x.h"
+#include <linux/platform_data/mmc-pxamci.h>
+#include "udc.h"
+#include "pxa27x-udc.h"
 #include <mach/smemc.h>
 
 #include <linux/spi/spi.h>
 #include <linux/spi/pxa2xx_spi.h>
 #include <linux/mfd/da903x.h>
-#include <linux/sht15.h>
+#include <linux/platform_data/sht15.h>
 
 #include "devices.h"
 #include "generic.h"
@@ -151,10 +151,7 @@ static struct platform_device sht15 = {
 };
 
 static struct regulator_consumer_supply stargate2_sensor_3_con[] = {
-	{
-		.dev_name = "sht15",
-		.supply = "vcc",
-	},
+	REGULATOR_SUPPLY("vcc", "sht15"),
 };
 
 enum stargate2_ldos{
@@ -676,6 +673,7 @@ static struct resource smc91x_resources[] = {
 static struct smc91x_platdata stargate2_smc91x_info = {
 	.flags = SMC91X_USE_8BIT | SMC91X_USE_16BIT | SMC91X_USE_32BIT
 	| SMC91X_NOWAIT | SMC91X_USE_DMA,
+	.pxa_u16_align4 = true,
 };
 
 static struct platform_device smc91x_device = {
@@ -737,9 +735,10 @@ static int stargate2_mci_init(struct device *dev,
  *
  * Very simple control. Either it is on or off and is controlled by
  * a gpio pin */
-static void stargate2_mci_setpower(struct device *dev, unsigned int vdd)
+static int stargate2_mci_setpower(struct device *dev, unsigned int vdd)
 {
 	gpio_set_value(SG2_SD_POWER_ENABLE, !!vdd);
+	return 0;
 }
 
 static void stargate2_mci_exit(struct device *dev, void *data)
@@ -1009,7 +1008,7 @@ MACHINE_START(INTELMOTE2, "IMOTE 2")
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
 	.handle_irq	= pxa27x_handle_irq,
-	.timer		= &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine	= imote2_init,
 	.atag_offset	= 0x100,
 	.restart	= pxa_restart,
@@ -1022,7 +1021,7 @@ MACHINE_START(STARGATE2, "Stargate 2")
 	.nr_irqs = STARGATE_NR_IRQS,
 	.init_irq = pxa27x_init_irq,
 	.handle_irq = pxa27x_handle_irq,
-	.timer = &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine = stargate2_init,
 	.atag_offset = 0x100,
 	.restart	= pxa_restart,

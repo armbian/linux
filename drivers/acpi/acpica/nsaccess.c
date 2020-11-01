@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2017, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -46,6 +46,10 @@
 #include "amlcode.h"
 #include "acnamesp.h"
 #include "acdispat.h"
+
+#ifdef ACPI_ASL_COMPILER
+#include "acdisasm.h"
+#endif
 
 #define _COMPONENT          ACPI_NAMESPACE
 ACPI_MODULE_NAME("nsaccess")
@@ -102,19 +106,20 @@ acpi_status acpi_ns_root_initialize(void)
 
 		/* _OSI is optional for now, will be permanent later */
 
-		if (!ACPI_STRCMP(init_val->name, "_OSI")
+		if (!strcmp(init_val->name, "_OSI")
 		    && !acpi_gbl_create_osi_method) {
 			continue;
 		}
 
-		status = acpi_ns_lookup(NULL, init_val->name, init_val->type,
-					ACPI_IMODE_LOAD_PASS2,
-					ACPI_NS_NO_UPSEARCH, NULL, &new_node);
-
-		if (ACPI_FAILURE(status) || (!new_node)) {	/* Must be on same line for code converter */
+		status =
+		    acpi_ns_lookup(NULL, ACPI_CAST_PTR(char, init_val->name),
+				   init_val->type, ACPI_IMODE_LOAD_PASS2,
+				   ACPI_NS_NO_UPSEARCH, NULL, &new_node);
+		if (ACPI_FAILURE(status)) {
 			ACPI_EXCEPTION((AE_INFO, status,
 					"Could not create predefined name %s",
 					init_val->name));
+			continue;
 		}
 
 		/*
@@ -151,13 +156,14 @@ acpi_status acpi_ns_root_initialize(void)
 			 */
 			switch (init_val->type) {
 			case ACPI_TYPE_METHOD:
+
 				obj_desc->method.param_count =
 				    (u8) ACPI_TO_INTEGER(val);
 				obj_desc->common.flags |= AOPOBJ_DATA_VALID;
 
 #if defined (ACPI_ASL_COMPILER)
 
-				/* Save the parameter count for the i_aSL compiler */
+				/* Save the parameter count for the iASL compiler */
 
 				new_node->value = obj_desc->method.param_count;
 #else
@@ -179,8 +185,7 @@ acpi_status acpi_ns_root_initialize(void)
 
 				/* Build an object around the static string */
 
-				obj_desc->string.length =
-				    (u32) ACPI_STRLEN(val);
+				obj_desc->string.length = (u32)strlen(val);
 				obj_desc->string.pointer = val;
 				obj_desc->common.flags |= AOPOBJ_STATIC_POINTER;
 				break;
@@ -203,7 +208,7 @@ acpi_status acpi_ns_root_initialize(void)
 
 				/* Special case for ACPI Global Lock */
 
-				if (ACPI_STRCMP(init_val->name, "_GL_") == 0) {
+				if (strcmp(init_val->name, "_GL_") == 0) {
 					acpi_gbl_global_lock_mutex = obj_desc;
 
 					/* Create additional counting semaphore for global lock */
@@ -240,7 +245,7 @@ acpi_status acpi_ns_root_initialize(void)
 		}
 	}
 
-      unlock_and_exit:
+unlock_and_exit:
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 
 	/* Save a handle to "_GPE", it is always present */
@@ -258,11 +263,11 @@ acpi_status acpi_ns_root_initialize(void)
  * FUNCTION:    acpi_ns_lookup
  *
  * PARAMETERS:  scope_info      - Current scope info block
- *              Pathname        - Search pathname, in internal format
+ *              pathname        - Search pathname, in internal format
  *                                (as represented in the AML stream)
- *              Type            - Type associated with name
+ *              type            - Type associated with name
  *              interpreter_mode - IMODE_LOAD_PASS2 => add name if not found
- *              Flags           - Flags describing the search restrictions
+ *              flags           - Flags describing the search restrictions
  *              walk_state      - Current state of the walk
  *              return_node     - Where the Node is placed (if found
  *                                or created successfully)
@@ -287,6 +292,7 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 {
 	acpi_status status;
 	char *path = pathname;
+	char *external_path;
 	struct acpi_namespace_node *prefix_node;
 	struct acpi_namespace_node *current_node = NULL;
 	struct acpi_namespace_node *this_node = NULL;
@@ -304,7 +310,9 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 		return_ACPI_STATUS(AE_BAD_PARAMETER);
 	}
 
-	local_flags = flags & ~(ACPI_NS_ERROR_IF_FOUND | ACPI_NS_SEARCH_PARENT);
+	local_flags = flags &
+	    ~(ACPI_NS_ERROR_IF_FOUND | ACPI_NS_OVERRIDE_IF_FOUND |
+	      ACPI_NS_SEARCH_PARENT);
 	*return_node = ACPI_ENTRY_NOT_FOUND;
 	acpi_gbl_ns_lookup_count++;
 
@@ -420,12 +428,22 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 				num_carats++;
 				this_node = this_node->parent;
 				if (!this_node) {
+					/*
+					 * Current scope has no parent scope. Externalize
+					 * the internal path for error message.
+					 */
+					status =
+					    acpi_ns_externalize_name
+					    (ACPI_UINT32_MAX, pathname, NULL,
+					     &external_path);
+					if (ACPI_SUCCESS(status)) {
+						ACPI_ERROR((AE_INFO,
+							    "%s: Path has too many parent prefixes (^)",
+							    external_path));
 
-					/* Current scope has no parent scope */
+						ACPI_FREE(external_path);
+					}
 
-					ACPI_ERROR((AE_INFO,
-						    "ACPI path has too many parent prefixes (^) "
-						    "- reached beyond root node"));
 					return_ACPI_STATUS(AE_NOT_FOUND);
 				}
 			}
@@ -481,7 +499,7 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 					  flags));
 			break;
 
-		case AML_MULTI_NAME_PREFIX_OP:
+		case AML_MULTI_NAME_PREFIX:
 
 			/* More than one name_seg, search rules do not apply */
 
@@ -546,6 +564,12 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 			if (flags & ACPI_NS_ERROR_IF_FOUND) {
 				local_flags |= ACPI_NS_ERROR_IF_FOUND;
 			}
+
+			/* Set override flag according to caller */
+
+			if (flags & ACPI_NS_OVERRIDE_IF_FOUND) {
+				local_flags |= ACPI_NS_OVERRIDE_IF_FOUND;
+			}
 		}
 
 		/* Extract one ACPI name from the front of the pathname */
@@ -570,6 +594,29 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 						  (char *)&current_node->name,
 						  current_node));
 			}
+#ifdef ACPI_ASL_COMPILER
+			/*
+			 * If this ACPI name already exists within the namespace as an
+			 * external declaration, then mark the external as a conflicting
+			 * declaration and proceed to process the current node as if it did
+			 * not exist in the namespace. If this node is not processed as
+			 * normal, then it could cause improper namespace resolution
+			 * by failing to open a new scope.
+			 */
+			if (acpi_gbl_disasm_flag &&
+			    (status == AE_ALREADY_EXISTS) &&
+			    ((this_node->flags & ANOBJ_IS_EXTERNAL) ||
+			     (walk_state
+			      && walk_state->opcode == AML_EXTERNAL_OP))) {
+				this_node->flags &= ~ANOBJ_IS_EXTERNAL;
+				this_node->type = (u8)this_search_type;
+				if (walk_state->opcode != AML_EXTERNAL_OP) {
+					acpi_dm_mark_external_conflict
+					    (this_node);
+				}
+				break;
+			}
+#endif
 
 			*return_node = this_node;
 			return_ACPI_STATUS(status);
@@ -597,6 +644,12 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 					    this_node->object;
 				}
 			}
+#ifdef ACPI_ASL_COMPILER
+			if (!acpi_gbl_disasm_flag &&
+			    (this_node->flags & ANOBJ_IS_EXTERNAL)) {
+				this_node->flags |= IMPLICIT_EXTERNAL;
+			}
+#endif
 		}
 
 		/* Special handling for the last segment (num_segments == 0) */

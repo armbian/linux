@@ -20,10 +20,11 @@
 #include <bcm63xx_cpu.h>
 #include <bcm63xx_regs.h>
 #include <bcm63xx_io.h>
+#include <bcm63xx_gpio.h>
 
 void bcm63xx_machine_halt(void)
 {
-	printk(KERN_INFO "System halted\n");
+	pr_info("System halted\n");
 	while (1)
 		;
 }
@@ -33,7 +34,7 @@ static void bcm6348_a1_reboot(void)
 	u32 reg;
 
 	/* soft reset all blocks */
-	printk(KERN_INFO "soft-resetting all blocks ...\n");
+	pr_info("soft-resetting all blocks ...\n");
 	reg = bcm_perf_readl(PERF_SOFTRESET_REG);
 	reg &= ~SOFTRESET_6348_ALL;
 	bcm_perf_writel(reg, PERF_SOFTRESET_REG);
@@ -45,7 +46,7 @@ static void bcm6348_a1_reboot(void)
 	mdelay(10);
 
 	/* Jump to the power on address. */
-	printk(KERN_INFO "jumping to reset vector.\n");
+	pr_info("jumping to reset vector.\n");
 	/* set high vectors (base at 0xbfc00000 */
 	set_c0_status(ST0_BEV | ST0_ERL);
 	/* run uncached in kseg0 */
@@ -68,8 +69,17 @@ void bcm63xx_machine_reboot(void)
 
 	/* mask and clear all external irq */
 	switch (bcm63xx_get_cpu_id()) {
+	case BCM3368_CPU_ID:
+		perf_regs[0] = PERF_EXTIRQ_CFG_REG_3368;
+		break;
+	case BCM6328_CPU_ID:
+		perf_regs[0] = PERF_EXTIRQ_CFG_REG_6328;
+		break;
 	case BCM6338_CPU_ID:
 		perf_regs[0] = PERF_EXTIRQ_CFG_REG_6338;
+		break;
+	case BCM6345_CPU_ID:
+		perf_regs[0] = PERF_EXTIRQ_CFG_REG_6345;
 		break;
 	case BCM6348_CPU_ID:
 		perf_regs[0] = PERF_EXTIRQ_CFG_REG_6348;
@@ -77,9 +87,15 @@ void bcm63xx_machine_reboot(void)
 	case BCM6358_CPU_ID:
 		perf_regs[0] = PERF_EXTIRQ_CFG_REG_6358;
 		break;
+	case BCM6362_CPU_ID:
+		perf_regs[0] = PERF_EXTIRQ_CFG_REG_6362;
+		break;
 	}
 
 	for (i = 0; i < 2; i++) {
+		if (!perf_regs[i])
+			break;
+
 		reg = bcm_perf_readl(perf_regs[i]);
 		if (BCMCPU_IS_6348()) {
 			reg &= ~EXTIRQ_CFG_MASK_ALL_6348;
@@ -94,10 +110,14 @@ void bcm63xx_machine_reboot(void)
 	if (BCMCPU_IS_6348() && (bcm63xx_get_cpu_rev() == 0xa1))
 		bcm6348_a1_reboot();
 
-	printk(KERN_INFO "triggering watchdog soft-reset...\n");
-	reg = bcm_perf_readl(PERF_SYS_PLL_CTL_REG);
-	reg |= SYS_PLL_SOFT_RESET;
-	bcm_perf_writel(reg, PERF_SYS_PLL_CTL_REG);
+	pr_info("triggering watchdog soft-reset...\n");
+	if (BCMCPU_IS_6328()) {
+		bcm_wdt_writel(1, WDT_SOFTRESET_REG);
+	} else {
+		reg = bcm_perf_readl(PERF_SYS_PLL_CTL_REG);
+		reg |= SYS_PLL_SOFT_RESET;
+		bcm_perf_writel(reg, PERF_SYS_PLL_CTL_REG);
+	}
 	while (1)
 		;
 }
@@ -113,7 +133,7 @@ static void __bcm63xx_machine_reboot(char *p)
 const char *get_system_type(void)
 {
 	static char buf[128];
-	snprintf(buf, sizeof(buf), "bcm63xx/%s (0x%04x/0x%04X)",
+	snprintf(buf, sizeof(buf), "bcm63xx/%s (0x%04x/0x%02X)",
 		 board_get_name(),
 		 bcm63xx_get_cpu_id(), bcm63xx_get_cpu_rev());
 	return buf;
@@ -141,7 +161,10 @@ void __init plat_mem_setup(void)
 
 int __init bcm63xx_register_devices(void)
 {
+	/* register gpiochip */
+	bcm63xx_gpio_init();
+
 	return board_register_devices();
 }
 
-device_initcall(bcm63xx_register_devices);
+arch_initcall(bcm63xx_register_devices);

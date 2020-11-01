@@ -22,6 +22,7 @@
 #include <linux/cpumask.h>
 #include <linux/interrupt.h>
 #include <linux/compiler.h>
+#include <linux/sched/task_stack.h>
 #include <linux/smp.h>
 
 #include <linux/atomic.h>
@@ -34,6 +35,7 @@
 #include <asm/mipsregs.h>
 #include <asm/mipsmtregs.h>
 #include <asm/mips_mt.h>
+#include <asm/mips-cps.h>
 
 static void __init smvp_copy_vpe_config(void)
 {
@@ -70,8 +72,9 @@ static unsigned int __init smvp_vpe_init(unsigned int tc, unsigned int mvpconf0,
 
 		/* Record this as available CPU */
 		set_cpu_possible(tc, true);
+		set_cpu_present(tc, true);
 		__cpu_number_map[tc]	= ++ncpu;
-		__cpu_logical_map[ncpu]	= tc;
+		__cpu_logical_map[ncpu] = tc;
 	}
 
 	/* Disable multi-threading with TC's */
@@ -79,6 +82,8 @@ static unsigned int __init smvp_vpe_init(unsigned int tc, unsigned int mvpconf0,
 
 	if (tc != 0)
 		smvp_copy_vpe_config();
+
+	cpu_set_vpe_id(&cpu_data[ncpu], tc);
 
 	return ncpu;
 }
@@ -111,57 +116,19 @@ static void __init smvp_tc_init(unsigned int tc, unsigned int mvpconf0)
 	write_tc_c0_tchalt(TCHALT_H);
 }
 
-static void vsmp_send_ipi_single(int cpu, unsigned int action)
+static void vsmp_init_secondary(void)
 {
-	int i;
-	unsigned long flags;
-	int vpflags;
-
-	local_irq_save(flags);
-
-	vpflags = dvpe();	/* can't access the other CPU's registers whilst MVPE enabled */
-
-	switch (action) {
-	case SMP_CALL_FUNCTION:
-		i = C_SW1;
-		break;
-
-	case SMP_RESCHEDULE_YOURSELF:
-	default:
-		i = C_SW0;
-		break;
-	}
-
-	/* 1:1 mapping of vpe and tc... */
-	settc(cpu);
-	write_vpe_c0_cause(read_vpe_c0_cause() | i);
-	evpe(vpflags);
-
-	local_irq_restore(flags);
-}
-
-static void vsmp_send_ipi_mask(const struct cpumask *mask, unsigned int action)
-{
-	unsigned int i;
-
-	for_each_cpu(i, mask)
-		vsmp_send_ipi_single(i, action);
-}
-
-static void __cpuinit vsmp_init_secondary(void)
-{
-	extern int gic_present;
-
 	/* This is Malta specific: IPI,performance and timer interrupts */
-	if (gic_present)
-		change_c0_status(ST0_IM, STATUSF_IP3 | STATUSF_IP4 |
+	if (mips_gic_present())
+		change_c0_status(ST0_IM, STATUSF_IP2 | STATUSF_IP3 |
+					 STATUSF_IP4 | STATUSF_IP5 |
 					 STATUSF_IP6 | STATUSF_IP7);
 	else
 		change_c0_status(ST0_IM, STATUSF_IP0 | STATUSF_IP1 |
 					 STATUSF_IP6 | STATUSF_IP7);
 }
 
-static void __cpuinit vsmp_smp_finish(void)
+static void vsmp_smp_finish(void)
 {
 	/* CDFIXME: remove this? */
 	write_c0_compare(read_c0_count() + (8* mips_hpt_frequency/HZ));
@@ -169,14 +136,10 @@ static void __cpuinit vsmp_smp_finish(void)
 #ifdef CONFIG_MIPS_MT_FPAFF
 	/* If we have an FPU, enroll ourselves in the FPU-full mask */
 	if (cpu_has_fpu)
-		cpu_set(smp_processor_id(), mt_fpu_cpumask);
+		cpumask_set_cpu(smp_processor_id(), &mt_fpu_cpumask);
 #endif /* CONFIG_MIPS_MT_FPAFF */
 
 	local_irq_enable();
-}
-
-static void vsmp_cpus_done(void)
-{
 }
 
 /*
@@ -187,7 +150,7 @@ static void vsmp_cpus_done(void)
  * (unsigned long)idle->thread_info the gp
  * assumes a 1:1 mapping of TC => VPE
  */
-static void __cpuinit vsmp_boot_secondary(int cpu, struct task_struct *idle)
+static int vsmp_boot_secondary(int cpu, struct task_struct *idle)
 {
 	struct thread_info *gp = task_thread_info(idle);
 	dvpe();
@@ -213,12 +176,14 @@ static void __cpuinit vsmp_boot_secondary(int cpu, struct task_struct *idle)
 	write_tc_gpr_gp((unsigned long)gp);
 
 	flush_icache_range((unsigned long)gp,
-	                   (unsigned long)(gp + sizeof(struct thread_info)));
+			   (unsigned long)(gp + sizeof(struct thread_info)));
 
 	/* finally out of configuration and into chaos */
 	clear_c0_mvpcontrol(MVPCONTROL_VPC);
 
 	evpe(EVPE_ENABLE);
+
+	return 0;
 }
 
 /*
@@ -234,7 +199,7 @@ static void __init vsmp_smp_setup(void)
 #ifdef CONFIG_MIPS_MT_FPAFF
 	/* If we have an FPU, enroll ourselves in the FPU-full mask */
 	if (cpu_has_fpu)
-		cpu_set(0, mt_fpu_cpumask);
+		cpumask_set_cpu(0, &mt_fpu_cpumask);
 #endif /* CONFIG_MIPS_MT_FPAFF */
 	if (!cpu_has_mipsmt)
 		return;
@@ -274,13 +239,13 @@ static void __init vsmp_prepare_cpus(unsigned int max_cpus)
 	mips_mt_set_cpuoptions();
 }
 
-struct plat_smp_ops vsmp_smp_ops = {
-	.send_ipi_single	= vsmp_send_ipi_single,
-	.send_ipi_mask		= vsmp_send_ipi_mask,
+const struct plat_smp_ops vsmp_smp_ops = {
+	.send_ipi_single	= mips_smp_send_ipi_single,
+	.send_ipi_mask		= mips_smp_send_ipi_mask,
 	.init_secondary		= vsmp_init_secondary,
 	.smp_finish		= vsmp_smp_finish,
-	.cpus_done		= vsmp_cpus_done,
 	.boot_secondary		= vsmp_boot_secondary,
 	.smp_setup		= vsmp_smp_setup,
 	.prepare_cpus		= vsmp_prepare_cpus,
 };
+

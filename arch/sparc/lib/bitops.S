@@ -1,16 +1,17 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* bitops.S: Sparc64 atomic bit operations.
  *
  * Copyright (C) 2000, 2007 David S. Miller (davem@davemloft.net)
  */
 
+#include <linux/linkage.h>
 #include <asm/asi.h>
 #include <asm/backoff.h>
+#include <asm/export.h>
 
 	.text
 
-	.globl	test_and_set_bit
-	.type	test_and_set_bit,#function
-test_and_set_bit:	/* %o0=nr, %o1=addr */
+ENTRY(test_and_set_bit)	/* %o0=nr, %o1=addr */
 	BACKOFF_SETUP(%o3)
 	srlx	%o0, 6, %g1
 	mov	1, %o2
@@ -29,11 +30,10 @@ test_and_set_bit:	/* %o0=nr, %o1=addr */
 	retl
 	 nop
 2:	BACKOFF_SPIN(%o3, %o4, 1b)
-	.size	test_and_set_bit, .-test_and_set_bit
+ENDPROC(test_and_set_bit)
+EXPORT_SYMBOL(test_and_set_bit)
 
-	.globl	test_and_clear_bit
-	.type	test_and_clear_bit,#function
-test_and_clear_bit:	/* %o0=nr, %o1=addr */
+ENTRY(test_and_clear_bit) /* %o0=nr, %o1=addr */
 	BACKOFF_SETUP(%o3)
 	srlx	%o0, 6, %g1
 	mov	1, %o2
@@ -52,11 +52,10 @@ test_and_clear_bit:	/* %o0=nr, %o1=addr */
 	retl
 	 nop
 2:	BACKOFF_SPIN(%o3, %o4, 1b)
-	.size	test_and_clear_bit, .-test_and_clear_bit
+ENDPROC(test_and_clear_bit)
+EXPORT_SYMBOL(test_and_clear_bit)
 
-	.globl	test_and_change_bit
-	.type	test_and_change_bit,#function
-test_and_change_bit:	/* %o0=nr, %o1=addr */
+ENTRY(test_and_change_bit) /* %o0=nr, %o1=addr */
 	BACKOFF_SETUP(%o3)
 	srlx	%o0, 6, %g1
 	mov	1, %o2
@@ -75,11 +74,10 @@ test_and_change_bit:	/* %o0=nr, %o1=addr */
 	retl
 	 nop
 2:	BACKOFF_SPIN(%o3, %o4, 1b)
-	.size	test_and_change_bit, .-test_and_change_bit
+ENDPROC(test_and_change_bit)
+EXPORT_SYMBOL(test_and_change_bit)
 
-	.globl	set_bit
-	.type	set_bit,#function
-set_bit:		/* %o0=nr, %o1=addr */
+ENTRY(set_bit) /* %o0=nr, %o1=addr */
 	BACKOFF_SETUP(%o3)
 	srlx	%o0, 6, %g1
 	mov	1, %o2
@@ -96,11 +94,10 @@ set_bit:		/* %o0=nr, %o1=addr */
 	retl
 	 nop
 2:	BACKOFF_SPIN(%o3, %o4, 1b)
-	.size	set_bit, .-set_bit
+ENDPROC(set_bit)
+EXPORT_SYMBOL(set_bit)
 
-	.globl	clear_bit
-	.type	clear_bit,#function
-clear_bit:		/* %o0=nr, %o1=addr */
+ENTRY(clear_bit) /* %o0=nr, %o1=addr */
 	BACKOFF_SETUP(%o3)
 	srlx	%o0, 6, %g1
 	mov	1, %o2
@@ -117,11 +114,10 @@ clear_bit:		/* %o0=nr, %o1=addr */
 	retl
 	 nop
 2:	BACKOFF_SPIN(%o3, %o4, 1b)
-	.size	clear_bit, .-clear_bit
+ENDPROC(clear_bit)
+EXPORT_SYMBOL(clear_bit)
 
-	.globl	change_bit
-	.type	change_bit,#function
-change_bit:		/* %o0=nr, %o1=addr */
+ENTRY(change_bit) /* %o0=nr, %o1=addr */
 	BACKOFF_SETUP(%o3)
 	srlx	%o0, 6, %g1
 	mov	1, %o2
@@ -138,4 +134,5 @@ change_bit:		/* %o0=nr, %o1=addr */
 	retl
 	 nop
 2:	BACKOFF_SPIN(%o3, %o4, 1b)
-	.size	change_bit, .-change_bit
+ENDPROC(change_bit)
+EXPORT_SYMBOL(change_bit)

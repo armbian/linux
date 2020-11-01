@@ -59,7 +59,7 @@
 #include <linux/sched.h>
 #include <linux/mutex.h>
 #include <asm/io.h>		/* for inb_p, outb_p, inb, outb, etc. */
-#include <asm/uaccess.h>	/* for get_user, etc. */
+#include <linux/uaccess.h>	/* for get_user, etc. */
 #include <linux/wait.h>		/* for wait_queue */
 #include <linux/init.h>		/* for __init, module_{init,exit} */
 #include <linux/poll.h>		/* for POLLIN, etc. */
@@ -125,7 +125,7 @@ static char dtlk_write_tts(char);
 static ssize_t dtlk_read(struct file *file, char __user *buf,
 			 size_t count, loff_t * ppos)
 {
-	unsigned int minor = iminor(file->f_path.dentry->d_inode);
+	unsigned int minor = iminor(file_inode(file));
 	char ch;
 	int i = 0, retries;
 
@@ -177,7 +177,7 @@ static ssize_t dtlk_write(struct file *file, const char __user *buf,
 	}
 #endif
 
-	if (iminor(file->f_path.dentry->d_inode) != DTLK_MINOR)
+	if (iminor(file_inode(file)) != DTLK_MINOR)
 		return -EINVAL;
 
 	while (1) {

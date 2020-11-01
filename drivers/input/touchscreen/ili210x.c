@@ -169,7 +169,7 @@ static ssize_t ili210x_calibrate(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(calibrate, 0644, NULL, ili210x_calibrate);
+static DEVICE_ATTR(calibrate, S_IWUSR, NULL, ili210x_calibrate);
 
 static struct attribute *ili210x_attributes[] = {
 	&dev_attr_calibrate.attr,
@@ -180,11 +180,11 @@ static const struct attribute_group ili210x_attr_group = {
 	.attrs = ili210x_attributes,
 };
 
-static int __devinit ili210x_i2c_probe(struct i2c_client *client,
+static int ili210x_i2c_probe(struct i2c_client *client,
 				       const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
-	const struct ili210x_platform_data *pdata = dev->platform_data;
+	const struct ili210x_platform_data *pdata = dev_get_platdata(dev);
 	struct ili210x *priv;
 	struct input_dev *input;
 	struct panel_info panel;
@@ -216,7 +216,7 @@ static int __devinit ili210x_i2c_probe(struct i2c_client *client,
 	/* get panel info */
 	error = ili210x_read_reg(client, REG_PANEL_INFO, &panel, sizeof(panel));
 	if (error) {
-		dev_err(dev, "Failed to get panel informations, err: %d\n",
+		dev_err(dev, "Failed to get panel information, err: %d\n",
 			error);
 		return error;
 	}
@@ -252,11 +252,10 @@ static int __devinit ili210x_i2c_probe(struct i2c_client *client,
 	input_set_abs_params(input, ABS_Y, 0, ymax, 0, 0);
 
 	/* Multi touch */
-	input_mt_init_slots(input, MAX_TOUCHES);
+	input_mt_init_slots(input, MAX_TOUCHES, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, xmax, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ymax, 0, 0);
 
-	input_set_drvdata(input, priv);
 	i2c_set_clientdata(client, priv);
 
 	error = request_irq(client->irq, ili210x_irq, pdata->irq_flags,
@@ -276,11 +275,11 @@ static int __devinit ili210x_i2c_probe(struct i2c_client *client,
 
 	error = input_register_device(priv->input);
 	if (error) {
-		dev_err(dev, "Cannot regiser input device, err: %d\n", error);
+		dev_err(dev, "Cannot register input device, err: %d\n", error);
 		goto err_remove_sysfs;
 	}
 
-	device_init_wakeup(&client->dev, 1);
+	device_init_wakeup(dev, 1);
 
 	dev_dbg(dev,
 		"ILI210x initialized (IRQ: %d), firmware version %d.%d.%d",
@@ -298,7 +297,7 @@ err_free_mem:
 	return error;
 }
 
-static int __devexit ili210x_i2c_remove(struct i2c_client *client)
+static int ili210x_i2c_remove(struct i2c_client *client)
 {
 	struct ili210x *priv = i2c_get_clientdata(client);
 
@@ -311,8 +310,7 @@ static int __devexit ili210x_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int ili210x_i2c_suspend(struct device *dev)
+static int __maybe_unused ili210x_i2c_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
@@ -322,7 +320,7 @@ static int ili210x_i2c_suspend(struct device *dev)
 	return 0;
 }
 
-static int ili210x_i2c_resume(struct device *dev)
+static int __maybe_unused ili210x_i2c_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
@@ -331,7 +329,6 @@ static int ili210x_i2c_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(ili210x_i2c_pm,
 			 ili210x_i2c_suspend, ili210x_i2c_resume);
@@ -345,12 +342,11 @@ MODULE_DEVICE_TABLE(i2c, ili210x_i2c_id);
 static struct i2c_driver ili210x_ts_driver = {
 	.driver = {
 		.name = "ili210x_i2c",
-		.owner = THIS_MODULE,
 		.pm = &ili210x_i2c_pm,
 	},
 	.id_table = ili210x_i2c_id,
 	.probe = ili210x_i2c_probe,
-	.remove = __devexit_p(ili210x_i2c_remove),
+	.remove = ili210x_i2c_remove,
 };
 
 module_i2c_driver(ili210x_ts_driver);

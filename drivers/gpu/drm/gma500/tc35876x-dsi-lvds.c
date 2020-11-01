@@ -26,7 +26,7 @@
 #include "mdfld_output.h"
 #include "mdfld_dsi_pkg_sender.h"
 #include "tc35876x-dsi-lvds.h"
-#include <linux/i2c/tc35876x.h>
+#include <linux/platform_data/tc35876x.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <asm/intel_scu_ipc.h>
@@ -700,7 +700,7 @@ static struct i2c_driver tc35876x_bridge_i2c_driver = {
 	},
 	.id_table = tc35876x_bridge_id,
 	.probe = tc35876x_bridge_probe,
-	.remove = __devexit_p(tc35876x_bridge_remove),
+	.remove = tc35876x_bridge_remove,
 };
 
 /* LCD panel I2C */
@@ -741,7 +741,7 @@ static struct i2c_driver cmi_lcd_i2c_driver = {
 	},
 	.id_table = cmi_lcd_i2c_id,
 	.probe = cmi_lcd_i2c_probe,
-	.remove = __devexit_p(cmi_lcd_i2c_remove),
+	.remove = cmi_lcd_i2c_remove,
 };
 
 /* HACK to create I2C device while it's not created by platform code */

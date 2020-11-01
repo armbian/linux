@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/pcmcia/sa1100_simpad.c
  *
@@ -109,7 +110,7 @@ static struct pcmcia_low_level simpad_pcmcia_ops = {
 	.socket_suspend		= simpad_pcmcia_socket_suspend,
 };
 
-int __devinit pcmcia_simpad_init(struct device *dev)
+int pcmcia_simpad_init(struct device *dev)
 {
 	int ret = -ENODEV;
 
