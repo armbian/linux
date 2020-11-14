@@ -98,9 +98,3 @@ config FAT_DEFAULT_IOCHARSET
 
 	  Enable any character sets you need in File Systems/Native Language
 	  Support.
-
-config FAT_PRE_FALLOCATE
-	tristate "FATFS for  Pre-allocation"
-    default n
-	help
-	  pre-allocation is used for writing sd card to increase writing speed ,eg cdr etc 

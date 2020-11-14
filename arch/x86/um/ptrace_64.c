@@ -11,6 +11,7 @@
 #define __FRAME_OFFSETS
 #include <asm/ptrace.h>
 #include <asm/uaccess.h>
+#include <asm/ptrace-abi.h>
 
 /*
  * determines which flags the user has access to.
@@ -120,7 +121,7 @@ int poke_user(struct task_struct *child, long addr, long data)
 	else if ((addr >= offsetof(struct user, u_debugreg[0])) &&
 		(addr <= offsetof(struct user, u_debugreg[7]))) {
 		addr -= offsetof(struct user, u_debugreg[0]);
-		addr = addr >> 2;
+		addr = addr >> 3;
 		if ((addr == 4) || (addr == 5))
 			return -EIO;
 		child->thread.arch.debugregs[addr] = data;

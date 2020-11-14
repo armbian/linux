@@ -28,8 +28,6 @@
 #include <linux/file.h>
 #include <linux/in.h>
 #include <linux/ip.h>
-#include <linux/netfilter.h>
-#include <linux/netfilter_ipv4.h>
 #include <linux/rcupdate.h>
 #include <linux/spinlock.h>
 
@@ -47,7 +45,7 @@
 #define MAX_CALLID 65535
 
 static DECLARE_BITMAP(callid_bitmap, MAX_CALLID + 1);
-static struct pppox_sock **callid_sock;
+static struct pppox_sock __rcu **callid_sock;
 
 static DEFINE_SPINLOCK(chan_lock);
 
@@ -83,11 +81,11 @@ static const struct proto_ops pptp_ops;
 struct pptp_gre_header {
 	u8  flags;
 	u8  ver;
-	u16 protocol;
-	u16 payload_len;
-	u16 call_id;
-	u32 seq;
-	u32 ack;
+	__be16 protocol;
+	__be16 payload_len;
+	__be16 call_id;
+	__be32 seq;
+	__be32 ack;
 } __packed;
 
 static struct pppox_sock *lookup_chan(u16 call_id, __be32 s_addr)
@@ -116,8 +114,8 @@ static int lookup_chan_dst(u16 call_id, __be32 d_addr)
 	int i;
 
 	rcu_read_lock();
-	for (i = find_next_bit(callid_bitmap, MAX_CALLID, 1); i < MAX_CALLID;
-	     i = find_next_bit(callid_bitmap, MAX_CALLID, i + 1)) {
+	i = 1;
+	for_each_set_bit_from(i, callid_bitmap, MAX_CALLID) {
 		sock = rcu_dereference(callid_sock[i]);
 		if (!sock)
 			continue;
@@ -131,24 +129,27 @@ static int lookup_chan_dst(u16 call_id, __be32 d_addr)
 	return i < MAX_CALLID;
 }
 
-static int add_chan(struct pppox_sock *sock)
+static int add_chan(struct pppox_sock *sock,
+		    struct pptp_addr *sa)
 {
 	static int call_id;
 
 	spin_lock(&chan_lock);
-	if (!sock->proto.pptp.src_addr.call_id)	{
+	if (!sa->call_id)	{
 		call_id = find_next_zero_bit(callid_bitmap, MAX_CALLID, call_id + 1);
 		if (call_id == MAX_CALLID) {
 			call_id = find_next_zero_bit(callid_bitmap, MAX_CALLID, 1);
 			if (call_id == MAX_CALLID)
 				goto out_err;
 		}
-		sock->proto.pptp.src_addr.call_id = call_id;
-	} else if (test_bit(sock->proto.pptp.src_addr.call_id, callid_bitmap))
+		sa->call_id = call_id;
+	} else if (test_bit(sa->call_id, callid_bitmap)) {
 		goto out_err;
+	}
 
-	set_bit(sock->proto.pptp.src_addr.call_id, callid_bitmap);
-	rcu_assign_pointer(callid_sock[sock->proto.pptp.src_addr.call_id], sock);
+	sock->proto.pptp.src_addr = *sa;
+	set_bit(sa->call_id, callid_bitmap);
+	rcu_assign_pointer(callid_sock[sa->call_id], sock);
 	spin_unlock(&chan_lock);
 
 	return 0;
@@ -171,6 +172,7 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 {
 	struct sock *sk = (struct sock *) chan->private;
 	struct pppox_sock *po = pppox_sk(sk);
+	struct net *net = sock_net(sk);
 	struct pptp_opt *opt = &po->proto.pptp;
 	struct pptp_gre_header *hdr;
 	unsigned int header_len = sizeof(*hdr);
@@ -189,7 +191,7 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 	if (sk_pppox(po)->sk_state & PPPOX_DEAD)
 		goto tx_error;
 
-	rt = ip_route_output_ports(sock_net(sk), &fl4, NULL,
+	rt = ip_route_output_ports(net, &fl4, NULL,
 				   opt->dst_addr.sin_addr.s_addr,
 				   opt->src_addr.sin_addr.s_addr,
 				   0, 0, IPPROTO_GRE,
@@ -209,7 +211,7 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 		}
 		if (skb->sk)
 			skb_set_owner_w(new_skb, skb->sk);
-		kfree_skb(skb);
+		consume_skb(skb);
 		skb = new_skb;
 	}
 
@@ -281,10 +283,10 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 	nf_reset(skb);
 
 	skb->ip_summed = CHECKSUM_NONE;
-	ip_select_ident(skb, NULL);
+	ip_select_ident(net, skb, NULL);
 	ip_send_check(iph);
 
-	ip_local_out(skb);
+	ip_local_out(net, skb->sk, skb);
 	return 1;
 
 tx_error:
@@ -417,7 +419,6 @@ static int pptp_bind(struct socket *sock, struct sockaddr *uservaddr,
 	struct sock *sk = sock->sk;
 	struct sockaddr_pppox *sp = (struct sockaddr_pppox *) uservaddr;
 	struct pppox_sock *po = pppox_sk(sk);
-	struct pptp_opt *opt = &po->proto.pptp;
 	int error = 0;
 
 	if (sockaddr_len < sizeof(struct sockaddr_pppox))
@@ -425,10 +426,22 @@ static int pptp_bind(struct socket *sock, struct sockaddr *uservaddr,
 
 	lock_sock(sk);
 
-	opt->src_addr = sp->sa_addr.pptp;
-	if (add_chan(po))
-		error = -EBUSY;
+	if (sk->sk_state & PPPOX_DEAD) {
+		error = -EALREADY;
+		goto out;
+	}
 
+	if (sk->sk_state & PPPOX_BOUND) {
+		error = -EBUSY;
+		goto out;
+	}
+
+	if (add_chan(po, &sp->sa_addr.pptp))
+		error = -EBUSY;
+	else
+		sk->sk_state |= PPPOX_BOUND;
+
+out:
 	release_sock(sk);
 	return error;
 }
@@ -488,7 +501,6 @@ static int pptp_connect(struct socket *sock, struct sockaddr *uservaddr,
 	po->chan.mtu = dst_mtu(&rt->dst);
 	if (!po->chan.mtu)
 		po->chan.mtu = PPP_MRU;
-	ip_rt_put(rt);
 	po->chan.mtu -= PPTP_HEADER_OVERHEAD;
 
 	po->chan.hdrlen = 2 + sizeof(struct pptp_gre_header);
@@ -499,7 +511,7 @@ static int pptp_connect(struct socket *sock, struct sockaddr *uservaddr,
 	}
 
 	opt->dst_addr = sp->sa_addr.pptp;
-	sk->sk_state = PPPOX_CONNECTED;
+	sk->sk_state |= PPPOX_CONNECTED;
 
  end:
 	release_sock(sk);
@@ -512,7 +524,9 @@ static int pptp_getname(struct socket *sock, struct sockaddr *uaddr,
 	int len = sizeof(struct sockaddr_pppox);
 	struct sockaddr_pppox sp;
 
-	sp.sa_family	  = AF_PPPOX;
+	memset(&sp.sa_addr, 0, sizeof(sp.sa_addr));
+
+	sp.sa_family    = AF_PPPOX;
 	sp.sa_protocol  = PX_PROTO_PPTP;
 	sp.sa_addr.pptp = pppox_sk(sock->sk)->proto.pptp.src_addr;
 
@@ -565,14 +579,14 @@ static void pptp_sock_destruct(struct sock *sk)
 	skb_queue_purge(&sk->sk_receive_queue);
 }
 
-static int pptp_create(struct net *net, struct socket *sock)
+static int pptp_create(struct net *net, struct socket *sock, int kern)
 {
 	int error = -ENOMEM;
 	struct sock *sk;
 	struct pppox_sock *po;
 	struct pptp_opt *opt;
 
-	sk = sk_alloc(net, PF_PPPOX, GFP_KERNEL, &pptp_sk_proto);
+	sk = sk_alloc(net, PF_PPPOX, GFP_KERNEL, &pptp_sk_proto, kern);
 	if (!sk)
 		goto out;
 

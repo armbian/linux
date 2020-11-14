@@ -1,11 +1,12 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2011 QLogic Corporation
+ * Copyright (c)  2003-2014 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
 #include "qla_def.h"
 #include "qla_gbl.h"
+#include "qla_target.h"
 
 #include <linux/moduleparam.h>
 #include <linux/vmalloc.h>
@@ -49,6 +50,9 @@ qla24xx_allocate_vp_id(scsi_qla_host_t *vha)
 
 	spin_lock_irqsave(&ha->vport_slock, flags);
 	list_add_tail(&vha->list, &ha->vp_list);
+
+	qlt_update_vp_map(vha, SET_VP_IDX);
+
 	spin_unlock_irqrestore(&ha->vport_slock, flags);
 
 	mutex_unlock(&ha->vport_lock);
@@ -79,6 +83,7 @@ qla24xx_deallocate_vp_id(scsi_qla_host_t *vha)
 		spin_lock_irqsave(&ha->vport_slock, flags);
 	}
 	list_del(&vha->list);
+	qlt_update_vp_map(vha, RESET_VP_IDX);
 	spin_unlock_irqrestore(&ha->vport_slock, flags);
 
 	vp_id = vha->vp_idx;
@@ -134,7 +139,7 @@ qla2x00_mark_vp_devices_dead(scsi_qla_host_t *vha)
 	list_for_each_entry(fcport, &vha->vp_fcports, list) {
 		ql_dbg(ql_dbg_vport, vha, 0xa001,
 		    "Marking port dead, loop_id=0x%04x : %x.\n",
-		    fcport->loop_id, fcport->vp_idx);
+		    fcport->loop_id, fcport->vha->vp_idx);
 
 		qla2x00_mark_device_lost(vha, fcport, 0, 0);
 		qla2x00_set_fcport_state(fcport, FCS_UNCONFIGURED);
@@ -144,11 +149,17 @@ qla2x00_mark_vp_devices_dead(scsi_qla_host_t *vha)
 int
 qla24xx_disable_vp(scsi_qla_host_t *vha)
 {
+	unsigned long flags;
 	int ret;
 
 	ret = qla24xx_control_vp(vha, VCE_COMMAND_DISABLE_VPS_LOGO_ALL);
 	atomic_set(&vha->loop_state, LOOP_DOWN);
 	atomic_set(&vha->loop_down_timer, LOOP_DOWN_TIME);
+
+	/* Remove port id from vp target map */
+	spin_lock_irqsave(&vha->hw->vport_slock, flags);
+	qlt_update_vp_map(vha, RESET_AL_PA);
+	spin_unlock_irqrestore(&vha->hw->vport_slock, flags);
 
 	qla2x00_mark_vp_devices_dead(vha);
 	atomic_set(&vha->vp_state, VP_FAILED);
@@ -295,21 +306,25 @@ qla2x00_vp_abort_isp(scsi_qla_host_t *vha)
 static int
 qla2x00_do_dpc_vp(scsi_qla_host_t *vha)
 {
-	ql_dbg(ql_dbg_dpc, vha, 0x4012,
-	    "Entering %s.\n", __func__);
-	ql_dbg(ql_dbg_dpc, vha, 0x4013,
-	    "vp_flags: 0x%lx.\n", vha->vp_flags);
+	struct qla_hw_data *ha = vha->hw;
+	scsi_qla_host_t *base_vha = pci_get_drvdata(ha->pdev);
+
+	ql_dbg(ql_dbg_dpc + ql_dbg_verbose, vha, 0x4012,
+	    "Entering %s vp_flags: 0x%lx.\n", __func__, vha->vp_flags);
 
 	qla2x00_do_work(vha);
 
-	if (test_and_clear_bit(VP_IDX_ACQUIRED, &vha->vp_flags)) {
-		/* VP acquired. complete port configuration */
-		ql_dbg(ql_dbg_dpc, vha, 0x4014,
-		    "Configure VP scheduled.\n");
-		qla24xx_configure_vp(vha);
-		ql_dbg(ql_dbg_dpc, vha, 0x4015,
-		    "Configure VP end.\n");
-		return 0;
+	/* Check if Fw is ready to configure VP first */
+	if (test_bit(VP_CONFIG_OK, &base_vha->vp_flags)) {
+		if (test_and_clear_bit(VP_IDX_ACQUIRED, &vha->vp_flags)) {
+			/* VP acquired. complete port configuration */
+			ql_dbg(ql_dbg_dpc, vha, 0x4014,
+			    "Configure VP scheduled.\n");
+			qla24xx_configure_vp(vha);
+			ql_dbg(ql_dbg_dpc, vha, 0x4015,
+			    "Configure VP end.\n");
+			return 0;
+		}
 	}
 
 	if (test_bit(FCPORT_UPDATE_NEEDED, &vha->dpc_flags)) {
@@ -348,7 +363,7 @@ qla2x00_do_dpc_vp(scsi_qla_host_t *vha)
 		}
 	}
 
-	ql_dbg(ql_dbg_dpc, vha, 0x401c,
+	ql_dbg(ql_dbg_dpc + ql_dbg_verbose, vha, 0x401c,
 	    "Exiting %s.\n", __func__);
 	return 0;
 }
@@ -356,7 +371,6 @@ qla2x00_do_dpc_vp(scsi_qla_host_t *vha)
 void
 qla2x00_do_dpc_all_vps(scsi_qla_host_t *vha)
 {
-	int ret;
 	struct qla_hw_data *ha = vha->hw;
 	scsi_qla_host_t *vp;
 	unsigned long flags = 0;
@@ -377,7 +391,7 @@ qla2x00_do_dpc_all_vps(scsi_qla_host_t *vha)
 			atomic_inc(&vp->vref_count);
 			spin_unlock_irqrestore(&ha->vport_slock, flags);
 
-			ret = qla2x00_do_dpc_vp(vp);
+			qla2x00_do_dpc_vp(vp);
 
 			spin_lock_irqsave(&ha->vport_slock, flags);
 			atomic_dec(&vp->vref_count);
@@ -470,7 +484,6 @@ qla24xx_create_vhost(struct fc_vport *fc_vport)
 
 	vha->req = base_vha->req;
 	host->can_queue = base_vha->req->length + 128;
-	host->this_id = 255;
 	host->cmd_per_lun = 3;
 	if (IS_T10_PI_CAPABLE(ha) && ql2xenabledif)
 		host->max_cmd_len = 32;
@@ -515,6 +528,7 @@ qla25xx_free_req_que(struct scsi_qla_host *vha, struct req_que *req)
 		clear_bit(que_id, ha->req_qid_map);
 		mutex_unlock(&ha->vport_lock);
 	}
+	kfree(req->outstanding_cmds);
 	kfree(req);
 	req = NULL;
 }
@@ -586,7 +600,7 @@ qla25xx_delete_queues(struct scsi_qla_host *vha)
 	/* Delete request queues */
 	for (cnt = 1; cnt < ha->max_req_queues; cnt++) {
 		req = ha->req_q_map[cnt];
-		if (req) {
+		if (req && test_bit(cnt, ha->req_qid_map)) {
 			ret = qla25xx_delete_req_que(vha, req);
 			if (ret != QLA_SUCCESS) {
 				ql_log(ql_log_warn, vha, 0x00ea,
@@ -600,7 +614,7 @@ qla25xx_delete_queues(struct scsi_qla_host *vha)
 	/* Delete response queues */
 	for (cnt = 1; cnt < ha->max_rsp_queues; cnt++) {
 		rsp = ha->rsp_q_map[cnt];
-		if (rsp) {
+		if (rsp && test_bit(cnt, ha->rsp_qid_map)) {
 			ret = qla25xx_delete_rsp_que(vha, rsp);
 			if (ret != QLA_SUCCESS) {
 				ql_log(ql_log_warn, vha, 0x00eb,
@@ -621,7 +635,7 @@ qla25xx_create_req_que(struct qla_hw_data *ha, uint16_t options,
 	struct req_que *req = NULL;
 	struct scsi_qla_host *base_vha = pci_get_drvdata(ha->pdev);
 	uint16_t que_id = 0;
-	device_reg_t __iomem *reg;
+	device_reg_t *reg;
 	uint32_t cnt;
 
 	req = kzalloc(sizeof(struct req_que), GFP_KERNEL);
@@ -637,9 +651,13 @@ qla25xx_create_req_que(struct qla_hw_data *ha, uint16_t options,
 			&req->dma, GFP_KERNEL);
 	if (req->ring == NULL) {
 		ql_log(ql_log_fatal, base_vha, 0x00da,
-		    "Failed to allocte memory for request_ring.\n");
+		    "Failed to allocate memory for request_ring.\n");
 		goto que_failed;
 	}
+
+	ret = qla2x00_alloc_outstanding_cmds(ha, req);
+	if (ret != QLA_SUCCESS)
+		goto que_failed;
 
 	mutex_lock(&ha->vport_lock);
 	que_id = find_first_zero_bit(ha->req_qid_map, ha->max_req_queues);
@@ -677,7 +695,7 @@ qla25xx_create_req_que(struct qla_hw_data *ha, uint16_t options,
 	    "options=0x%x.\n", req->options);
 	ql_dbg(ql_dbg_init, base_vha, 0x00dd,
 	    "options=0x%x.\n", req->options);
-	for (cnt = 1; cnt < MAX_OUTSTANDING_COMMANDS; cnt++)
+	for (cnt = 1; cnt < req->num_outstanding_cmds; cnt++)
 		req->outstanding_cmds[cnt] = NULL;
 	req->current_outstanding_cmd = 1;
 
@@ -686,7 +704,10 @@ qla25xx_create_req_que(struct qla_hw_data *ha, uint16_t options,
 	req->cnt = req->length;
 	req->id = que_id;
 	reg = ISP_QUE_REG(ha, que_id);
+	req->req_q_in = &reg->isp25mq.req_q_in;
+	req->req_q_out = &reg->isp25mq.req_q_out;
 	req->max_q_depth = ha->req_q_map[0]->max_q_depth;
+	req->out_ptr = (void *)(req->ring + req->length);
 	mutex_unlock(&ha->vport_lock);
 	ql_dbg(ql_dbg_multiq, base_vha, 0xc004,
 	    "ring_ptr=%p ring_index=%d, "
@@ -739,7 +760,7 @@ qla25xx_create_rsp_que(struct qla_hw_data *ha, uint16_t options,
 	struct rsp_que *rsp = NULL;
 	struct scsi_qla_host *base_vha = pci_get_drvdata(ha->pdev);
 	uint16_t que_id = 0;
-	device_reg_t __iomem *reg;
+	device_reg_t *reg;
 
 	rsp = kzalloc(sizeof(struct rsp_que), GFP_KERNEL);
 	if (rsp == NULL) {
@@ -772,7 +793,7 @@ qla25xx_create_rsp_que(struct qla_hw_data *ha, uint16_t options,
 		rsp->msix = &ha->msix_entries[que_id + 1];
 	else
 		ql_log(ql_log_warn, base_vha, 0x00e3,
-		    "MSIX not enalbled.\n");
+		    "MSIX not enabled.\n");
 
 	ha->rsp_q_map[que_id] = rsp;
 	rsp->rid = rid;
@@ -796,6 +817,7 @@ qla25xx_create_rsp_que(struct qla_hw_data *ha, uint16_t options,
 	reg = ISP_QUE_REG(ha, que_id);
 	rsp->rsp_q_in = &reg->isp25mq.rsp_q_in;
 	rsp->rsp_q_out = &reg->isp25mq.rsp_q_out;
+	rsp->in_ptr = (void *)(rsp->ring + rsp->length);
 	mutex_unlock(&ha->vport_lock);
 	ql_dbg(ql_dbg_multiq, base_vha, 0xc00b,
 	    "options=%x id=%d rsp_q_in=%p rsp_q_out=%p",

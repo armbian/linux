@@ -33,6 +33,7 @@ struct pinctrl_gpio_range;
  * @p: result of pinctrl_get() for this device
  * @hog_default: default state for pins hogged by this device
  * @hog_sleep: sleep state for pins hogged by this device
+ * @mutex: mutex taken on each pin controller specific action
  * @device_root: debugfs root for this device
  */
 struct pinctrl_dev {
@@ -46,6 +47,7 @@ struct pinctrl_dev {
 	struct pinctrl *p;
 	struct pinctrl_state *hog_default;
 	struct pinctrl_state *hog_sleep;
+	struct mutex mutex;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *device_root;
 #endif
@@ -57,6 +59,8 @@ struct pinctrl_dev {
  * @dev: the device using this pin control handle
  * @states: a list of states for this device
  * @state: the current state
+ * @dt_maps: the mapping table chunks dynamically parsed from device tree for
+ *	this device, if any
  * @users: reference count
  */
 struct pinctrl {
@@ -64,12 +68,13 @@ struct pinctrl {
 	struct device *dev;
 	struct list_head states;
 	struct pinctrl_state *state;
+	struct list_head dt_maps;
 	struct kref users;
 };
 
 /**
  * struct pinctrl_state - a pinctrl state for a device
- * @node: list not for struct pinctrl's @states field
+ * @node: list node for struct pinctrl's @states field
  * @name: the name of this state
  * @settings: a list of settings for this state
  */
@@ -107,13 +112,16 @@ struct pinctrl_setting_configs {
  * struct pinctrl_setting - an individual mux or config setting
  * @node: list node for struct pinctrl_settings's @settings field
  * @type: the type of setting
- * @pctldev: pin control device handling to be programmed
+ * @pctldev: pin control device handling to be programmed. Not used for
+ *   PIN_MAP_TYPE_DUMMY_STATE.
+ * @dev_name: the name of the device using this state
  * @data: Data specific to the setting type
  */
 struct pinctrl_setting {
 	struct list_head node;
 	enum pinctrl_map_type type;
 	struct pinctrl_dev *pctldev;
+	const char *dev_name;
 	union {
 		struct pinctrl_setting_mux mux;
 		struct pinctrl_setting_configs configs;
@@ -160,7 +168,9 @@ struct pinctrl_maps {
 	struct pinctrl_map const *maps;
 	unsigned num_maps;
 };
+
 struct pinctrl_dev *get_pinctrl_dev_from_devname(const char *dev_name);
+struct pinctrl_dev *get_pinctrl_dev_from_of_node(struct device_node *np);
 int pin_get_from_name(struct pinctrl_dev *pctldev, const char *name);
 const char *pin_get_name(struct pinctrl_dev *pctldev, const unsigned pin);
 int pinctrl_get_group_selector(struct pinctrl_dev *pctldev,
@@ -172,8 +182,16 @@ static inline struct pin_desc *pin_desc_get(struct pinctrl_dev *pctldev,
 	return radix_tree_lookup(&pctldev->pin_desc_tree, pin);
 }
 
-extern struct mutex pinctrl_mutex;
+int pinctrl_register_map(struct pinctrl_map const *maps, unsigned num_maps,
+			 bool dup);
+void pinctrl_unregister_map(struct pinctrl_map const *map);
+
+extern int pinctrl_force_sleep(struct pinctrl_dev *pctldev);
+extern int pinctrl_force_default(struct pinctrl_dev *pctldev);
+
+extern struct mutex pinctrl_maps_mutex;
 extern struct list_head pinctrl_maps;
+
 #define for_each_maps(_maps_node_, _i_, _map_) \
 	list_for_each_entry(_maps_node_, &pinctrl_maps, node) \
 		for (_i_ = 0, _map_ = &_maps_node_->maps[_i_]; \

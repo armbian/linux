@@ -4,7 +4,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/percpu.h>
 #include <linux/mm.h>
 #include <linux/swap.h>
@@ -53,29 +52,67 @@ out:
 
 void arch_enter_lazy_mmu_mode(void)
 {
-	struct tlb_batch *tb = &__get_cpu_var(tlb_batch);
+	struct tlb_batch *tb = this_cpu_ptr(&tlb_batch);
 
 	tb->active = 1;
 }
 
 void arch_leave_lazy_mmu_mode(void)
 {
-	struct tlb_batch *tb = &__get_cpu_var(tlb_batch);
+	struct tlb_batch *tb = this_cpu_ptr(&tlb_batch);
 
 	if (tb->tlb_nr)
 		flush_tlb_pending();
 	tb->active = 0;
 }
 
-void tlb_batch_add(struct mm_struct *mm, unsigned long vaddr,
-		   pte_t *ptep, pte_t orig, int fullmm)
+static void tlb_batch_add_one(struct mm_struct *mm, unsigned long vaddr,
+			      bool exec, bool huge)
 {
 	struct tlb_batch *tb = &get_cpu_var(tlb_batch);
 	unsigned long nr;
 
 	vaddr &= PAGE_MASK;
-	if (pte_exec(orig))
+	if (exec)
 		vaddr |= 0x1UL;
+
+	nr = tb->tlb_nr;
+
+	if (unlikely(nr != 0 && mm != tb->mm)) {
+		flush_tlb_pending();
+		nr = 0;
+	}
+
+	if (!tb->active) {
+		flush_tsb_user_page(mm, vaddr, huge);
+		global_flush_tlb_page(mm, vaddr);
+		goto out;
+	}
+
+	if (nr == 0) {
+		tb->mm = mm;
+		tb->huge = huge;
+	}
+
+	if (tb->huge != huge) {
+		flush_tlb_pending();
+		tb->huge = huge;
+		nr = 0;
+	}
+
+	tb->vaddrs[nr] = vaddr;
+	tb->tlb_nr = ++nr;
+	if (nr >= TLB_BATCH_NR)
+		flush_tlb_pending();
+
+out:
+	put_cpu_var(tlb_batch);
+}
+
+void tlb_batch_add(struct mm_struct *mm, unsigned long vaddr,
+		   pte_t *ptep, pte_t orig, int fullmm)
+{
+	bool huge = is_hugetlb_pte(orig);
 
 	if (tlb_type != hypervisor &&
 	    pte_dirty(orig)) {
@@ -101,33 +138,117 @@ void tlb_batch_add(struct mm_struct *mm, unsigned long vaddr,
 	}
 
 no_cache_flush:
-
-	if (fullmm) {
-		put_cpu_var(tlb_batch);
-		return;
-	}
-
-	nr = tb->tlb_nr;
-
-	if (unlikely(nr != 0 && mm != tb->mm)) {
-		flush_tlb_pending();
-		nr = 0;
-	}
-
-	if (!tb->active) {
-		flush_tsb_user_page(mm, vaddr);
-		global_flush_tlb_page(mm, vaddr);
-		goto out;
-	}
-
-	if (nr == 0)
-		tb->mm = mm;
-
-	tb->vaddrs[nr] = vaddr;
-	tb->tlb_nr = ++nr;
-	if (nr >= TLB_BATCH_NR)
-		flush_tlb_pending();
-
-out:
-	put_cpu_var(tlb_batch);
+	if (!fullmm)
+		tlb_batch_add_one(mm, vaddr, pte_exec(orig), huge);
 }
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+static void tlb_batch_pmd_scan(struct mm_struct *mm, unsigned long vaddr,
+			       pmd_t pmd)
+{
+	unsigned long end;
+	pte_t *pte;
+
+	pte = pte_offset_map(&pmd, vaddr);
+	end = vaddr + HPAGE_SIZE;
+	while (vaddr < end) {
+		if (pte_val(*pte) & _PAGE_VALID) {
+			bool exec = pte_exec(*pte);
+
+			tlb_batch_add_one(mm, vaddr, exec, false);
+		}
+		pte++;
+		vaddr += PAGE_SIZE;
+	}
+	pte_unmap(pte);
+}
+
+void set_pmd_at(struct mm_struct *mm, unsigned long addr,
+		pmd_t *pmdp, pmd_t pmd)
+{
+	pmd_t orig = *pmdp;
+
+	*pmdp = pmd;
+
+	if (mm == &init_mm)
+		return;
+
+	if ((pmd_val(pmd) ^ pmd_val(orig)) & _PAGE_PMD_HUGE) {
+		if (pmd_val(pmd) & _PAGE_PMD_HUGE)
+			mm->context.thp_pte_count++;
+		else
+			mm->context.thp_pte_count--;
+
+		/* Do not try to allocate the TSB hash table if we
+		 * don't have one already.  We have various locks held
+		 * and thus we'll end up doing a GFP_KERNEL allocation
+		 * in an atomic context.
+		 *
+		 * Instead, we let the first TLB miss on a hugepage
+		 * take care of this.
+		 */
+	}
+
+	if (!pmd_none(orig)) {
+		addr &= HPAGE_MASK;
+		if (pmd_trans_huge(orig)) {
+			pte_t orig_pte = __pte(pmd_val(orig));
+			bool exec = pte_exec(orig_pte);
+
+			tlb_batch_add_one(mm, addr, exec, true);
+			tlb_batch_add_one(mm, addr + REAL_HPAGE_SIZE, exec,
+					true);
+		} else {
+			tlb_batch_pmd_scan(mm, addr, orig);
+		}
+	}
+}
+
+void pmdp_invalidate(struct vm_area_struct *vma, unsigned long address,
+		     pmd_t *pmdp)
+{
+	pmd_t entry = *pmdp;
+
+	pmd_val(entry) &= ~_PAGE_VALID;
+
+	set_pmd_at(vma->vm_mm, address, pmdp, entry);
+	flush_tlb_range(vma, address, address + HPAGE_PMD_SIZE);
+}
+
+void pgtable_trans_huge_deposit(struct mm_struct *mm, pmd_t *pmdp,
+				pgtable_t pgtable)
+{
+	struct list_head *lh = (struct list_head *) pgtable;
+
+	assert_spin_locked(&mm->page_table_lock);
+
+	/* FIFO */
+	if (!pmd_huge_pte(mm, pmdp))
+		INIT_LIST_HEAD(lh);
+	else
+		list_add(lh, (struct list_head *) pmd_huge_pte(mm, pmdp));
+	pmd_huge_pte(mm, pmdp) = pgtable;
+}
+
+pgtable_t pgtable_trans_huge_withdraw(struct mm_struct *mm, pmd_t *pmdp)
+{
+	struct list_head *lh;
+	pgtable_t pgtable;
+
+	assert_spin_locked(&mm->page_table_lock);
+
+	/* FIFO */
+	pgtable = pmd_huge_pte(mm, pmdp);
+	lh = (struct list_head *) pgtable;
+	if (list_empty(lh))
+		pmd_huge_pte(mm, pmdp) = NULL;
+	else {
+		pmd_huge_pte(mm, pmdp) = (pgtable_t) lh->next;
+		list_del(lh);
+	}
+	pte_val(pgtable[0]) = 0;
+	pte_val(pgtable[1]) = 0;
+
+	return pgtable;
+}
+#endif /* CONFIG_TRANSPARENT_HUGEPAGE */

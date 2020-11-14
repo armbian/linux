@@ -31,6 +31,11 @@
 #include <linux/hyperv.h>
 
 /*
+ * Timeout for services such as KVP and fcopy.
+ */
+#define HV_UTIL_TIMEOUT 30
+
+/*
  * The below CPUID leaves are present if VersionAndFeatures.HypervisorPresent
  * is set by CPUID(HVCPUID_VERSION_FEATURES).
  */
@@ -49,11 +54,19 @@ enum hv_cpuid_function {
 	HVCPUID_IMPLEMENTATION_LIMITS		= 0x40000005,
 };
 
+#define  HV_FEATURE_GUEST_CRASH_MSR_AVAILABLE   0x400
+
+#define HV_X64_MSR_CRASH_P0   0x40000100
+#define HV_X64_MSR_CRASH_P1   0x40000101
+#define HV_X64_MSR_CRASH_P2   0x40000102
+#define HV_X64_MSR_CRASH_P3   0x40000103
+#define HV_X64_MSR_CRASH_P4   0x40000104
+#define HV_X64_MSR_CRASH_CTL  0x40000105
+
+#define HV_CRASH_CTL_CRASH_NOTIFY (1ULL << 63)
+
 /* Define version of the synthetic interrupt controller. */
 #define HV_SYNIC_VERSION		(1)
-
-/* Define the expected SynIC version. */
-#define HV_SYNIC_VERSION_1		(0x1)
 
 /* Define synthetic interrupt controller message constants. */
 #define HV_MESSAGE_SIZE			(256)
@@ -94,21 +107,10 @@ enum hv_message_type {
 	HVMSG_X64_LEGACY_FP_ERROR		= 0x80010005
 };
 
-/* Define the number of synthetic interrupt sources. */
-#define HV_SYNIC_SINT_COUNT		(16)
 #define HV_SYNIC_STIMER_COUNT		(4)
 
 /* Define invalid partition identifier. */
 #define HV_PARTITION_ID_INVALID		((u64)0x0)
-
-/* Define connection identifier type. */
-union hv_connection_id {
-	u32 asu32;
-	struct {
-		u32 id:24;
-		u32 reserved:8;
-	} u;
-};
 
 /* Define port identifier type. */
 union hv_port_id {
@@ -139,7 +141,7 @@ struct hv_port_info {
 		struct {
 			u32 target_sint;
 			u32 target_vp;
-			u16 base_flag_bumber;
+			u16 base_flag_number;
 			u16 flag_count;
 			u32 rsvdz;
 		} event_port_info;
@@ -186,6 +188,23 @@ struct hv_message_header {
 		union hv_port_id port;
 	};
 };
+
+/*
+ * Timer configuration register.
+ */
+union hv_timer_config {
+	u64 as_uint64;
+	struct {
+		u64 enable:1;
+		u64 periodic:1;
+		u64 lazy:1;
+		u64 auto_enable:1;
+		u64 reserved_z0:12;
+		u64 sintx:4;
+		u64 reserved_z1:44;
+	};
+};
+
 
 /* Define timer message payload structure. */
 struct hv_timer_message_payload {
@@ -338,13 +357,6 @@ struct hv_input_post_message {
 	u64 payload[HV_MESSAGE_PAYLOAD_QWORD_COUNT];
 };
 
-/* Definition of the hv_signal_event hypercall input structure. */
-struct hv_input_signal_event {
-	union hv_connection_id connectionid;
-	u16 flag_number;
-	u16 rsvdz;
-};
-
 /*
  * Versioning definitions used for guests reporting themselves to the
  * hypervisor, and visa versa.
@@ -410,10 +422,49 @@ enum {
 
 #define HV_PRESENT_BIT			0x80000000
 
-#define HV_LINUX_GUEST_ID_LO		0x00000000
-#define HV_LINUX_GUEST_ID_HI		0xB16B00B5
-#define HV_LINUX_GUEST_ID		(((u64)HV_LINUX_GUEST_ID_HI << 32) | \
-					   HV_LINUX_GUEST_ID_LO)
+/*
+ * The guest OS needs to register the guest ID with the hypervisor.
+ * The guest ID is a 64 bit entity and the structure of this ID is
+ * specified in the Hyper-V specification:
+ *
+ * http://msdn.microsoft.com/en-us/library/windows/hardware/ff542653%28v=vs.85%29.aspx
+ *
+ * While the current guideline does not specify how Linux guest ID(s)
+ * need to be generated, our plan is to publish the guidelines for
+ * Linux and other guest operating systems that currently are hosted
+ * on Hyper-V. The implementation here conforms to this yet
+ * unpublished guidelines.
+ *
+ *
+ * Bit(s)
+ * 63 - Indicates if the OS is Open Source or not; 1 is Open Source
+ * 62:56 - Os Type; Linux is 0x100
+ * 55:48 - Distro specific identification
+ * 47:16 - Linux kernel version number
+ * 15:0  - Distro specific identification
+ *
+ *
+ */
+
+#define HV_LINUX_VENDOR_ID		0x8100
+
+/*
+ * Generate the guest ID based on the guideline described above.
+ */
+
+static inline  __u64 generate_guest_id(__u8 d_info1, __u32 kernel_version,
+					__u16 d_info2)
+{
+	__u64 guest_id = 0;
+
+	guest_id = (((__u64)HV_LINUX_VENDOR_ID) << 48);
+	guest_id |= (((__u64)(d_info1)) << 48);
+	guest_id |= (((__u64)(kernel_version)) << 16);
+	guest_id |= ((__u64)(d_info2));
+
+	return guest_id;
+}
+
 
 #define HV_CPU_POWER_MANAGEMENT		(1 << 0)
 #define HV_RECOMMENDATIONS_MAX		4
@@ -459,11 +510,6 @@ static const uuid_le VMBUS_SERVICE_ID = {
 
 
 
-struct hv_input_signal_event_buffer {
-	u64 align8;
-	struct hv_input_signal_event event;
-};
-
 struct hv_context {
 	/* We only support running on top of Hyper-V
 	* So at this point this really can only contain the Hyper-V ID
@@ -471,40 +517,95 @@ struct hv_context {
 	u64 guestid;
 
 	void *hypercall_page;
+	void *tsc_page;
 
 	bool synic_initialized;
 
-	/*
-	 * This is used as an input param to HvCallSignalEvent hypercall. The
-	 * input param is immutable in our usage and must be dynamic mem (vs
-	 * stack or global). */
-	struct hv_input_signal_event_buffer *signal_event_buffer;
-	/* 8-bytes aligned of the buffer above */
-	struct hv_input_signal_event *signal_event_param;
-
 	void *synic_message_page[NR_CPUS];
 	void *synic_event_page[NR_CPUS];
+	/*
+	 * Hypervisor's notion of virtual processor ID is different from
+	 * Linux' notion of CPU ID. This information can only be retrieved
+	 * in the context of the calling CPU. Setup a map for easy access
+	 * to this information:
+	 *
+	 * vp_index[a] is the Hyper-V's processor ID corresponding to
+	 * Linux cpuid 'a'.
+	 */
+	u32 vp_index[NR_CPUS];
+	/*
+	 * Starting with win8, we can take channel interrupts on any CPU;
+	 * we will manage the tasklet that handles events on a per CPU
+	 * basis.
+	 */
+	struct tasklet_struct *event_dpc[NR_CPUS];
+	/*
+	 * To optimize the mapping of relid to channel, maintain
+	 * per-cpu list of the channels based on their CPU affinity.
+	 */
+	struct list_head percpu_list[NR_CPUS];
+	/*
+	 * buffer to post messages to the host.
+	 */
+	void *post_msg_page[NR_CPUS];
+	/*
+	 * Support PV clockevent device.
+	 */
+	struct clock_event_device *clk_evt[NR_CPUS];
+	/*
+	 * To manage allocations in a NUMA node.
+	 * Array indexed by numa node ID.
+	 */
+	struct cpumask *hv_numa_map;
 };
 
 extern struct hv_context hv_context;
 
+struct ms_hyperv_tsc_page {
+	volatile u32 tsc_sequence;
+	u32 reserved1;
+	volatile u64 tsc_scale;
+	volatile s64 tsc_offset;
+	u64 reserved2[509];
+};
+
+struct hv_ring_buffer_debug_info {
+	u32 current_interrupt_mask;
+	u32 current_read_index;
+	u32 current_write_index;
+	u32 bytes_avail_toread;
+	u32 bytes_avail_towrite;
+};
 
 /* Hv Interface */
 
 extern int hv_init(void);
 
-extern void hv_cleanup(void);
+extern void hv_cleanup(bool crash);
 
-extern u16 hv_post_message(union hv_connection_id connection_id,
+extern int hv_post_message(union hv_connection_id connection_id,
 			 enum hv_message_type message_type,
 			 void *payload, size_t payload_size);
 
-extern u16 hv_signal_event(void);
+extern u16 hv_signal_event(void *con_id);
+
+extern int hv_synic_alloc(void);
+
+extern void hv_synic_free(void);
 
 extern void hv_synic_init(void *irqarg);
 
 extern void hv_synic_cleanup(void *arg);
 
+extern void hv_synic_clockevents_cleanup(void);
+
+/*
+ * Host version information.
+ */
+extern unsigned int host_info_eax;
+extern unsigned int host_info_ebx;
+extern unsigned int host_info_ecx;
+extern unsigned int host_info_edx;
 
 /* Interface */
 
@@ -515,8 +616,8 @@ int hv_ringbuffer_init(struct hv_ring_buffer_info *ring_info, void *buffer,
 void hv_ringbuffer_cleanup(struct hv_ring_buffer_info *ring_info);
 
 int hv_ringbuffer_write(struct hv_ring_buffer_info *ring_info,
-		    struct scatterlist *sglist,
-		    u32 sgcount);
+		    struct kvec *kv_list,
+		    u32 kv_count, bool *signal);
 
 int hv_ringbuffer_peek(struct hv_ring_buffer_info *ring_info, void *buffer,
 		   u32 buflen);
@@ -524,12 +625,15 @@ int hv_ringbuffer_peek(struct hv_ring_buffer_info *ring_info, void *buffer,
 int hv_ringbuffer_read(struct hv_ring_buffer_info *ring_info,
 		   void *buffer,
 		   u32 buflen,
-		   u32 offset);
+		   u32 offset, bool *signal);
 
-u32 hv_get_ringbuffer_interrupt_mask(struct hv_ring_buffer_info *ring_info);
 
 void hv_ringbuffer_get_debuginfo(struct hv_ring_buffer_info *ring_info,
 			    struct hv_ring_buffer_debug_info *debug_info);
+
+void hv_begin_read(struct hv_ring_buffer_info *rbi);
+
+u32 hv_end_read(struct hv_ring_buffer_info *rbi);
 
 /*
  * Maximum channels is determined by the size of the interrupt page
@@ -557,6 +661,7 @@ struct vmbus_connection {
 
 	atomic_t next_gpadl_handle;
 
+	struct completion  unload_event;
 	/*
 	 * Represents channel interrupts. Each bit position represents a
 	 * channel.  When a channel sends an interrupt via VMBUS, it finds its
@@ -572,7 +677,7 @@ struct vmbus_connection {
 	 * 2 pages - 1st page for parent->child notification and 2nd
 	 * is child->parent notification
 	 */
-	void *monitor_pages;
+	struct hv_monitor_page *monitor_pages[2];
 	struct list_head chn_msg_list;
 	spinlock_t channelmsg_lock;
 
@@ -595,11 +700,28 @@ struct vmbus_msginfo {
 
 extern struct vmbus_connection vmbus_connection;
 
+enum vmbus_message_handler_type {
+	/* The related handler can sleep. */
+	VMHT_BLOCKING = 0,
+
+	/* The related handler must NOT sleep. */
+	VMHT_NON_BLOCKING = 1,
+};
+
+struct vmbus_channel_message_table_entry {
+	enum vmbus_channel_message_type message_type;
+	enum vmbus_message_handler_type handler_type;
+	void (*message_handler)(struct vmbus_channel_message_header *msg);
+};
+
+extern struct vmbus_channel_message_table_entry
+	channel_message_table[CHANNELMSG_COUNT];
+
 /* General vmbus interface */
 
-struct hv_device *vmbus_device_create(uuid_le *type,
-					 uuid_le *instance,
-					 struct vmbus_channel *channel);
+struct hv_device *vmbus_device_create(const uuid_le *type,
+				      const uuid_le *instance,
+				      struct vmbus_channel *channel);
 
 int vmbus_device_register(struct hv_device *child_device_obj);
 void vmbus_device_unregister(struct hv_device *device_obj);
@@ -615,12 +737,43 @@ void vmbus_free_channels(void);
 /* Connection interface */
 
 int vmbus_connect(void);
+void vmbus_disconnect(void);
 
 int vmbus_post_msg(void *buffer, size_t buflen);
 
-int vmbus_set_event(u32 child_relid);
+int vmbus_set_event(struct vmbus_channel *channel);
 
 void vmbus_on_event(unsigned long data);
 
+int hv_kvp_init(struct hv_util_service *);
+void hv_kvp_deinit(void);
+void hv_kvp_onchannelcallback(void *);
+
+int hv_vss_init(struct hv_util_service *);
+void hv_vss_deinit(void);
+void hv_vss_onchannelcallback(void *);
+
+int hv_fcopy_init(struct hv_util_service *);
+void hv_fcopy_deinit(void);
+void hv_fcopy_onchannelcallback(void *);
+void vmbus_initiate_unload(void);
+
+static inline void hv_poll_channel(struct vmbus_channel *channel,
+				   void (*cb)(void *))
+{
+	if (!channel)
+		return;
+
+	smp_call_function_single(channel->target_cpu, cb, channel, true);
+}
+
+enum hvutil_device_state {
+	HVUTIL_DEVICE_INIT = 0,  /* driver is loaded, waiting for userspace */
+	HVUTIL_READY,            /* userspace is registered */
+	HVUTIL_HOSTMSG_RECEIVED, /* message from the host was received */
+	HVUTIL_USERSPACE_REQ,    /* request to userspace was sent */
+	HVUTIL_USERSPACE_RECV,   /* reply from userspace was received */
+	HVUTIL_DEVICE_DYING,     /* driver unload is in progress */
+};
 
 #endif /* _HYPERV_VMBUS_H */

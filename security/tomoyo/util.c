@@ -948,20 +948,18 @@ bool tomoyo_path_matches_pattern(const struct tomoyo_path_info *filename,
  */
 const char *tomoyo_get_exe(void)
 {
+	struct file *exe_file;
+	const char *cp;
 	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
-	const char *cp = NULL;
 
 	if (!mm)
 		return NULL;
-	down_read(&mm->mmap_sem);
-	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		if ((vma->vm_flags & VM_EXECUTABLE) && vma->vm_file) {
-			cp = tomoyo_realpath_from_path(&vma->vm_file->f_path);
-			break;
-		}
-	}
-	up_read(&mm->mmap_sem);
+	exe_file = get_mm_exe_file(mm);
+	if (!exe_file)
+		return NULL;
+
+	cp = tomoyo_realpath_from_path(&exe_file->f_path);
+	fput(exe_file);
 	return cp;
 }
 

@@ -527,7 +527,8 @@ static int nilfs_recover_dsync_blocks(struct the_nilfs *nilfs,
 		if (unlikely(err)) {
 			loff_t isize = inode->i_size;
 			if (pos + blocksize > isize)
-				vmtruncate(inode, isize);
+				nilfs_write_failed(inode->i_mapping,
+							pos + blocksize);
 			goto failed_inode;
 		}
 
@@ -581,7 +582,7 @@ static int nilfs_do_roll_forward(struct the_nilfs *nilfs,
 				 struct nilfs_recovery_info *ri)
 {
 	struct buffer_head *bh_sum = NULL;
-	struct nilfs_segment_summary *sum;
+	struct nilfs_segment_summary *sum = NULL;
 	sector_t pseg_start;
 	sector_t seg_start, seg_end;  /* Starting/ending DBN of full segment */
 	unsigned long nsalvaged_blocks = 0;
@@ -813,7 +814,7 @@ int nilfs_search_super_root(struct the_nilfs *nilfs,
 			    struct nilfs_recovery_info *ri)
 {
 	struct buffer_head *bh_sum = NULL;
-	struct nilfs_segment_summary *sum;
+	struct nilfs_segment_summary *sum = NULL;
 	sector_t pseg_start, pseg_end, sr_pseg_start = 0;
 	sector_t seg_start, seg_end; /* range of full segment (block number) */
 	sector_t b, end;

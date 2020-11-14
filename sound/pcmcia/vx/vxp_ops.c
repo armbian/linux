@@ -369,13 +369,13 @@ static void vxp_dma_write(struct vx_core *chip, struct snd_pcm_runtime *runtime,
 	unsigned short *addr = (unsigned short *)(runtime->dma_area + offset);
 
 	vx_setup_pseudo_dma(chip, 1);
-	if (offset + count > pipe->buffer_bytes) {
+	if (offset + count >= pipe->buffer_bytes) {
 		int length = pipe->buffer_bytes - offset;
 		count -= length;
 		length >>= 1; /* in 16bit words */
 		/* Transfer using pseudo-dma. */
-		while (length-- > 0) {
-			outw(cpu_to_le16(*addr), port);
+		for (; length > 0; length--) {
+			outw(*addr, port);
 			addr++;
 		}
 		addr = (unsigned short *)runtime->dma_area;
@@ -384,8 +384,8 @@ static void vxp_dma_write(struct vx_core *chip, struct snd_pcm_runtime *runtime,
 	pipe->hw_ptr += count;
 	count >>= 1; /* in 16bit words */
 	/* Transfer using pseudo-dma. */
-	while (count-- > 0) {
-		outw(cpu_to_le16(*addr), port);
+	for (; count > 0; count--) {
+		outw(*addr, port);
 		addr++;
 	}
 	vx_release_pseudo_dma(chip);
@@ -411,26 +411,26 @@ static void vxp_dma_read(struct vx_core *chip, struct snd_pcm_runtime *runtime,
 	if (snd_BUG_ON(count % 2))
 		return;
 	vx_setup_pseudo_dma(chip, 0);
-	if (offset + count > pipe->buffer_bytes) {
+	if (offset + count >= pipe->buffer_bytes) {
 		int length = pipe->buffer_bytes - offset;
 		count -= length;
 		length >>= 1; /* in 16bit words */
 		/* Transfer using pseudo-dma. */
-		while (length-- > 0)
-			*addr++ = le16_to_cpu(inw(port));
+		for (; length > 0; length--)
+			*addr++ = inw(port);
 		addr = (unsigned short *)runtime->dma_area;
 		pipe->hw_ptr = 0;
 	}
 	pipe->hw_ptr += count;
 	count >>= 1; /* in 16bit words */
 	/* Transfer using pseudo-dma. */
-	while (count-- > 1)
-		*addr++ = le16_to_cpu(inw(port));
+	for (; count > 1; count--)
+		*addr++ = inw(port);
 	/* Disable DMA */
 	pchip->regDIALOG &= ~VXP_DLG_DMAREAD_SEL_MASK;
 	vx_outb(chip, DIALOG, pchip->regDIALOG);
 	/* Read the last word (16 bits) */
-	*addr = le16_to_cpu(inw(port));
+	*addr = inw(port);
 	/* Disable 16-bit accesses */
 	pchip->regDIALOG &= ~VXP_DLG_DMA16_SEL_MASK;
 	vx_outb(chip, DIALOG, pchip->regDIALOG);
@@ -468,12 +468,11 @@ static void vxp_write_codec_reg(struct vx_core *chip, int codec, unsigned int da
 void vx_set_mic_boost(struct vx_core *chip, int boost)
 {
 	struct snd_vxpocket *pchip = (struct snd_vxpocket *)chip;
-	unsigned long flags;
 
 	if (chip->chip_status & VX_STAT_IS_STALE)
 		return;
 
-	spin_lock_irqsave(&chip->lock, flags);
+	mutex_lock(&chip->lock);
 	if (pchip->regCDSP & P24_CDSP_MICS_SEL_MASK) {
 		if (boost) {
 			/* boost: 38 dB */
@@ -486,7 +485,7 @@ void vx_set_mic_boost(struct vx_core *chip, int boost)
                 }
 		vx_outb(chip, CDSP, pchip->regCDSP);
 	}
-	spin_unlock_irqrestore(&chip->lock, flags);
+	mutex_unlock(&chip->lock);
 }
 
 /*
@@ -511,17 +510,16 @@ static int vx_compute_mic_level(int level)
 void vx_set_mic_level(struct vx_core *chip, int level)
 {
 	struct snd_vxpocket *pchip = (struct snd_vxpocket *)chip;
-	unsigned long flags;
 
 	if (chip->chip_status & VX_STAT_IS_STALE)
 		return;
 
-	spin_lock_irqsave(&chip->lock, flags);
+	mutex_lock(&chip->lock);
 	if (pchip->regCDSP & VXP_CDSP_MIC_SEL_MASK) {
 		level = vx_compute_mic_level(level);
 		vx_outb(chip, MICRO, level);
 	}
-	spin_unlock_irqrestore(&chip->lock, flags);
+	mutex_unlock(&chip->lock);
 }
 
 

@@ -10,9 +10,7 @@
  * option) any later version.
  */
 
-#include <linux/version.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -21,8 +19,8 @@
 #include <linux/ctype.h>
 #include <linux/gpio.h>
 #include <linux/slab.h>
+#include <linux/vme.h>
 
-#include "../vme.h"
 #include "vme_pio2.h"
 
 static const char driver_name[] = "pio2_gpio";
@@ -59,14 +57,14 @@ static int pio2_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	if (reg & PIO2_CHANNEL_BIT[offset]) {
 		if (card->bank[PIO2_CHANNEL_BANK[offset]].config != BOTH)
 			return 0;
-		else
-			return 1;
-	} else {
-		if (card->bank[PIO2_CHANNEL_BANK[offset]].config != BOTH)
-			return 1;
-		else
-			return 0;
+
+		return 1;
 	}
+
+	if (card->bank[PIO2_CHANNEL_BANK[offset]].config != BOTH)
+		return 1;
+
+	return 0;
 }
 
 static void pio2_gpio_set(struct gpio_chip *chip, unsigned int offset,
@@ -79,7 +77,7 @@ static void pio2_gpio_set(struct gpio_chip *chip, unsigned int offset,
 	if ((card->bank[PIO2_CHANNEL_BANK[offset]].config == INPUT) |
 		(card->bank[PIO2_CHANNEL_BANK[offset]].config == NOFIT)) {
 
-		dev_err(&card->vdev->dev, "Channel not availabe as output\n");
+		dev_err(&card->vdev->dev, "Channel not available as output\n");
 		return;
 	}
 
@@ -109,7 +107,7 @@ static int pio2_gpio_dir_in(struct gpio_chip *chip, unsigned offset)
 	if ((card->bank[PIO2_CHANNEL_BANK[offset]].config == OUTPUT) |
 		(card->bank[PIO2_CHANNEL_BANK[offset]].config == NOFIT)) {
 		dev_err(&card->vdev->dev,
-			"Channel directionality not configurable at runtine\n");
+			"Channel directionality not configurable at runtime\n");
 
 		data = -EINVAL;
 	} else {
@@ -128,7 +126,7 @@ static int pio2_gpio_dir_out(struct gpio_chip *chip, unsigned offset, int value)
 	if ((card->bank[PIO2_CHANNEL_BANK[offset]].config == INPUT) |
 		(card->bank[PIO2_CHANNEL_BANK[offset]].config == NOFIT)) {
 		dev_err(&card->vdev->dev,
-			"Channel directionality not configurable at runtine\n");
+			"Channel directionality not configurable at runtime\n");
 
 		data = -EINVAL;
 	} else {
@@ -187,18 +185,16 @@ int pio2_gpio_reset(struct pio2_card *card)
 	return 0;
 }
 
-int __devinit pio2_gpio_init(struct pio2_card *card)
+int pio2_gpio_init(struct pio2_card *card)
 {
 	int retval = 0;
 	char *label;
 
-	label = kmalloc(PIO2_NUM_CHANNELS, GFP_KERNEL);
-	if (label == NULL) {
-		dev_err(&card->vdev->dev, "Unable to allocate GPIO label\n");
+	label = kasprintf(GFP_KERNEL,
+			  "%s@%s", driver_name, dev_name(&card->vdev->dev));
+	if (label == NULL)
 		return -ENOMEM;
-	}
 
-	sprintf(label, "%s@%s", driver_name, dev_name(&card->vdev->dev));
 	card->gc.label = label;
 
 	card->gc.ngpio = PIO2_NUM_CHANNELS;
@@ -224,9 +220,7 @@ void pio2_gpio_exit(struct pio2_card *card)
 {
 	const char *label = card->gc.label;
 
-	if (gpiochip_remove(&(card->gc)))
-		dev_err(&card->vdev->dev, "Failed to remove GPIO");
-
+	gpiochip_remove(&(card->gc));
 	kfree(label);
 }
 

@@ -16,7 +16,6 @@
  * published by the Free Software Foundation.
  */
 
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/firmware.h>
 #include <linux/etherdevice.h>
@@ -221,6 +220,7 @@ int p54_download_eeprom(struct p54_common *priv, void *buf,
 	struct sk_buff *skb;
 	size_t eeprom_hdr_size;
 	int ret = 0;
+	long timeout;
 
 	if (priv->fw_var >= 0x509)
 		eeprom_hdr_size = sizeof(*eeprom_hdr);
@@ -250,9 +250,11 @@ int p54_download_eeprom(struct p54_common *priv, void *buf,
 
 	p54_tx(priv, skb);
 
-	if (!wait_for_completion_interruptible_timeout(
-	     &priv->eeprom_comp, HZ)) {
-		wiphy_err(priv->hw->wiphy, "device does not respond!\n");
+	timeout = wait_for_completion_interruptible_timeout(
+			&priv->eeprom_comp, HZ);
+	if (timeout <= 0) {
+		wiphy_err(priv->hw->wiphy,
+			"device does not respond or signal received!\n");
 		ret = -EBUSY;
 	}
 	priv->eeprom = NULL;
@@ -349,8 +351,7 @@ int p54_setup_mac(struct p54_common *priv)
 		 * "TRANSPARENT and PROMISCUOUS are mutually exclusive"
 		 * STSW45X0C LMAC API - page 12
 		 */
-		if (((priv->filter_flags & FIF_PROMISC_IN_BSS) ||
-		     (priv->filter_flags & FIF_OTHER_BSS)) &&
+		if (priv->filter_flags & FIF_OTHER_BSS &&
 		    (mode != P54_FILTER_TYPE_PROMISCUOUS))
 			mode |= P54_FILTER_TYPE_TRANSPARENT;
 	} else {
@@ -402,7 +403,7 @@ int p54_scan(struct p54_common *priv, u16 mode, u16 dwell)
 	struct p54_rssi_db_entry *rssi_data;
 	unsigned int i;
 	void *entry;
-	__le16 freq = cpu_to_le16(priv->hw->conf.channel->center_freq);
+	__le16 freq = cpu_to_le16(priv->hw->conf.chandef.chan->center_freq);
 
 	skb = p54_alloc_skb(priv, P54_HDR_FLAG_CONTROL_OPSET, sizeof(*head) +
 			    2 + sizeof(*iq_autocal) + sizeof(*body) +
@@ -478,7 +479,7 @@ int p54_scan(struct p54_common *priv, u16 mode, u16 dwell)
 
 		if (priv->rxhw == PDR_SYNTH_FRONTEND_LONGBOW) {
 			memcpy(&body->longbow.curve_data,
-				(void *) entry + sizeof(__le16),
+				entry + sizeof(__le16),
 				priv->curve_data->entry_size);
 		} else {
 			struct p54_scan_body *chan = &body->normal;
@@ -487,7 +488,7 @@ int p54_scan(struct p54_common *priv, u16 mode, u16 dwell)
 
 			entry += sizeof(__le16);
 			chan->pa_points_per_curve = 8;
-			memset(chan->curve_data, 0, sizeof(*chan->curve_data));
+			memset(chan->curve_data, 0, sizeof(chan->curve_data));
 			memcpy(chan->curve_data, entry,
 			       sizeof(struct p54_pa_curve_data_sample) *
 			       min((u8)8, curve_data->points_per_channel));
@@ -532,7 +533,7 @@ int p54_scan(struct p54_common *priv, u16 mode, u16 dwell)
 err:
 	wiphy_err(priv->hw->wiphy, "frequency change to channel %d failed.\n",
 		  ieee80211_frequency_to_channel(
-			  priv->hw->conf.channel->center_freq));
+			  priv->hw->conf.chandef.chan->center_freq));
 
 	dev_kfree_skb_any(skb);
 	return -EINVAL;
@@ -669,7 +670,7 @@ int p54_upload_key(struct p54_common *priv, u8 algo, int slot, u8 idx, u8 len,
 	if (addr)
 		memcpy(rxkey->mac, addr, ETH_ALEN);
 	else
-		memset(rxkey->mac, ~0, ETH_ALEN);
+		eth_broadcast_addr(rxkey->mac);
 
 	switch (algo) {
 	case P54_CRYPTO_WEP:

@@ -44,6 +44,8 @@ static int tobermory_set_bias_level(struct snd_soc_card *card,
 						     SND_SOC_CLOCK_IN);
 			if (ret < 0) {
 				pr_err("Failed to set SYSCLK: %d\n", ret);
+				snd_soc_dai_set_pll(codec_dai, WM8962_FLL,
+						    0, 0, 0);
 				return ret;
 			}
 		}
@@ -110,7 +112,7 @@ static struct snd_soc_dai_link tobermory_dai[] = {
 		.stream_name = "CPU",
 		.cpu_dai_name = "samsung-i2s.0",
 		.codec_dai_name = "wm8962",
-		.platform_name = "samsung-audio",
+		.platform_name = "samsung-i2s.0",
 		.codec_name = "wm8962.1-001a",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBM_CFM,
@@ -177,15 +179,10 @@ static int tobermory_late_probe(struct snd_soc_card *card)
 	if (ret < 0)
 		return ret;
 
-	ret = snd_soc_jack_new(codec, "Headset",
-			       SND_JACK_HEADSET | SND_JACK_BTN_0,
-			       &tobermory_headset);
-	if (ret)
-		return ret;
-
-	ret = snd_soc_jack_add_pins(&tobermory_headset,
-				    ARRAY_SIZE(tobermory_headset_pins),
-				    tobermory_headset_pins);
+	ret = snd_soc_card_jack_new(card, "Headset", SND_JACK_HEADSET |
+				    SND_JACK_BTN_0, &tobermory_headset,
+				    tobermory_headset_pins,
+				    ARRAY_SIZE(tobermory_headset_pins));
 	if (ret)
 		return ret;
 
@@ -214,40 +211,27 @@ static struct snd_soc_card tobermory = {
 	.late_probe = tobermory_late_probe,
 };
 
-static __devinit int tobermory_probe(struct platform_device *pdev)
+static int tobermory_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &tobermory;
 	int ret;
 
 	card->dev = &pdev->dev;
 
-	ret = snd_soc_register_card(card);
-	if (ret) {
+	ret = devm_snd_soc_register_card(&pdev->dev, card);
+	if (ret)
 		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n",
 			ret);
-		return ret;
-	}
 
-	return 0;
-}
-
-static int __devexit tobermory_remove(struct platform_device *pdev)
-{
-	struct snd_soc_card *card = platform_get_drvdata(pdev);
-
-	snd_soc_unregister_card(card);
-
-	return 0;
+	return ret;
 }
 
 static struct platform_driver tobermory_driver = {
 	.driver = {
 		.name = "tobermory",
-		.owner = THIS_MODULE,
 		.pm = &snd_soc_pm_ops,
 	},
 	.probe = tobermory_probe,
-	.remove = __devexit_p(tobermory_remove),
 };
 
 module_platform_driver(tobermory_driver);

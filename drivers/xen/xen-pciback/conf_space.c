@@ -124,7 +124,7 @@ static inline u32 merge_value(u32 val, u32 new_val, u32 new_val_mask,
 	return val;
 }
 
-static int pcibios_err_to_errno(int err)
+static int xen_pcibios_err_to_errno(int err)
 {
 	switch (err) {
 	case PCIBIOS_SUCCESSFUL:
@@ -183,8 +183,7 @@ int xen_pcibk_config_read(struct pci_dev *dev, int offset, int size,
 		field_start = OFFSET(cfg_entry);
 		field_end = OFFSET(cfg_entry) + field->size;
 
-		if ((req_start >= field_start && req_start < field_end)
-		    || (req_end > field_start && req_end <= field_end)) {
+		 if (req_end > field_start && field_end > req_start) {
 			err = conf_space_read(dev, cfg_entry, field_start,
 					      &tmp_val);
 			if (err)
@@ -202,7 +201,7 @@ out:
 		       pci_name(dev), size, offset, value);
 
 	*ret_val = value;
-	return pcibios_err_to_errno(err);
+	return xen_pcibios_err_to_errno(err);
 }
 
 int xen_pcibk_config_write(struct pci_dev *dev, int offset, int size, u32 value)
@@ -230,8 +229,7 @@ int xen_pcibk_config_write(struct pci_dev *dev, int offset, int size, u32 value)
 		field_start = OFFSET(cfg_entry);
 		field_end = OFFSET(cfg_entry) + field->size;
 
-		if ((req_start >= field_start && req_start < field_end)
-		    || (req_end > field_start && req_end <= field_end)) {
+		 if (req_end > field_start && field_end > req_start) {
 			tmp_val = 0;
 
 			err = xen_pcibk_config_read(dev, field_start,
@@ -290,7 +288,7 @@ int xen_pcibk_config_write(struct pci_dev *dev, int offset, int size, u32 value)
 		}
 	}
 
-	return pcibios_err_to_errno(err);
+	return xen_pcibios_err_to_errno(err);
 }
 
 void xen_pcibk_config_free_dyn_fields(struct pci_dev *dev)

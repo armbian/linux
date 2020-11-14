@@ -10,7 +10,6 @@
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/serial.h>
-#include <linux/serial_core.h>
 #include <linux/serial_8250.h>
 #include <linux/delay.h>
 #include <linux/dio.h>
@@ -21,7 +20,7 @@
 #include "8250.h"
 
 #if !defined(CONFIG_HPDCA) && !defined(CONFIG_HPAPCI)
-#warning CONFIG_8250 defined but neither CONFIG_HPDCA nor CONFIG_HPAPCI defined, are you sure?
+#warning CONFIG_SERIAL_8250 defined but neither CONFIG_HPDCA nor CONFIG_HPAPCI defined, are you sure?
 #endif
 
 #ifdef CONFIG_HPAPCI
@@ -36,9 +35,9 @@ static struct hp300_port *hp300_ports;
 
 #ifdef CONFIG_HPDCA
 
-static int __devinit hpdca_init_one(struct dio_dev *d,
+static int hpdca_init_one(struct dio_dev *d,
 					const struct dio_device_id *ent);
-static void __devexit hpdca_remove_one(struct dio_dev *d);
+static void hpdca_remove_one(struct dio_dev *d);
 
 static struct dio_device_id hpdca_dio_tbl[] = {
 	{ DIO_ID_DCA0 },
@@ -52,7 +51,7 @@ static struct dio_driver hpdca_driver = {
 	.name      = "hpdca",
 	.id_table  = hpdca_dio_tbl,
 	.probe     = hpdca_init_one,
-	.remove    = __devexit_p(hpdca_remove_one),
+	.remove    = hpdca_remove_one,
 };
 
 #endif
@@ -88,10 +87,6 @@ extern int hp300_uart_scode;
 /*
  * Parse the bootinfo to find descriptions for headless console and
  * debug serial ports and register them with the 8250 driver.
- * This function should be called before serial_console_init() is called
- * to make sure the serial console will be available for use. IA-64 kernel
- * calls this function from setup_arch() after the EFI and ACPI tables have
- * been parsed.
  */
 int __init hp300_setup_serial_console(void)
 {
@@ -159,10 +154,10 @@ int __init hp300_setup_serial_console(void)
 #endif /* CONFIG_SERIAL_8250_CONSOLE */
 
 #ifdef CONFIG_HPDCA
-static int __devinit hpdca_init_one(struct dio_dev *d,
+static int hpdca_init_one(struct dio_dev *d,
 				const struct dio_device_id *ent)
 {
-	struct uart_port port;
+	struct uart_8250_port uart;
 	int line;
 
 #ifdef CONFIG_SERIAL_8250_CONSOLE
@@ -171,22 +166,22 @@ static int __devinit hpdca_init_one(struct dio_dev *d,
 		return 0;
 	}
 #endif
-	memset(&port, 0, sizeof(struct uart_port));
+	memset(&uart, 0, sizeof(uart));
 
 	/* Memory mapped I/O */
-	port.iotype = UPIO_MEM;
-	port.flags = UPF_SKIP_TEST | UPF_SHARE_IRQ | UPF_BOOT_AUTOCONF;
-	port.irq = d->ipl;
-	port.uartclk = HPDCA_BAUD_BASE * 16;
-	port.mapbase = (d->resource.start + UART_OFFSET);
-	port.membase = (char *)(port.mapbase + DIO_VIRADDRBASE);
-	port.regshift = 1;
-	port.dev = &d->dev;
-	line = serial8250_register_port(&port);
+	uart.port.iotype = UPIO_MEM;
+	uart.port.flags = UPF_SKIP_TEST | UPF_SHARE_IRQ | UPF_BOOT_AUTOCONF;
+	uart.port.irq = d->ipl;
+	uart.port.uartclk = HPDCA_BAUD_BASE * 16;
+	uart.port.mapbase = (d->resource.start + UART_OFFSET);
+	uart.port.membase = (char *)(uart.port.mapbase + DIO_VIRADDRBASE);
+	uart.port.regshift = 1;
+	uart.port.dev = &d->dev;
+	line = serial8250_register_8250_port(&uart);
 
 	if (line < 0) {
 		printk(KERN_NOTICE "8250_hp300: register_serial() DCA scode %d"
-		       " irq %d failed\n", d->scode, port.irq);
+		       " irq %d failed\n", d->scode, uart.port.irq);
 		return -ENOMEM;
 	}
 
@@ -210,7 +205,7 @@ static int __init hp300_8250_init(void)
 #ifdef CONFIG_HPAPCI
 	int line;
 	unsigned long base;
-	struct uart_port uport;
+	struct uart_8250_port uart;
 	struct hp300_port *port;
 	int i;
 #endif
@@ -248,26 +243,26 @@ static int __init hp300_8250_init(void)
 		if (!port)
 			return -ENOMEM;
 
-		memset(&uport, 0, sizeof(struct uart_port));
+		memset(&uart, 0, sizeof(uart));
 
 		base = (FRODO_BASE + FRODO_APCI_OFFSET(i));
 
 		/* Memory mapped I/O */
-		uport.iotype = UPIO_MEM;
-		uport.flags = UPF_SKIP_TEST | UPF_SHARE_IRQ \
+		uart.port.iotype = UPIO_MEM;
+		uart.port.flags = UPF_SKIP_TEST | UPF_SHARE_IRQ \
 			      | UPF_BOOT_AUTOCONF;
 		/* XXX - no interrupt support yet */
-		uport.irq = 0;
-		uport.uartclk = HPAPCI_BAUD_BASE * 16;
-		uport.mapbase = base;
-		uport.membase = (char *)(base + DIO_VIRADDRBASE);
-		uport.regshift = 2;
+		uart.port.irq = 0;
+		uart.port.uartclk = HPAPCI_BAUD_BASE * 16;
+		uart.port.mapbase = base;
+		uart.port.membase = (char *)(base + DIO_VIRADDRBASE);
+		uart.port.regshift = 2;
 
-		line = serial8250_register_port(&uport);
+		line = serial8250_register_8250_port(&uart);
 
 		if (line < 0) {
 			printk(KERN_NOTICE "8250_hp300: register_serial() APCI"
-			       " %d irq %d failed\n", i, uport.irq);
+			       " %d irq %d failed\n", i, uart.port.irq);
 			kfree(port);
 			continue;
 		}
@@ -288,7 +283,7 @@ static int __init hp300_8250_init(void)
 }
 
 #ifdef CONFIG_HPDCA
-static void __devexit hpdca_remove_one(struct dio_dev *d)
+static void hpdca_remove_one(struct dio_dev *d)
 {
 	int line;
 

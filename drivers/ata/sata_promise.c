@@ -1,8 +1,8 @@
 /*
  *  sata_promise.c - Promise SATA
  *
- *  Maintained by:  Jeff Garzik <jgarzik@pobox.com>
- *		    Mikael Pettersson <mikpe@it.uu.se>
+ *  Maintained by:  Tejun Heo <tj@kernel.org>
+ *		    Mikael Pettersson
  *  		    Please ALWAYS copy linux-ide@vger.kernel.org
  *		    on emails.
  *
@@ -35,7 +35,6 @@
 #include <linux/module.h>
 #include <linux/gfp.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -1247,10 +1246,10 @@ static int pdc_ata_init_one(struct pci_dev *pdev,
 	/* initialize adapter */
 	pdc_host_init(host);
 
-	rc = pci_set_dma_mask(pdev, ATA_DMA_MASK);
+	rc = dma_set_mask(&pdev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
-	rc = pci_set_consistent_dma_mask(pdev, ATA_DMA_MASK);
+	rc = dma_set_coherent_mask(&pdev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 
@@ -1260,21 +1259,10 @@ static int pdc_ata_init_one(struct pci_dev *pdev,
 				 &pdc_ata_sht);
 }
 
-static int __init pdc_ata_init(void)
-{
-	return pci_register_driver(&pdc_ata_pci_driver);
-}
-
-static void __exit pdc_ata_exit(void)
-{
-	pci_unregister_driver(&pdc_ata_pci_driver);
-}
+module_pci_driver(pdc_ata_pci_driver);
 
 MODULE_AUTHOR("Jeff Garzik");
 MODULE_DESCRIPTION("Promise ATA TX2/TX4/TX4000 low-level driver");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, pdc_ata_pci_tbl);
 MODULE_VERSION(DRV_VERSION);
-
-module_init(pdc_ata_init);
-module_exit(pdc_ata_exit);

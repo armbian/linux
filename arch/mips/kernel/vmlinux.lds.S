@@ -1,6 +1,14 @@
 #include <asm/asm-offsets.h>
-#include <asm/page.h>
 #include <asm/thread_info.h>
+
+#define PAGE_SIZE _PAGE_SIZE
+
+/*
+ * Put .bss..swapper_pg_dir as the first thing in .bss. This will
+ * ensure that it has .bss alignment (64K).
+ */
+#define BSS_FIRST_SECTIONS *(.bss..swapper_pg_dir)
+
 #include <asm-generic/vmlinux.lds.h>
 
 #undef mips
@@ -9,17 +17,19 @@ OUTPUT_ARCH(mips)
 ENTRY(kernel_entry)
 PHDRS {
 	text PT_LOAD FLAGS(7);	/* RWX */
+#ifndef CONFIG_CAVIUM_OCTEON_SOC
 	note PT_NOTE FLAGS(4);	/* R__ */
+#endif /* CAVIUM_OCTEON_SOC */
 }
 
 #ifdef CONFIG_32BIT
 	#ifdef CONFIG_CPU_LITTLE_ENDIAN
-		jiffies  = jiffies_64;
+		jiffies	 = jiffies_64;
 	#else
-		jiffies  = jiffies_64 + 4;
+		jiffies	 = jiffies_64 + 4;
 	#endif
 #else
-	jiffies  = jiffies_64;
+	jiffies	 = jiffies_64;
 #endif
 
 SECTIONS
@@ -48,6 +58,7 @@ SECTIONS
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
+		SOFTIRQENTRY_TEXT
 		*(.text.*)
 		*(.fixup)
 		*(.gnu.warning)
@@ -63,7 +74,12 @@ SECTIONS
 		__stop___dbe_table = .;
 	}
 
-	NOTES :text :note
+#ifdef CONFIG_CAVIUM_OCTEON_SOC
+#define NOTES_HEADER
+#else /* CONFIG_CAVIUM_OCTEON_SOC */
+#define NOTES_HEADER :note
+#endif /* CONFIG_CAVIUM_OCTEON_SOC */
+	NOTES :text NOTES_HEADER
 	.dummy : { *(.dummy) } :text
 
 	_sdata = .;			/* Start of data section */
@@ -117,13 +133,34 @@ SECTIONS
 	.exit.data : {
 		EXIT_DATA
 	}
-
+#ifdef CONFIG_SMP
 	PERCPU_SECTION(1 << CONFIG_MIPS_L1_CACHE_SHIFT)
-	. = ALIGN(PAGE_SIZE);
+#endif
+#ifdef CONFIG_MIPS_RAW_APPENDED_DTB
+	__appended_dtb = .;
+	/* leave space for appended DTB */
+	. += 0x100000;
+#elif defined(CONFIG_MIPS_ELF_APPENDED_DTB)
+	.appended_dtb : AT(ADDR(.appended_dtb) - LOAD_OFFSET) {
+		*(.appended_dtb)
+		KEEP(*(.appended_dtb))
+	}
+#endif
+	/*
+	 * Align to 64K in attempt to eliminate holes before the
+	 * .bss..swapper_pg_dir section at the start of .bss.  This
+	 * also satisfies PAGE_SIZE alignment as the largest page size
+	 * allowed is 64K.
+	 */
+	. = ALIGN(0x10000);
 	__init_end = .;
 	/* freed after init ends here */
 
-	BSS_SECTION(0, 0, 0)
+	/*
+	 * Force .bss to 64K alignment so that .bss..swapper_pg_dir
+	 * gets that alignment.	 .sbss should be empty, so there will be
+	 * no holes after __init_end. */
+	BSS_SECTION(0, 0x10000, 8)
 
 	_end = . ;
 
@@ -157,9 +194,11 @@ SECTIONS
 	DISCARDS
 	/DISCARD/ : {
 		/* ABI crap starts here */
+		*(.MIPS.abiflags)
 		*(.MIPS.options)
 		*(.options)
 		*(.pdr)
 		*(.reginfo)
+		*(.eh_frame)
 	}
 }

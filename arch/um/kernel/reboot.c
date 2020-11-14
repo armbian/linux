@@ -3,33 +3,33 @@
  * Licensed under the GPL
  */
 
-#include "linux/sched.h"
-#include "linux/slab.h"
-#include "kern_util.h"
-#include "os.h"
-#include "skas.h"
+#include <linux/sched.h>
+#include <linux/spinlock.h>
+#include <linux/slab.h>
+#include <linux/oom.h>
+#include <kern_util.h>
+#include <os.h>
+#include <skas.h>
 
 void (*pm_power_off)(void);
 
 static void kill_off_processes(void)
 {
-	if (proc_mm)
-		/*
-		 * FIXME: need to loop over userspace_pids
-		 */
-		os_kill_ptraced_process(userspace_pid[0], 1);
-	else {
-		struct task_struct *p;
-		int pid;
+	struct task_struct *p;
+	int pid;
 
-		for_each_process(p) {
-			if (p->mm == NULL)
-				continue;
+	read_lock(&tasklist_lock);
+	for_each_process(p) {
+		struct task_struct *t;
 
-			pid = p->mm->context.id.u.pid;
-			os_kill_ptraced_process(pid, 1);
-		}
+		t = find_lock_task_mm(p);
+		if (!t)
+			continue;
+		pid = t->mm->context.id.u.pid;
+		task_unlock(t);
+		os_kill_ptraced_process(pid, 1);
 	}
+	read_unlock(&tasklist_lock);
 }
 
 void uml_cleanup(void)

@@ -1,8 +1,6 @@
 /*
- *  include/asm-s390/timex.h
- *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright IBM Corp. 1999
  *
  *  Derived from "include/asm-i386/timex.h"
  *    Copyright (C) 1992, Linus Torvalds
@@ -12,12 +10,13 @@
 #define _ASM_S390_TIMEX_H
 
 #include <asm/lowcore.h>
+#include <linux/time64.h>
 
 /* The value of the TOD clock for 1.1.1970. */
 #define TOD_UNIX_EPOCH 0x7d91048bca000000ULL
 
 /* Inline functions for clock register access. */
-static inline int set_clock(__u64 time)
+static inline int set_tod_clock(__u64 time)
 {
 	int cc;
 
@@ -29,7 +28,7 @@ static inline int set_clock(__u64 time)
 	return cc;
 }
 
-static inline int store_clock(__u64 *time)
+static inline int store_tod_clock(__u64 *time)
 {
 	int cc;
 
@@ -69,54 +68,51 @@ static inline void local_tick_enable(unsigned long long comp)
 	set_clock_comparator(S390_lowcore.clock_comparator);
 }
 
-#define CLOCK_TICK_RATE	1193180 /* Underlying HZ */
+#define CLOCK_TICK_RATE		1193180 /* Underlying HZ */
+#define STORE_CLOCK_EXT_SIZE	16	/* stcke writes 16 bytes */
 
 typedef unsigned long long cycles_t;
 
-static inline unsigned long long get_clock (void)
+static inline void get_tod_clock_ext(char *clk)
 {
-	unsigned long long clk;
+	typedef struct { char _[STORE_CLOCK_EXT_SIZE]; } addrtype;
 
-	asm volatile("stck %0" : "=Q" (clk) : : "cc");
-	return clk;
+	asm volatile("stcke %0" : "=Q" (*(addrtype *) clk) : : "cc");
 }
 
-static inline void get_clock_ext(char *clk)
+static inline unsigned long long get_tod_clock(void)
 {
-	asm volatile("stcke %0" : "=Q" (*clk) : : "cc");
-}
+	unsigned char clk[STORE_CLOCK_EXT_SIZE];
 
-static inline unsigned long long get_clock_fast(void)
-{
-	unsigned long long clk;
-
-	if (MACHINE_HAS_STCKF)
-		asm volatile(".insn	s,0xb27c0000,%0" : "=Q" (clk) : : "cc");
-	else
-		clk = get_clock();
-	return clk;
-}
-
-static inline unsigned long long get_clock_xt(void)
-{
-	unsigned char clk[16];
-	get_clock_ext(clk);
+	get_tod_clock_ext(clk);
 	return *((unsigned long long *)&clk[1]);
+}
+
+static inline unsigned long long get_tod_clock_fast(void)
+{
+#ifdef CONFIG_HAVE_MARCH_Z9_109_FEATURES
+	unsigned long long clk;
+
+	asm volatile("stckf %0" : "=Q" (clk) : : "cc");
+	return clk;
+#else
+	return get_tod_clock();
+#endif
 }
 
 static inline cycles_t get_cycles(void)
 {
-	return (cycles_t) get_clock() >> 2;
+	return (cycles_t) get_tod_clock() >> 2;
 }
 
 int get_sync_clock(unsigned long long *clock);
 void init_cpu_timer(void);
 unsigned long long monotonic_clock(void);
 
-void tod_to_timeval(__u64, struct timespec *);
+void tod_to_timeval(__u64 todval, struct timespec64 *xt);
 
 static inline
-void stck_to_timespec(unsigned long long stck, struct timespec *ts)
+void stck_to_timespec64(unsigned long long stck, struct timespec64 *ts)
 {
 	tod_to_timeval(stck - TOD_UNIX_EPOCH, ts);
 }
@@ -132,9 +128,9 @@ extern u64 sched_clock_base_cc;
  * function, otherwise the returned value is not guaranteed to
  * be monotonic.
  */
-static inline unsigned long long get_clock_monotonic(void)
+static inline unsigned long long get_tod_clock_monotonic(void)
 {
-	return get_clock_xt() - sched_clock_base_cc;
+	return get_tod_clock() - sched_clock_base_cc;
 }
 
 /**

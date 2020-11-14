@@ -12,9 +12,8 @@ config SERIAL_8250
 	  here are those that are setting up dedicated Ethernet WWW/FTP
 	  servers, or users that have one of the various bus mice instead of a
 	  serial mouse and don't intend to use their machine's standard serial
-	  port for anything.  (Note that the Cyclades and Stallion multi
-	  serial port drivers do not need this driver built in for them to
-	  work.)
+	  port for anything.  (Note that the Cyclades multi serial port driver
+	  does not need this driver built in for it to work.)
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called 8250.
@@ -33,10 +32,36 @@ config SERIAL_8250
 	  Most people will say Y or M here, so that they can use serial mice,
 	  modems and similar devices connecting to the standard serial ports.
 
+config SERIAL_8250_DEPRECATED_OPTIONS
+	bool "Support 8250_core.* kernel options (DEPRECATED)"
+	depends on SERIAL_8250
+	default y
+	---help---
+	  In 3.7 we renamed 8250 to 8250_core by mistake, so now we have to
+	  accept kernel parameters in both forms like 8250_core.nr_uarts=4 and
+	  8250.nr_uarts=4. We now renamed the module back to 8250, but if
+	  anybody noticed in 3.7 and changed their userspace we still have to
+	  keep the 8250_core.* options around until they revert the changes
+	  they already did.
+
+	  If 8250 is built as a module, this adds 8250_core alias instead. 
+
+	  If you did not notice yet and/or you have userspace from pre-3.7, it
+	  is safe (and recommended) to say N here.
+
+config SERIAL_8250_PNP
+	bool "8250/16550 PNP device support" if EXPERT
+	depends on SERIAL_8250 && PNP
+	default y
+	---help---
+	  This builds standard PNP serial support. You may be able to
+	  disable this feature if you only need legacy serial support.
+
 config SERIAL_8250_CONSOLE
 	bool "Console on 8250/16550 and compatible serial port"
 	depends on SERIAL_8250=y
 	select SERIAL_CORE_CONSOLE
+	select SERIAL_EARLYCON
 	---help---
 	  If you say Y here, it will be possible to use a serial port as the
 	  system console (the system console is the device which receives all
@@ -66,32 +91,30 @@ config SERIAL_8250_CONSOLE
 
 	  If unsure, say N.
 
-config FIX_EARLYCON_MEM
-	bool
-	depends on X86
-	default y
-
 config SERIAL_8250_GSC
 	tristate
 	depends on SERIAL_8250 && GSC
 	default SERIAL_8250
 
+config SERIAL_8250_DMA
+	bool "DMA support for 16550 compatible UART controllers" if EXPERT
+	depends on SERIAL_8250 && DMADEVICES=y
+	default SERIAL_8250
+	help
+	  This builds DMA support that can be used with 8250/16650
+	  compatible UART controllers that support DMA signaling.
+
 config SERIAL_8250_PCI
 	tristate "8250/16550 PCI device support" if EXPERT
 	depends on SERIAL_8250 && PCI
 	default SERIAL_8250
+	select RATIONAL
 	help
 	  This builds standard PCI serial support. You may be able to
 	  disable this feature if you only need legacy serial support.
 	  Saves about 9K.
-
-config SERIAL_8250_PNP
-	tristate "8250/16550 PNP device support" if EXPERT
-	depends on SERIAL_8250 && PNP
-	default SERIAL_8250
-	help
-	  This builds standard PNP serial support. You may be able to
-	  disable this feature if you only need legacy serial support.
+	  Note that serial ports on NetMos 9835 Multi-I/O cards are handled
+	  by the parport_serial driver, enabled with CONFIG_PARPORT_SERIAL.
 
 config SERIAL_8250_HP300
 	tristate
@@ -241,15 +264,6 @@ config SERIAL_8250_RSA
 	help
 	  ::: To be written :::
 
-config SERIAL_8250_MCA
-	tristate "Support 8250-type ports on MCA buses"
-	depends on SERIAL_8250 != n && MCA
-	help
-	  Say Y here if you have a MCA serial ports.
-
-	  To compile this driver as a module, choose M here: the module
-	  will be called 8250_mca.
-
 config SERIAL_8250_ACORN
 	tristate "Acorn expansion card serial port support"
 	depends on ARCH_ACORN && SERIAL_8250
@@ -258,27 +272,109 @@ config SERIAL_8250_ACORN
 	  system, say Y to this option.  The driver can handle 1, 2, or 3 port
 	  cards.  If unsure, say N.
 
-config SERIAL_8250_RM9K
-	bool "Support for MIPS RM9xxx integrated serial port"
-	depends on SERIAL_8250 != n && SERIAL_RM9000
-	select SERIAL_8250_SHARE_IRQ
-	help
-	  Selecting this option will add support for the integrated serial
-	  port hardware found on MIPS RM9122 and similar processors.
-	  If unsure, say N.
-
 config SERIAL_8250_FSL
 	bool
-	depends on SERIAL_8250_CONSOLE && PPC_UDBG_16550
-	default PPC
+	depends on SERIAL_8250_CONSOLE
+	default PPC || ARM || ARM64
 
 config SERIAL_8250_DW
 	tristate "Support for Synopsys DesignWare 8250 quirks"
-	depends on SERIAL_8250 && OF
+	depends on SERIAL_8250
 	help
 	  Selecting this option will enable handling of the extra features
 	  present in the Synopsys DesignWare APB UART.
-config SERIAL_8250_SUNXI
-	tristate
-	depends on SERIAL_8250 && ARCH_SUNXI && !SERIAL_SW
-	default SERIAL_8250
+
+config SERIAL_8250_EM
+	tristate "Support for Emma Mobile integrated serial port"
+	depends on SERIAL_8250 && ARM && HAVE_CLK
+	help
+	  Selecting this option will add support for the integrated serial
+	  port hardware found on the Emma Mobile line of processors.
+	  If unsure, say N.
+
+config SERIAL_8250_RT288X
+	bool "Ralink RT288x/RT305x/RT3662/RT3883 serial port support"
+	depends on SERIAL_8250
+	default y if MIPS_ALCHEMY || SOC_RT288X || SOC_RT305X || SOC_RT3883 || SOC_MT7620
+	help
+	  Selecting this option will add support for the alternate register
+	  layout used by Ralink RT288x/RT305x, Alchemy Au1xxx, and some others.
+	  If unsure, say N.
+
+config SERIAL_8250_OMAP
+	tristate "Support for OMAP internal UART (8250 based driver)"
+	depends on SERIAL_8250 && ARCH_OMAP2PLUS
+	help
+	  If you have a machine based on an Texas Instruments OMAP CPU you
+	  can enable its onboard serial ports by enabling this option.
+
+	  This driver uses ttyS instead of ttyO.
+
+config SERIAL_8250_OMAP_TTYO_FIXUP
+	bool "Replace ttyO with ttyS"
+	depends on SERIAL_8250_OMAP=y && SERIAL_8250_CONSOLE
+	default y
+	help
+	  This option replaces the "console=ttyO" argument with the matching
+	  ttyS argument if the user did not specified it on the command line.
+	  This ensures that the user can see the kernel output during boot
+	  which he wouldn't see otherwise. The getty has still to be configured
+	  for ttyS instead of ttyO regardless of this option.
+	  This option is intended for people who "automatically" enable this
+	  driver without knowing that this driver requires a different console=
+	  argument. If you read this, please keep this option disabled and
+	  instead update your kernel command line. If you prepare a kernel for a
+	  distribution or other kind of larger user base then you probably want
+	  to keep this option enabled. Otherwise people might complain about a
+	  not booting kernel because the serial console remains silent in case
+	  they forgot to update the command line.
+
+config SERIAL_8250_FINTEK
+	tristate "Support for Fintek F81216A LPC to 4 UART"
+	depends on SERIAL_8250 && PNP
+	help
+	  Selecting this option will add support for the Fintek F81216A
+	  LPC to 4 UART. This device has some RS485 functionality not available
+	  through the PNP driver. If unsure, say N.
+
+config SERIAL_8250_LPC18XX
+	tristate "NXP LPC18xx/43xx serial port support"
+	depends on SERIAL_8250 && OF && (ARCH_LPC18XX || COMPILE_TEST)
+	default ARCH_LPC18XX
+	help
+	  If you have a LPC18xx/43xx based board and want to use the
+	  serial port, say Y to this option. If unsure, say Y.
+
+config SERIAL_8250_MT6577
+	bool "Mediatek serial port support"
+	depends on SERIAL_8250 && ARCH_MEDIATEK
+	help
+	  If you have a Mediatek based board and want to use the
+	  serial port, say Y to this option. If unsure, say N.
+
+config SERIAL_8250_UNIPHIER
+	tristate "Support for UniPhier on-chip UART"
+	depends on SERIAL_8250 && ARCH_UNIPHIER
+	help
+	  If you have a UniPhier based board and want to use the on-chip
+	  serial ports, say Y to this option. If unsure, say N.
+
+config SERIAL_8250_INGENIC
+	bool "Support for Ingenic SoC serial ports"
+	depends on SERIAL_8250_CONSOLE && OF_FLATTREE
+	select LIBFDT
+	select SERIAL_EARLYCON
+	help
+	  If you have a system using an Ingenic SoC and wish to make use of
+	  its UARTs, say Y to this option. If unsure, say N.
+
+config SERIAL_8250_MID
+	tristate "Support for serial ports on Intel MID platforms"
+	depends on SERIAL_8250 && PCI
+	select HSU_DMA if SERIAL_8250_DMA
+	select HSU_DMA_PCI if (HSU_DMA && X86_INTEL_MID)
+	select RATIONAL
+	help
+	  Selecting this option will enable handling of the extra features
+	  present on the UART found on Intel Medfield SOC and various other
+	  Intel platforms.

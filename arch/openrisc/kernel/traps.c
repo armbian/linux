@@ -105,17 +105,6 @@ void show_trace_task(struct task_struct *tsk)
 	 */
 }
 
-/*
- * The architecture-independent backtrace generator
- */
-void dump_stack(void)
-{
-	unsigned long stack;
-
-	show_stack(current, &stack);
-}
-EXPORT_SYMBOL(dump_stack);
-
 void show_registers(struct pt_regs *regs)
 {
 	int i;
@@ -313,12 +302,12 @@ asmlinkage void do_unaligned_access(struct pt_regs *regs, unsigned long address)
 	siginfo_t info;
 
 	if (user_mode(regs)) {
-		/* Send a SIGSEGV */
-		info.si_signo = SIGSEGV;
+		/* Send a SIGBUS */
+		info.si_signo = SIGBUS;
 		info.si_errno = 0;
-		/* info.si_code has been set above */
-		info.si_addr = (void *)address;
-		force_sig_info(SIGSEGV, &info, current);
+		info.si_code = BUS_ADRALN;
+		info.si_addr = (void __user *)address;
+		force_sig_info(SIGBUS, &info, current);
 	} else {
 		printk("KERNEL: Unaligned Access 0x%.8lx\n", address);
 		show_registers(regs);

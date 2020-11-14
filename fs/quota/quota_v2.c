@@ -117,16 +117,21 @@ static int v2_read_file_info(struct super_block *sb, int type)
 	qinfo = info->dqi_priv;
 	if (version == 0) {
 		/* limits are stored as unsigned 32-bit data */
-		info->dqi_maxblimit = 0xffffffff;
-		info->dqi_maxilimit = 0xffffffff;
+		info->dqi_max_spc_limit = 0xffffffffLL << QUOTABLOCK_BITS;
+		info->dqi_max_ino_limit = 0xffffffff;
 	} else {
-		/* used space is stored as unsigned 64-bit value */
-		info->dqi_maxblimit = 0xffffffffffffffffULL;	/* 2^64-1 */
-		info->dqi_maxilimit = 0xffffffffffffffffULL;
+		/*
+		 * Used space is stored as unsigned 64-bit value in bytes but
+		 * quota core supports only signed 64-bit values so use that
+		 * as a limit
+		 */
+		info->dqi_max_spc_limit = 0x7fffffffffffffffLL; /* 2^63-1 */
+		info->dqi_max_ino_limit = 0x7fffffffffffffffLL;
 	}
 	info->dqi_bgrace = le32_to_cpu(dinfo.dqi_bgrace);
 	info->dqi_igrace = le32_to_cpu(dinfo.dqi_igrace);
-	info->dqi_flags = le32_to_cpu(dinfo.dqi_flags);
+	/* No flags currently supported */
+	info->dqi_flags = 0;
 	qinfo->dqi_sb = sb;
 	qinfo->dqi_type = type;
 	qinfo->dqi_blocks = le32_to_cpu(dinfo.dqi_blocks);
@@ -157,7 +162,8 @@ static int v2_write_file_info(struct super_block *sb, int type)
 	info->dqi_flags &= ~DQF_INFO_DIRTY;
 	dinfo.dqi_bgrace = cpu_to_le32(info->dqi_bgrace);
 	dinfo.dqi_igrace = cpu_to_le32(info->dqi_igrace);
-	dinfo.dqi_flags = cpu_to_le32(info->dqi_flags & DQF_MASK);
+	/* No flags currently supported */
+	dinfo.dqi_flags = cpu_to_le32(0);
 	spin_unlock(&dq_data_lock);
 	dinfo.dqi_blocks = cpu_to_le32(qinfo->dqi_blocks);
 	dinfo.dqi_free_blk = cpu_to_le32(qinfo->dqi_free_blk);
@@ -196,7 +202,7 @@ static void v2r0_mem2diskdqb(void *dp, struct dquot *dquot)
 	struct v2r0_disk_dqblk *d = dp;
 	struct mem_dqblk *m = &dquot->dq_dqb;
 	struct qtree_mem_dqinfo *info =
-			sb_dqinfo(dquot->dq_sb, dquot->dq_type)->dqi_priv;
+			sb_dqinfo(dquot->dq_sb, dquot->dq_id.type)->dqi_priv;
 
 	d->dqb_ihardlimit = cpu_to_le32(m->dqb_ihardlimit);
 	d->dqb_isoftlimit = cpu_to_le32(m->dqb_isoftlimit);
@@ -206,7 +212,7 @@ static void v2r0_mem2diskdqb(void *dp, struct dquot *dquot)
 	d->dqb_bsoftlimit = cpu_to_le32(v2_stoqb(m->dqb_bsoftlimit));
 	d->dqb_curspace = cpu_to_le64(m->dqb_curspace);
 	d->dqb_btime = cpu_to_le64(m->dqb_btime);
-	d->dqb_id = cpu_to_le32(dquot->dq_id);
+	d->dqb_id = cpu_to_le32(from_kqid(&init_user_ns, dquot->dq_id));
 	if (qtree_entry_unused(info, dp))
 		d->dqb_itime = cpu_to_le64(1);
 }
@@ -215,11 +221,13 @@ static int v2r0_is_id(void *dp, struct dquot *dquot)
 {
 	struct v2r0_disk_dqblk *d = dp;
 	struct qtree_mem_dqinfo *info =
-			sb_dqinfo(dquot->dq_sb, dquot->dq_type)->dqi_priv;
+			sb_dqinfo(dquot->dq_sb, dquot->dq_id.type)->dqi_priv;
 
 	if (qtree_entry_unused(info, dp))
 		return 0;
-	return le32_to_cpu(d->dqb_id) == dquot->dq_id;
+	return qid_eq(make_kqid(&init_user_ns, dquot->dq_id.type,
+				le32_to_cpu(d->dqb_id)),
+		      dquot->dq_id);
 }
 
 static void v2r1_disk2memdqb(struct dquot *dquot, void *dp)
@@ -247,7 +255,7 @@ static void v2r1_mem2diskdqb(void *dp, struct dquot *dquot)
 	struct v2r1_disk_dqblk *d = dp;
 	struct mem_dqblk *m = &dquot->dq_dqb;
 	struct qtree_mem_dqinfo *info =
-			sb_dqinfo(dquot->dq_sb, dquot->dq_type)->dqi_priv;
+			sb_dqinfo(dquot->dq_sb, dquot->dq_id.type)->dqi_priv;
 
 	d->dqb_ihardlimit = cpu_to_le64(m->dqb_ihardlimit);
 	d->dqb_isoftlimit = cpu_to_le64(m->dqb_isoftlimit);
@@ -257,7 +265,7 @@ static void v2r1_mem2diskdqb(void *dp, struct dquot *dquot)
 	d->dqb_bsoftlimit = cpu_to_le64(v2_stoqb(m->dqb_bsoftlimit));
 	d->dqb_curspace = cpu_to_le64(m->dqb_curspace);
 	d->dqb_btime = cpu_to_le64(m->dqb_btime);
-	d->dqb_id = cpu_to_le32(dquot->dq_id);
+	d->dqb_id = cpu_to_le32(from_kqid(&init_user_ns, dquot->dq_id));
 	if (qtree_entry_unused(info, dp))
 		d->dqb_itime = cpu_to_le64(1);
 }
@@ -266,26 +274,28 @@ static int v2r1_is_id(void *dp, struct dquot *dquot)
 {
 	struct v2r1_disk_dqblk *d = dp;
 	struct qtree_mem_dqinfo *info =
-			sb_dqinfo(dquot->dq_sb, dquot->dq_type)->dqi_priv;
+			sb_dqinfo(dquot->dq_sb, dquot->dq_id.type)->dqi_priv;
 
 	if (qtree_entry_unused(info, dp))
 		return 0;
-	return le32_to_cpu(d->dqb_id) == dquot->dq_id;
+	return qid_eq(make_kqid(&init_user_ns, dquot->dq_id.type,
+				le32_to_cpu(d->dqb_id)),
+		      dquot->dq_id);
 }
 
 static int v2_read_dquot(struct dquot *dquot)
 {
-	return qtree_read_dquot(sb_dqinfo(dquot->dq_sb, dquot->dq_type)->dqi_priv, dquot);
+	return qtree_read_dquot(sb_dqinfo(dquot->dq_sb, dquot->dq_id.type)->dqi_priv, dquot);
 }
 
 static int v2_write_dquot(struct dquot *dquot)
 {
-	return qtree_write_dquot(sb_dqinfo(dquot->dq_sb, dquot->dq_type)->dqi_priv, dquot);
+	return qtree_write_dquot(sb_dqinfo(dquot->dq_sb, dquot->dq_id.type)->dqi_priv, dquot);
 }
 
 static int v2_release_dquot(struct dquot *dquot)
 {
-	return qtree_release_dquot(sb_dqinfo(dquot->dq_sb, dquot->dq_type)->dqi_priv, dquot);
+	return qtree_release_dquot(sb_dqinfo(dquot->dq_sb, dquot->dq_id.type)->dqi_priv, dquot);
 }
 
 static int v2_free_file_info(struct super_block *sb, int type)

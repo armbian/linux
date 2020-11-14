@@ -10,6 +10,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/kernel.h>
 #include <linux/net.h>
 #include <linux/slab.h>
 #include <linux/skbuff.h>
@@ -26,7 +27,7 @@ MODULE_AUTHOR("Red Hat, Inc.");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_NETPROTO(PF_RXRPC);
 
-unsigned rxrpc_debug; // = RXRPC_DEBUG_KPROTO;
+unsigned int rxrpc_debug; // = RXRPC_DEBUG_KPROTO;
 module_param_named(debug, rxrpc_debug, uint, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(debug, "RxRPC debugging mask");
 
@@ -304,7 +305,7 @@ struct rxrpc_call *rxrpc_kernel_begin_call(struct socket *sock,
 
 	if (!key)
 		key = rx->key;
-	if (key && !key->payload.data)
+	if (key && !key->payload.data[0])
 		key = NULL; /* a no-security key */
 
 	bundle = rxrpc_get_bundle(rx, trans, key, service_id, gfp);
@@ -440,8 +441,7 @@ static int rxrpc_connect(struct socket *sock, struct sockaddr *addr,
  *   - sends a call data packet
  *   - may send an abort (abort code in control data)
  */
-static int rxrpc_sendmsg(struct kiocb *iocb, struct socket *sock,
-			 struct msghdr *m, size_t len)
+static int rxrpc_sendmsg(struct socket *sock, struct msghdr *m, size_t len)
 {
 	struct rxrpc_transport *trans;
 	struct rxrpc_sock *rx = rxrpc_sk(sock->sk);
@@ -481,7 +481,7 @@ static int rxrpc_sendmsg(struct kiocb *iocb, struct socket *sock,
 	switch (rx->sk.sk_state) {
 	case RXRPC_SERVER_LISTENING:
 		if (!m->msg_name) {
-			ret = rxrpc_server_sendmsg(iocb, rx, m, len);
+			ret = rxrpc_server_sendmsg(rx, m, len);
 			break;
 		}
 	case RXRPC_SERVER_BOUND:
@@ -491,7 +491,7 @@ static int rxrpc_sendmsg(struct kiocb *iocb, struct socket *sock,
 			break;
 		}
 	case RXRPC_CLIENT_CONNECTED:
-		ret = rxrpc_client_sendmsg(iocb, rx, trans, m, len);
+		ret = rxrpc_client_sendmsg(rx, trans, m, len);
 		break;
 	default:
 		ret = -ENOTCONN;
@@ -513,7 +513,7 @@ static int rxrpc_setsockopt(struct socket *sock, int level, int optname,
 			    char __user *optval, unsigned int optlen)
 {
 	struct rxrpc_sock *rx = rxrpc_sk(sock->sk);
-	unsigned min_sec_level;
+	unsigned int min_sec_level;
 	int ret;
 
 	_enter(",%d,%d,,%d", level, optname, optlen);
@@ -555,13 +555,13 @@ static int rxrpc_setsockopt(struct socket *sock, int level, int optname,
 
 		case RXRPC_MIN_SECURITY_LEVEL:
 			ret = -EINVAL;
-			if (optlen != sizeof(unsigned))
+			if (optlen != sizeof(unsigned int))
 				goto error;
 			ret = -EISCONN;
 			if (rx->sk.sk_state != RXRPC_UNCONNECTED)
 				goto error;
 			ret = get_user(min_sec_level,
-				       (unsigned __user *) optval);
+				       (unsigned int __user *) optval);
 			if (ret < 0)
 				goto error;
 			ret = -EINVAL;
@@ -632,7 +632,7 @@ static int rxrpc_create(struct net *net, struct socket *sock, int protocol,
 	sock->ops = &rxrpc_rpc_ops;
 	sock->state = SS_UNCONNECTED;
 
-	sk = sk_alloc(net, PF_RXRPC, GFP_KERNEL, &rxrpc_proto);
+	sk = sk_alloc(net, PF_RXRPC, GFP_KERNEL, &rxrpc_proto, kern);
 	if (!sk)
 		return -ENOMEM;
 
@@ -792,10 +792,9 @@ static const struct net_proto_family rxrpc_family_ops = {
  */
 static int __init af_rxrpc_init(void)
 {
-	struct sk_buff *dummy_skb;
 	int ret = -1;
 
-	BUILD_BUG_ON(sizeof(struct rxrpc_skb_priv) > sizeof(dummy_skb->cb));
+	BUILD_BUG_ON(sizeof(struct rxrpc_skb_priv) > FIELD_SIZEOF(struct sk_buff, cb));
 
 	rxrpc_epoch = htonl(get_seconds());
 
@@ -838,12 +837,21 @@ static int __init af_rxrpc_init(void)
 		goto error_key_type_s;
 	}
 
+	ret = rxrpc_sysctl_init();
+	if (ret < 0) {
+		printk(KERN_CRIT "RxRPC: Cannot register sysctls\n");
+		goto error_sysctls;
+	}
+
 #ifdef CONFIG_PROC_FS
-	proc_net_fops_create(&init_net, "rxrpc_calls", 0, &rxrpc_call_seq_fops);
-	proc_net_fops_create(&init_net, "rxrpc_conns", 0, &rxrpc_connection_seq_fops);
+	proc_create("rxrpc_calls", 0, init_net.proc_net, &rxrpc_call_seq_fops);
+	proc_create("rxrpc_conns", 0, init_net.proc_net,
+		    &rxrpc_connection_seq_fops);
 #endif
 	return 0;
 
+error_sysctls:
+	unregister_key_type(&key_type_rxrpc_s);
 error_key_type_s:
 	unregister_key_type(&key_type_rxrpc);
 error_key_type:
@@ -864,6 +872,7 @@ error_call_jar:
 static void __exit af_rxrpc_exit(void)
 {
 	_enter("");
+	rxrpc_sysctl_exit();
 	unregister_key_type(&key_type_rxrpc_s);
 	unregister_key_type(&key_type_rxrpc);
 	sock_unregister(PF_RXRPC);
@@ -878,8 +887,8 @@ static void __exit af_rxrpc_exit(void)
 
 	_debug("flush scheduled work");
 	flush_workqueue(rxrpc_workqueue);
-	proc_net_remove(&init_net, "rxrpc_conns");
-	proc_net_remove(&init_net, "rxrpc_calls");
+	remove_proc_entry("rxrpc_conns", init_net.proc_net);
+	remove_proc_entry("rxrpc_calls", init_net.proc_net);
 	destroy_workqueue(rxrpc_workqueue);
 	kmem_cache_destroy(rxrpc_call_jar);
 	_leave("");

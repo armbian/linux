@@ -192,7 +192,7 @@ struct __large_struct {
 ({								\
 	long __gu_err, __gu_val;				\
 	__get_user_size(__gu_val, (ptr), (size), __gu_err);	\
-	(x) = (__typeof__(*(ptr)))__gu_val;			\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;		\
 	__gu_err;						\
 })
 
@@ -202,7 +202,7 @@ struct __large_struct {
 	const __typeof__(*(ptr)) * __gu_addr = (ptr);			\
 	if (access_ok(VERIFY_READ, __gu_addr, size))			\
 		__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
-	(x) = (__typeof__(*(ptr)))__gu_val;				\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
 	__gu_err;							\
 })
 
@@ -215,7 +215,7 @@ do {									\
 	case 1: __get_user_asm(x, ptr, retval, "l.lbz"); break;		\
 	case 2: __get_user_asm(x, ptr, retval, "l.lhz"); break;		\
 	case 4: __get_user_asm(x, ptr, retval, "l.lwz"); break;		\
-	case 8: __get_user_asm2(x, ptr, retval);			\
+	case 8: __get_user_asm2(x, ptr, retval); break;			\
 	default: (x) = __get_user_bad();				\
 	}								\
 } while (0)
@@ -273,28 +273,20 @@ __copy_tofrom_user(void *to, const void *from, unsigned long size);
 static inline unsigned long
 copy_from_user(void *to, const void *from, unsigned long n)
 {
-	unsigned long over;
+	unsigned long res = n;
 
-	if (access_ok(VERIFY_READ, from, n))
-		return __copy_tofrom_user(to, from, n);
-	if ((unsigned long)from < TASK_SIZE) {
-		over = (unsigned long)from + n - TASK_SIZE;
-		return __copy_tofrom_user(to, from, n - over) + over;
-	}
-	return n;
+	if (likely(access_ok(VERIFY_READ, from, n)))
+		res = __copy_tofrom_user(to, from, n);
+	if (unlikely(res))
+		memset(to + (n - res), 0, res);
+	return res;
 }
 
 static inline unsigned long
 copy_to_user(void *to, const void *from, unsigned long n)
 {
-	unsigned long over;
-
-	if (access_ok(VERIFY_WRITE, to, n))
-		return __copy_tofrom_user(to, from, n);
-	if ((unsigned long)to < TASK_SIZE) {
-		over = (unsigned long)to + n - TASK_SIZE;
-		return __copy_tofrom_user(to, from, n - over) + over;
-	}
+	if (likely(access_ok(VERIFY_WRITE, to, n)))
+		n = __copy_tofrom_user(to, from, n);
 	return n;
 }
 
@@ -303,52 +295,17 @@ extern unsigned long __clear_user(void *addr, unsigned long size);
 static inline __must_check unsigned long
 clear_user(void *addr, unsigned long size)
 {
-
-	if (access_ok(VERIFY_WRITE, addr, size))
-		return __clear_user(addr, size);
-	if ((unsigned long)addr < TASK_SIZE) {
-		unsigned long over = (unsigned long)addr + size - TASK_SIZE;
-		return __clear_user(addr, size - over) + over;
-	}
+	if (likely(access_ok(VERIFY_WRITE, addr, size)))
+		size = __clear_user(addr, size);
 	return size;
 }
 
-extern int __strncpy_from_user(char *dst, const char *src, long count);
+#define user_addr_max() \
+	(segment_eq(get_fs(), USER_DS) ? TASK_SIZE : ~0UL)
 
-static inline long strncpy_from_user(char *dst, const char *src, long count)
-{
-	if (access_ok(VERIFY_READ, src, 1))
-		return __strncpy_from_user(dst, src, count);
-	return -EFAULT;
-}
+extern long strncpy_from_user(char *dest, const char __user *src, long count);
 
-/*
- * Return the size of a string (including the ending 0)
- *
- * Return 0 for error
- */
-
-extern int __strnlen_user(const char *str, long len, unsigned long top);
-
-/*
- * Returns the length of the string at str (including the null byte),
- * or 0 if we hit a page we can't access,
- * or something > len if we didn't find a null byte.
- *
- * The `top' parameter to __strnlen_user is to make sure that
- * we can never overflow from the user area into kernel space.
- */
-static inline long strnlen_user(const char __user *str, long len)
-{
-	unsigned long top = (unsigned long)get_fs();
-	unsigned long res = 0;
-
-	if (__addr_ok(str))
-		res = __strnlen_user(str, len, top);
-
-	return res;
-}
-
-#define strlen_user(str) strnlen_user(str, TASK_SIZE-1)
+extern __must_check long strlen_user(const char __user *str);
+extern __must_check long strnlen_user(const char __user *str, long n);
 
 #endif /* __ASM_OPENRISC_UACCESS_H */

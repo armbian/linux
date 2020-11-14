@@ -23,15 +23,14 @@
 #include <linux/moduleparam.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
-#include <linux/miscdevice.h>
 #include <linux/watchdog.h>
-#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/spinlock.h>
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/err.h>
+#include <linux/of.h>
 #include <mach/hardware.h>
 
 /* WatchDog Timer - Chapter 23 Page 207 */
@@ -81,7 +80,7 @@ static unsigned int heartbeat = DEFAULT_HEARTBEAT;
 
 static DEFINE_SPINLOCK(io_lock);
 static void __iomem	*wdt_base;
-struct clk		*wdt_clk;
+static struct clk	*wdt_clk;
 
 static int pnx4008_wdt_start(struct watchdog_device *wdd)
 {
@@ -141,34 +140,34 @@ static const struct watchdog_ops pnx4008_wdt_ops = {
 static struct watchdog_device pnx4008_wdd = {
 	.info = &pnx4008_wdt_ident,
 	.ops = &pnx4008_wdt_ops,
+	.timeout = DEFAULT_HEARTBEAT,
 	.min_timeout = 1,
 	.max_timeout = MAX_HEARTBEAT,
 };
 
-static int __devinit pnx4008_wdt_probe(struct platform_device *pdev)
+static int pnx4008_wdt_probe(struct platform_device *pdev)
 {
 	struct resource *r;
 	int ret = 0;
 
-	if (heartbeat < 1 || heartbeat > MAX_HEARTBEAT)
-		heartbeat = DEFAULT_HEARTBEAT;
+	watchdog_init_timeout(&pnx4008_wdd, heartbeat, &pdev->dev);
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	wdt_base = devm_request_and_ioremap(&pdev->dev, r);
-	if (!wdt_base)
-		return -EADDRINUSE;
+	wdt_base = devm_ioremap_resource(&pdev->dev, r);
+	if (IS_ERR(wdt_base))
+		return PTR_ERR(wdt_base);
 
-	wdt_clk = clk_get(&pdev->dev, NULL);
+	wdt_clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(wdt_clk))
 		return PTR_ERR(wdt_clk);
 
-	ret = clk_enable(wdt_clk);
+	ret = clk_prepare_enable(wdt_clk);
 	if (ret)
-		goto out;
+		return ret;
 
-	pnx4008_wdd.timeout = heartbeat;
 	pnx4008_wdd.bootstatus = (readl(WDTIM_RES(wdt_base)) & WDOG_RESET) ?
 			WDIOF_CARDRESET : 0;
+	pnx4008_wdd.parent = &pdev->dev;
 	watchdog_set_nowayout(&pnx4008_wdd, nowayout);
 
 	pnx4008_wdt_stop(&pnx4008_wdd);	/* disable for now */
@@ -180,40 +179,45 @@ static int __devinit pnx4008_wdt_probe(struct platform_device *pdev)
 	}
 
 	dev_info(&pdev->dev, "PNX4008 Watchdog Timer: heartbeat %d sec\n",
-			heartbeat);
+		 pnx4008_wdd.timeout);
 
 	return 0;
 
 disable_clk:
-	clk_disable(wdt_clk);
-out:
-	clk_put(wdt_clk);
+	clk_disable_unprepare(wdt_clk);
 	return ret;
 }
 
-static int __devexit pnx4008_wdt_remove(struct platform_device *pdev)
+static int pnx4008_wdt_remove(struct platform_device *pdev)
 {
 	watchdog_unregister_device(&pnx4008_wdd);
 
-	clk_disable(wdt_clk);
-	clk_put(wdt_clk);
+	clk_disable_unprepare(wdt_clk);
 
 	return 0;
 }
 
+#ifdef CONFIG_OF
+static const struct of_device_id pnx4008_wdt_match[] = {
+	{ .compatible = "nxp,pnx4008-wdt" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, pnx4008_wdt_match);
+#endif
+
 static struct platform_driver platform_wdt_driver = {
 	.driver = {
 		.name = "pnx4008-watchdog",
-		.owner	= THIS_MODULE,
+		.of_match_table = of_match_ptr(pnx4008_wdt_match),
 	},
 	.probe = pnx4008_wdt_probe,
-	.remove = __devexit_p(pnx4008_wdt_remove),
+	.remove = pnx4008_wdt_remove,
 };
 
 module_platform_driver(platform_wdt_driver);
 
 MODULE_AUTHOR("MontaVista Software, Inc. <source@mvista.com>");
-MODULE_AUTHOR("Wolfram Sang <w.sang@pengutronix.de>");
+MODULE_AUTHOR("Wolfram Sang <kernel@pengutronix.de>");
 MODULE_DESCRIPTION("PNX4008 Watchdog Driver");
 
 module_param(heartbeat, uint, 0);
@@ -227,5 +231,4 @@ MODULE_PARM_DESC(nowayout,
 		 "Set to 1 to keep watchdog running after device release");
 
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 MODULE_ALIAS("platform:pnx4008-watchdog");

@@ -23,6 +23,8 @@
   Reset function and helpers
 \****************************/
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <asm/unaligned.h>
 
 #include <linux/pci.h>		/* To determine if a card is pci-e */
@@ -787,9 +789,9 @@ ath5k_hw_nic_wakeup(struct ath5k_hw *ah, struct ieee80211_channel *channel)
 		 * (I don't think it supports 44MHz) */
 		/* On 2425 initvals TURBO_SHORT is not present */
 		if (ah->ah_bwmode == AR5K_BWMODE_40MHZ) {
-			turbo = AR5K_PHY_TURBO_MODE |
-				(ah->ah_radio == AR5K_RF2425) ? 0 :
-				AR5K_PHY_TURBO_SHORT;
+			turbo = AR5K_PHY_TURBO_MODE;
+			if (ah->ah_radio != AR5K_RF2425)
+				turbo |= AR5K_PHY_TURBO_SHORT;
 		} else if (ah->ah_bwmode != AR5K_BWMODE_DEFAULT) {
 			if (ah->ah_radio == AR5K_RF5413) {
 				mode |= (ah->ah_bwmode == AR5K_BWMODE_10MHZ) ?
@@ -982,7 +984,7 @@ ath5k_hw_commit_eeprom_settings(struct ath5k_hw *ah,
 	if (ah->ah_version == AR5K_AR5210)
 		return;
 
-	ee_mode = ath5k_eeprom_mode_from_channel(channel);
+	ee_mode = ath5k_eeprom_mode_from_channel(ah, channel);
 
 	/* Adjust power delta for channel 14 */
 	if (channel->center_freq == 2484)
@@ -1166,30 +1168,6 @@ ath5k_hw_reset(struct ath5k_hw *ah, enum nl80211_iftype op_mode,
 	 * PHY registers */
 	if (ah->ah_version == AR5K_AR5212)
 		ath5k_hw_set_sleep_clock(ah, false);
-
-	/*
-	 * Stop PCU
-	 */
-	ath5k_hw_stop_rx_pcu(ah);
-
-	/*
-	 * Stop DMA
-	 *
-	 * Note: If DMA didn't stop continue
-	 * since only a reset will fix it.
-	 */
-	ret = ath5k_hw_dma_stop(ah);
-
-	/* RF Bus grant won't work if we have pending
-	 * frames */
-	if (ret && fast) {
-		ATH5K_DBG(ah, ATH5K_DEBUG_RESET,
-			"DMA didn't stop, falling back to normal reset\n");
-		fast = false;
-		/* Non fatal, just continue with
-		 * normal reset */
-		ret = 0;
-	}
 
 	mode = channel->hw_value;
 	switch (mode) {

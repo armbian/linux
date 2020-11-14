@@ -142,24 +142,19 @@ EXPORT_SYMBOL(dm_exception_store_type_unregister);
 static int set_chunk_size(struct dm_exception_store *store,
 			  const char *chunk_size_arg, char **error)
 {
-	unsigned long chunk_size_ulong;
-	char *value;
+	unsigned chunk_size;
 
-	chunk_size_ulong = simple_strtoul(chunk_size_arg, &value, 10);
-	if (*chunk_size_arg == '\0' || *value != '\0' ||
-	    chunk_size_ulong > UINT_MAX) {
+	if (kstrtouint(chunk_size_arg, 10, &chunk_size)) {
 		*error = "Invalid chunk size";
 		return -EINVAL;
 	}
 
-	if (!chunk_size_ulong) {
+	if (!chunk_size) {
 		store->chunk_size = store->chunk_mask = store->chunk_shift = 0;
 		return 0;
 	}
 
-	return dm_exception_store_set_chunk_size(store,
-						 (unsigned) chunk_size_ulong,
-						 error);
+	return dm_exception_store_set_chunk_size(store, chunk_size, error);
 }
 
 int dm_exception_store_set_chunk_size(struct dm_exception_store *store,
@@ -188,7 +183,7 @@ int dm_exception_store_set_chunk_size(struct dm_exception_store *store,
 
 	store->chunk_size = chunk_size;
 	store->chunk_mask = chunk_size - 1;
-	store->chunk_shift = ffs(chunk_size) - 1;
+	store->chunk_shift = __ffs(chunk_size);
 
 	return 0;
 }
@@ -208,7 +203,7 @@ int dm_exception_store_create(struct dm_target *ti, int argc, char **argv,
 		return -EINVAL;
 	}
 
-	tmp_store = kmalloc(sizeof(*tmp_store), GFP_KERNEL);
+	tmp_store = kzalloc(sizeof(*tmp_store), GFP_KERNEL);
 	if (!tmp_store) {
 		ti->error = "Exception store allocation failed";
 		return -ENOMEM;
@@ -220,7 +215,7 @@ int dm_exception_store_create(struct dm_target *ti, int argc, char **argv,
 	else if (persistent == 'N')
 		type = get_type("N");
 	else {
-		ti->error = "Persistent flag is not P or N";
+		ti->error = "Exception store type is not P or N";
 		r = -EINVAL;
 		goto bad_type;
 	}
@@ -238,7 +233,7 @@ int dm_exception_store_create(struct dm_target *ti, int argc, char **argv,
 	if (r)
 		goto bad;
 
-	r = type->ctr(tmp_store, 0, NULL);
+	r = type->ctr(tmp_store, (strlen(argv[0]) > 1 ? &argv[0][1] : NULL));
 	if (r) {
 		ti->error = "Exception store type constructor failed";
 		goto bad;

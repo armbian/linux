@@ -95,7 +95,7 @@ static void dcss_mkname(char *ascii_name, char *ebcdic_name)
 		if (ascii_name[i] == '\0')
 			break;
 		ebcdic_name[i] = toupper(ascii_name[i]);
-	};
+	}
 	for (; i < 8; i++)
 		ebcdic_name[i] = ' ';
 	ASCEBC(ebcdic_name, 8);
@@ -174,8 +174,7 @@ static void mon_free_mem(struct mon_private *monpriv)
 	int i;
 
 	for (i = 0; i < MON_MSGLIM; i++)
-		if (monpriv->msg_array[i])
-			kfree(monpriv->msg_array[i]);
+		kfree(monpriv->msg_array[i]);
 	kfree(monpriv);
 }
 
@@ -230,7 +229,7 @@ static struct mon_msg *mon_next_message(struct mon_private *monpriv)
 /******************************************************************************
  *                               IUCV handler                                 *
  *****************************************************************************/
-static void mon_iucv_path_complete(struct iucv_path *path, u8 ipuser[16])
+static void mon_iucv_path_complete(struct iucv_path *path, u8 *ipuser)
 {
 	struct mon_private *monpriv = path->private;
 
@@ -238,7 +237,7 @@ static void mon_iucv_path_complete(struct iucv_path *path, u8 ipuser[16])
 	wake_up(&mon_conn_wait_queue);
 }
 
-static void mon_iucv_path_severed(struct iucv_path *path, u8 ipuser[16])
+static void mon_iucv_path_severed(struct iucv_path *path, u8 *ipuser)
 {
 	struct mon_private *monpriv = path->private;
 
@@ -571,8 +570,11 @@ static int __init mon_init(void)
 	if (rc)
 		goto out_iucv;
 	monreader_device = kzalloc(sizeof(struct device), GFP_KERNEL);
-	if (!monreader_device)
+	if (!monreader_device) {
+		rc = -ENOMEM;
 		goto out_driver;
+	}
+
 	dev_set_name(monreader_device, "monreader-dev");
 	monreader_device->bus = &iucv_bus;
 	monreader_device->parent = iucv_root;

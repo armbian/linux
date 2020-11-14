@@ -30,7 +30,6 @@
 #include <linux/module.h>
 #include <linux/irq.h>
 
-#include <asm/bootinfo.h>
 #include <asm/macintosh.h>
 #include <asm/macints.h>
 #include <asm/mac_via.h>
@@ -327,7 +326,7 @@ void via_debug_dump(void)
  * TBI: get time offset between scheduling timer ticks
  */
 
-unsigned long mac_gettimeoffset (void)
+u32 mac_gettimeoffset(void)
 {
 	unsigned long ticks, offset = 0;
 
@@ -341,7 +340,7 @@ unsigned long mac_gettimeoffset (void)
 	ticks = MAC_CLOCK_TICK - ticks;
 	ticks = ticks * 10000L / MAC_CLOCK_TICK;
 
-	return ticks + offset;
+	return (ticks + offset) * 1000;
 }
 
 /*
@@ -447,7 +446,7 @@ void via_nubus_irq_shutdown(int irq)
  * via6522.c :-), disable/pending masks added.
  */
 
-void via1_irq(unsigned int irq, struct irq_desc *desc)
+void via1_irq(struct irq_desc *desc)
 {
 	int irq_num;
 	unsigned char irq_bit, events;
@@ -468,7 +467,7 @@ void via1_irq(unsigned int irq, struct irq_desc *desc)
 	} while (events >= irq_bit);
 }
 
-static void via2_irq(unsigned int irq, struct irq_desc *desc)
+static void via2_irq(struct irq_desc *desc)
 {
 	int irq_num;
 	unsigned char irq_bit, events;
@@ -494,7 +493,7 @@ static void via2_irq(unsigned int irq, struct irq_desc *desc)
  * VIA2 dispatcher as a fast interrupt handler.
  */
 
-void via_nubus_irq(unsigned int irq, struct irq_desc *desc)
+static void via_nubus_irq(struct irq_desc *desc)
 {
 	int slot_irq;
 	unsigned char slot_bit, events;

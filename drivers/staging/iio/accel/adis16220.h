@@ -1,10 +1,9 @@
 #ifndef SPI_ADIS16220_H_
 #define SPI_ADIS16220_H_
 
-#define ADIS16220_STARTUP_DELAY	220 /* ms */
+#include <linux/iio/imu/adis.h>
 
-#define ADIS16220_READ_REG(a)    a
-#define ADIS16220_WRITE_REG(a) ((a) | 0x80)
+#define ADIS16220_STARTUP_DELAY	220 /* ms */
 
 /* Flash memory write count */
 #define ADIS16220_FLASH_CNT     0x00
@@ -72,50 +71,50 @@
 #define ADIS16220_CAPTURE_SIZE  2048
 
 /* MSC_CTRL */
-#define ADIS16220_MSC_CTRL_SELF_TEST_EN	        (1 << 8)
-#define ADIS16220_MSC_CTRL_POWER_SUP_COM_AIN1	(1 << 1)
-#define ADIS16220_MSC_CTRL_POWER_SUP_COM_AIN2	(1 << 0)
+#define ADIS16220_MSC_CTRL_SELF_TEST_EN	        BIT(8)
+#define ADIS16220_MSC_CTRL_POWER_SUP_COM_AIN1	BIT(1)
+#define ADIS16220_MSC_CTRL_POWER_SUP_COM_AIN2	BIT(0)
 
 /* DIO_CTRL */
-#define ADIS16220_MSC_CTRL_DIO2_BUSY_IND     (3<<4)
-#define ADIS16220_MSC_CTRL_DIO1_BUSY_IND     (3<<2)
-#define ADIS16220_MSC_CTRL_DIO2_ACT_HIGH     (1<<1)
-#define ADIS16220_MSC_CTRL_DIO1_ACT_HIGH     (1<<0)
+#define ADIS16220_MSC_CTRL_DIO2_BUSY_IND     (BIT(5) | BIT(4))
+#define ADIS16220_MSC_CTRL_DIO1_BUSY_IND     (BIT(3) | BIT(2))
+#define ADIS16220_MSC_CTRL_DIO2_ACT_HIGH     BIT(1)
+#define ADIS16220_MSC_CTRL_DIO1_ACT_HIGH     BIT(0)
 
 /* DIAG_STAT */
 /* AIN2 sample > ALM_MAG2 */
-#define ADIS16220_DIAG_STAT_ALM_MAG2    (1<<14)
+#define ADIS16220_DIAG_STAT_ALM_MAG2    BIT(14)
 /* AIN1 sample > ALM_MAG1 */
-#define ADIS16220_DIAG_STAT_ALM_MAG1    (1<<13)
+#define ADIS16220_DIAG_STAT_ALM_MAG1    BIT(13)
 /* Acceleration sample > ALM_MAGA */
-#define ADIS16220_DIAG_STAT_ALM_MAGA    (1<<12)
+#define ADIS16220_DIAG_STAT_ALM_MAGA    BIT(12)
 /* Error condition programmed into ALM_MAGS[11:0] and ALM_CTRL[5:4] is true */
-#define ADIS16220_DIAG_STAT_ALM_MAGS    (1<<11)
+#define ADIS16220_DIAG_STAT_ALM_MAGS    BIT(11)
 /* |Peak value in AIN2 data capture| > ALM_MAG2 */
-#define ADIS16220_DIAG_STAT_PEAK_AIN2   (1<<10)
+#define ADIS16220_DIAG_STAT_PEAK_AIN2   BIT(10)
 /* |Peak value in AIN1 data capture| > ALM_MAG1 */
-#define ADIS16220_DIAG_STAT_PEAK_AIN1   (1<<9)
+#define ADIS16220_DIAG_STAT_PEAK_AIN1   BIT(9)
 /* |Peak value in acceleration data capture| > ALM_MAGA */
-#define ADIS16220_DIAG_STAT_PEAK_ACCEL  (1<<8)
+#define ADIS16220_DIAG_STAT_PEAK_ACCEL  BIT(8)
 /* Data ready, capture complete */
-#define ADIS16220_DIAG_STAT_DATA_RDY    (1<<7)
-#define ADIS16220_DIAG_STAT_FLASH_CHK	(1<<6)
-#define ADIS16220_DIAG_STAT_SELF_TEST	(1<<5)
+#define ADIS16220_DIAG_STAT_DATA_RDY    BIT(7)
+#define ADIS16220_DIAG_STAT_FLASH_CHK	BIT(6)
+#define ADIS16220_DIAG_STAT_SELF_TEST	BIT(5)
 /* Capture period violation/interruption */
-#define ADIS16220_DIAG_STAT_VIOLATION	(1<<4)
+#define ADIS16220_DIAG_STAT_VIOLATION_BIT	4
 /* SPI communications failure */
-#define ADIS16220_DIAG_STAT_SPI_FAIL	(1<<3)
+#define ADIS16220_DIAG_STAT_SPI_FAIL_BIT	3
 /* Flash update failure */
-#define ADIS16220_DIAG_STAT_FLASH_UPT	(1<<2)
+#define ADIS16220_DIAG_STAT_FLASH_UPT_BIT	2
 /* Power supply above 3.625 V */
-#define ADIS16220_DIAG_STAT_POWER_HIGH	(1<<1)
+#define ADIS16220_DIAG_STAT_POWER_HIGH_BIT	1
 /* Power supply below 3.15 V */
-#define ADIS16220_DIAG_STAT_POWER_LOW	(1<<0)
+#define ADIS16220_DIAG_STAT_POWER_LOW_BIT	0
 
 /* GLOB_CMD */
-#define ADIS16220_GLOB_CMD_SW_RESET	(1<<7)
-#define ADIS16220_GLOB_CMD_SELF_TEST	(1<<2)
-#define ADIS16220_GLOB_CMD_PWR_DOWN	(1<<1)
+#define ADIS16220_GLOB_CMD_SW_RESET	BIT(7)
+#define ADIS16220_GLOB_CMD_SELF_TEST	BIT(2)
+#define ADIS16220_GLOB_CMD_PWR_DOWN	BIT(1)
 
 #define ADIS16220_MAX_TX 2048
 #define ADIS16220_MAX_RX 2048
@@ -125,13 +124,14 @@
 
 /**
  * struct adis16220_state - device instance specific data
- * @us:			actual spi_device
+ * @adis:		adis device
  * @tx:			transmit buffer
  * @rx:			receive buffer
  * @buf_lock:		mutex to protect tx and rx
  **/
 struct adis16220_state {
-	struct spi_device	*us;
+	struct adis adis;
+
 	struct mutex		buf_lock;
 	u8			tx[ADIS16220_MAX_TX] ____cacheline_aligned;
 	u8			rx[ADIS16220_MAX_RX];

@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
@@ -34,29 +33,27 @@ static int rbtx4939_flash_remove(struct platform_device *dev)
 	info = platform_get_drvdata(dev);
 	if (!info)
 		return 0;
-	platform_set_drvdata(dev, NULL);
 
 	if (info->mtd) {
-		struct rbtx4939_flash_data *pdata = dev->dev.platform_data;
-
 		mtd_device_unregister(info->mtd);
 		map_destroy(info->mtd);
 	}
 	return 0;
 }
 
-static const char *rom_probe_types[] = { "cfi_probe", "jedec_probe", NULL };
+static const char * const rom_probe_types[] = {
+	"cfi_probe", "jedec_probe", NULL };
 
 static int rbtx4939_flash_probe(struct platform_device *dev)
 {
 	struct rbtx4939_flash_data *pdata;
 	struct rbtx4939_flash_info *info;
 	struct resource *res;
-	const char **probe_type;
+	const char * const *probe_type;
 	int err = 0;
 	unsigned long size;
 
-	pdata = dev->dev.platform_data;
+	pdata = dev_get_platdata(&dev->dev);
 	if (!pdata)
 		return -ENODEV;
 
@@ -99,9 +96,7 @@ static int rbtx4939_flash_probe(struct platform_device *dev)
 		err = -ENXIO;
 		goto err_out;
 	}
-	info->mtd->owner = THIS_MODULE;
-	if (err)
-		goto err_out;
+	info->mtd->dev.parent = &dev->dev;
 	err = mtd_device_parse_register(info->mtd, NULL, NULL, pdata->parts,
 					pdata->nr_parts);
 
@@ -132,7 +127,6 @@ static struct platform_driver rbtx4939_flash_driver = {
 	.shutdown	= rbtx4939_flash_shutdown,
 	.driver		= {
 		.name	= "rbtx4939-flash",
-		.owner	= THIS_MODULE,
 	},
 };
 

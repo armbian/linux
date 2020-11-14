@@ -115,12 +115,12 @@ static void tcp_lp_init(struct sock *sk)
  * Will only call newReno CA when away from inference.
  * From TCP-LP's paper, this will be handled in additive increasement.
  */
-static void tcp_lp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
+static void tcp_lp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct lp *lp = inet_csk_ca(sk);
 
 	if (!(lp->flag & LP_WITHIN_INF))
-		tcp_reno_cong_avoid(sk, ack, in_flight);
+		tcp_reno_cong_avoid(sk, ack, acked);
 }
 
 /**
@@ -264,13 +264,15 @@ static void tcp_lp_pkts_acked(struct sock *sk, u32 num_acked, s32 rtt_us)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct lp *lp = inet_csk_ca(sk);
+	u32 delta;
 
 	if (rtt_us > 0)
 		tcp_lp_rtt_sample(sk, rtt_us);
 
 	/* calc inference */
-	if (tcp_time_stamp > tp->rx_opt.rcv_tsecr)
-		lp->inference = 3 * (tcp_time_stamp - tp->rx_opt.rcv_tsecr);
+	delta = tcp_time_stamp - tp->rx_opt.rcv_tsecr;
+	if ((s32)delta > 0)
+		lp->inference = 3 * delta;
 
 	/* test if within inference */
 	if (lp->last_drop && (tcp_time_stamp - lp->last_drop < lp->inference))
@@ -314,11 +316,9 @@ static void tcp_lp_pkts_acked(struct sock *sk, u32 num_acked, s32 rtt_us)
 }
 
 static struct tcp_congestion_ops tcp_lp __read_mostly = {
-	.flags = TCP_CONG_RTT_STAMP,
 	.init = tcp_lp_init,
 	.ssthresh = tcp_reno_ssthresh,
 	.cong_avoid = tcp_lp_cong_avoid,
-	.min_cwnd = tcp_reno_min_cwnd,
 	.pkts_acked = tcp_lp_pkts_acked,
 
 	.owner = THIS_MODULE,

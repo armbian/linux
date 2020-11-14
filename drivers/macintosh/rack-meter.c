@@ -25,6 +25,8 @@
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <linux/kernel_stat.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 
 #include <asm/io.h>
 #include <asm/prom.h>
@@ -180,31 +182,31 @@ static void rackmeter_setup_dbdma(struct rackmeter *rm)
 
 	/* Prepare 4 dbdma commands for the 2 buffers */
 	memset(cmd, 0, 4 * sizeof(struct dbdma_cmd));
-	st_le16(&cmd->req_count, 4);
-	st_le16(&cmd->command, STORE_WORD | INTR_ALWAYS | KEY_SYSTEM);
-	st_le32(&cmd->phy_addr, rm->dma_buf_p +
+	cmd->req_count = cpu_to_le16(4);
+	cmd->command = cpu_to_le16(STORE_WORD | INTR_ALWAYS | KEY_SYSTEM);
+	cmd->phy_addr = cpu_to_le32(rm->dma_buf_p +
 		offsetof(struct rackmeter_dma, mark));
-	st_le32(&cmd->cmd_dep, 0x02000000);
+	cmd->cmd_dep = cpu_to_le32(0x02000000);
 	cmd++;
 
-	st_le16(&cmd->req_count, SAMPLE_COUNT * 4);
-	st_le16(&cmd->command, OUTPUT_MORE);
-	st_le32(&cmd->phy_addr, rm->dma_buf_p +
+	cmd->req_count = cpu_to_le16(SAMPLE_COUNT * 4);
+	cmd->command = cpu_to_le16(OUTPUT_MORE);
+	cmd->phy_addr = cpu_to_le32(rm->dma_buf_p +
 		offsetof(struct rackmeter_dma, buf1));
 	cmd++;
 
-	st_le16(&cmd->req_count, 4);
-	st_le16(&cmd->command, STORE_WORD | INTR_ALWAYS | KEY_SYSTEM);
-	st_le32(&cmd->phy_addr, rm->dma_buf_p +
+	cmd->req_count = cpu_to_le16(4);
+	cmd->command = cpu_to_le16(STORE_WORD | INTR_ALWAYS | KEY_SYSTEM);
+	cmd->phy_addr = cpu_to_le32(rm->dma_buf_p +
 		offsetof(struct rackmeter_dma, mark));
-	st_le32(&cmd->cmd_dep, 0x01000000);
+	cmd->cmd_dep = cpu_to_le32(0x01000000);
 	cmd++;
 
-	st_le16(&cmd->req_count, SAMPLE_COUNT * 4);
-	st_le16(&cmd->command, OUTPUT_MORE | BR_ALWAYS);
-	st_le32(&cmd->phy_addr, rm->dma_buf_p +
+	cmd->req_count = cpu_to_le16(SAMPLE_COUNT * 4);
+	cmd->command = cpu_to_le16(OUTPUT_MORE | BR_ALWAYS);
+	cmd->phy_addr = cpu_to_le32(rm->dma_buf_p +
 		offsetof(struct rackmeter_dma, buf2));
-	st_le32(&cmd->cmd_dep, rm->dma_buf_p);
+	cmd->cmd_dep = cpu_to_le32(rm->dma_buf_p);
 
 	rackmeter_do_pause(rm, 0);
 }
@@ -253,7 +255,7 @@ static void rackmeter_do_timer(struct work_struct *work)
 				 msecs_to_jiffies(CPU_SAMPLING_RATE));
 }
 
-static void __devinit rackmeter_init_cpu_sniffer(struct rackmeter *rm)
+static void rackmeter_init_cpu_sniffer(struct rackmeter *rm)
 {
 	unsigned int cpu;
 
@@ -287,7 +289,7 @@ static void rackmeter_stop_cpu_sniffer(struct rackmeter *rm)
 	cancel_delayed_work_sync(&rm->cpu[1].sniffer);
 }
 
-static int __devinit rackmeter_setup(struct rackmeter *rm)
+static int rackmeter_setup(struct rackmeter *rm)
 {
 	pr_debug("rackmeter: setting up i2s..\n");
 	rackmeter_setup_i2s(rm);
@@ -362,8 +364,8 @@ static irqreturn_t rackmeter_irq(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
-static int __devinit rackmeter_probe(struct macio_dev* mdev,
-				     const struct of_device_id *match)
+static int rackmeter_probe(struct macio_dev* mdev,
+			   const struct of_device_id *match)
 {
 	struct device_node *i2s = NULL, *np = NULL;
 	struct rackmeter *rm = NULL;
@@ -521,7 +523,7 @@ static int __devinit rackmeter_probe(struct macio_dev* mdev,
 	return rc;
 }
 
-static int __devexit rackmeter_remove(struct macio_dev* mdev)
+static int rackmeter_remove(struct macio_dev* mdev)
 {
 	struct rackmeter *rm = dev_get_drvdata(&mdev->ofdev.dev);
 
@@ -588,7 +590,7 @@ static struct macio_driver rackmeter_driver = {
 		.of_match_table = rackmeter_match,
 	},
 	.probe = rackmeter_probe,
-	.remove = __devexit_p(rackmeter_remove),
+	.remove = rackmeter_remove,
 	.shutdown = rackmeter_shutdown,
 };
 

@@ -11,10 +11,10 @@
  * return value.
  */
 #include <linux/linkage.h>
-#include <asm/dwarf2.h>
 #include <asm/thread_info.h>
 #include <asm/errno.h>
 #include <asm/asm.h>
+#include <asm/smap.h>
 
 
 /*
@@ -29,16 +29,16 @@
  * as they get called from within inline assembly.
  */
 
-#define ENTER	CFI_STARTPROC ; \
-		GET_THREAD_INFO(%_ASM_BX)
-#define EXIT	ret ; \
-		CFI_ENDPROC
+#define ENTER	GET_THREAD_INFO(%_ASM_BX)
+#define EXIT	ASM_CLAC ;	\
+		ret
 
 .text
 ENTRY(__put_user_1)
 	ENTER
 	cmp TI_addr_limit(%_ASM_BX),%_ASM_CX
 	jae bad_put_user
+	ASM_STAC
 1:	movb %al,(%_ASM_CX)
 	xor %eax,%eax
 	EXIT
@@ -50,6 +50,7 @@ ENTRY(__put_user_2)
 	sub $1,%_ASM_BX
 	cmp %_ASM_BX,%_ASM_CX
 	jae bad_put_user
+	ASM_STAC
 2:	movw %ax,(%_ASM_CX)
 	xor %eax,%eax
 	EXIT
@@ -61,6 +62,7 @@ ENTRY(__put_user_4)
 	sub $3,%_ASM_BX
 	cmp %_ASM_BX,%_ASM_CX
 	jae bad_put_user
+	ASM_STAC
 3:	movl %eax,(%_ASM_CX)
 	xor %eax,%eax
 	EXIT
@@ -72,6 +74,7 @@ ENTRY(__put_user_8)
 	sub $7,%_ASM_BX
 	cmp %_ASM_BX,%_ASM_CX
 	jae bad_put_user
+	ASM_STAC
 4:	mov %_ASM_AX,(%_ASM_CX)
 #ifdef CONFIG_X86_32
 5:	movl %edx,4(%_ASM_CX)
@@ -81,17 +84,14 @@ ENTRY(__put_user_8)
 ENDPROC(__put_user_8)
 
 bad_put_user:
-	CFI_STARTPROC
 	movl $-EFAULT,%eax
 	EXIT
 END(bad_put_user)
 
-.section __ex_table,"a"
-	_ASM_PTR 1b,bad_put_user
-	_ASM_PTR 2b,bad_put_user
-	_ASM_PTR 3b,bad_put_user
-	_ASM_PTR 4b,bad_put_user
+	_ASM_EXTABLE(1b,bad_put_user)
+	_ASM_EXTABLE(2b,bad_put_user)
+	_ASM_EXTABLE(3b,bad_put_user)
+	_ASM_EXTABLE(4b,bad_put_user)
 #ifdef CONFIG_X86_32
-	_ASM_PTR 5b,bad_put_user
+	_ASM_EXTABLE(5b,bad_put_user)
 #endif
-.previous

@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2015 Thomas Meyer (thomas@m3y3r.de)
  * Copyright (C) 2000 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  * Licensed under the GPL
  */
@@ -10,11 +11,11 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/resource.h>
-#include "as-layout.h"
-#include "init.h"
-#include "kern_util.h"
-#include "os.h"
-#include "um_malloc.h"
+#include <as-layout.h>
+#include <init.h>
+#include <kern_util.h>
+#include <os.h>
+#include <um_malloc.h>
 
 #define PGD_BOUND (4 * 1024 * 1024)
 #define STACKSIZE (8 * 1024 * 1024)
@@ -123,6 +124,8 @@ int __init main(int argc, char **argv, char **envp)
 
 	setup_env_path();
 
+	setsid();
+
 	new_argv = malloc((argc + 1) * sizeof(char *));
 	if (new_argv == NULL) {
 		perror("Mallocing argv");
@@ -149,6 +152,7 @@ int __init main(int argc, char **argv, char **envp)
 #endif
 
 	do_uml_initcalls();
+	change_sig(SIGPIPE, 0);
 	ret = linux_main(argc, argv);
 
 	/*
@@ -160,13 +164,13 @@ int __init main(int argc, char **argv, char **envp)
 
 	/*
 	 * This signal stuff used to be in the reboot case.  However,
-	 * sometimes a SIGVTALRM can come in when we're halting (reproducably
+	 * sometimes a timer signal can come in when we're halting (reproducably
 	 * when writing out gcov information, presumably because that takes
 	 * some time) and cause a segfault.
 	 */
 
-	/* stop timers and set SIGVTALRM to be ignored */
-	disable_timer();
+	/* stop timers and set timer signal to be ignored */
+	os_timer_disable();
 
 	/* disable SIGIO for the fds and set SIGIO to be ignored */
 	err = deactivate_all_fds();

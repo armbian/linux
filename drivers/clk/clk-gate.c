@@ -26,70 +26,72 @@
  * parent - fixed parent.  No clk_set_parent support
  */
 
-#define to_clk_gate(_hw) container_of(_hw, struct clk_gate, hw)
-
-static void clk_gate_set_bit(struct clk_gate *gate)
+/*
+ * It works on following logic:
+ *
+ * For enabling clock, enable = 1
+ *	set2dis = 1	-> clear bit	-> set = 0
+ *	set2dis = 0	-> set bit	-> set = 1
+ *
+ * For disabling clock, enable = 0
+ *	set2dis = 1	-> set bit	-> set = 1
+ *	set2dis = 0	-> clear bit	-> set = 0
+ *
+ * So, result is always: enable xor set2dis.
+ */
+static void clk_gate_endisable(struct clk_hw *hw, int enable)
 {
+	struct clk_gate *gate = to_clk_gate(hw);
+	int set = gate->flags & CLK_GATE_SET_TO_DISABLE ? 1 : 0;
+	unsigned long uninitialized_var(flags);
 	u32 reg;
-	unsigned long flags = 0;
+
+	set ^= enable;
 
 	if (gate->lock)
 		spin_lock_irqsave(gate->lock, flags);
+	else
+		__acquire(gate->lock);
 
-	reg = readl(gate->reg);
-	reg |= BIT(gate->bit_idx);
-	writel(reg, gate->reg);
+	if (gate->flags & CLK_GATE_HIWORD_MASK) {
+		reg = BIT(gate->bit_idx + 16);
+		if (set)
+			reg |= BIT(gate->bit_idx);
+	} else {
+		reg = clk_readl(gate->reg);
 
-	if (gate->lock)
-		spin_unlock_irqrestore(gate->lock, flags);
-}
+		if (set)
+			reg |= BIT(gate->bit_idx);
+		else
+			reg &= ~BIT(gate->bit_idx);
+	}
 
-static void clk_gate_clear_bit(struct clk_gate *gate)
-{
-	u32 reg;
-	unsigned long flags = 0;
-
-	if (gate->lock)
-		spin_lock_irqsave(gate->lock, flags);
-
-	reg = readl(gate->reg);
-	reg &= ~BIT(gate->bit_idx);
-	writel(reg, gate->reg);
+	clk_writel(reg, gate->reg);
 
 	if (gate->lock)
 		spin_unlock_irqrestore(gate->lock, flags);
+	else
+		__release(gate->lock);
 }
 
 static int clk_gate_enable(struct clk_hw *hw)
 {
-	struct clk_gate *gate = to_clk_gate(hw);
-
-	if (gate->flags & CLK_GATE_SET_TO_DISABLE)
-		clk_gate_clear_bit(gate);
-	else
-		clk_gate_set_bit(gate);
+	clk_gate_endisable(hw, 1);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(clk_gate_enable);
 
 static void clk_gate_disable(struct clk_hw *hw)
 {
-	struct clk_gate *gate = to_clk_gate(hw);
-
-	if (gate->flags & CLK_GATE_SET_TO_DISABLE)
-		clk_gate_set_bit(gate);
-	else
-		clk_gate_clear_bit(gate);
+	clk_gate_endisable(hw, 0);
 }
-EXPORT_SYMBOL_GPL(clk_gate_disable);
 
 static int clk_gate_is_enabled(struct clk_hw *hw)
 {
 	u32 reg;
 	struct clk_gate *gate = to_clk_gate(hw);
 
-	reg = readl(gate->reg);
+	reg = clk_readl(gate->reg);
 
 	/* if a set bit disables this clk, flip it before masking */
 	if (gate->flags & CLK_GATE_SET_TO_DISABLE)
@@ -99,7 +101,6 @@ static int clk_gate_is_enabled(struct clk_hw *hw)
 
 	return reg ? 1 : 0;
 }
-EXPORT_SYMBOL_GPL(clk_gate_is_enabled);
 
 const struct clk_ops clk_gate_ops = {
 	.enable = clk_gate_enable,
@@ -128,13 +129,17 @@ struct clk *clk_register_gate(struct device *dev, const char *name,
 	struct clk *clk;
 	struct clk_init_data init;
 
-	/* allocate the gate */
-	gate = kzalloc(sizeof(struct clk_gate), GFP_KERNEL);
-
-	if (!gate) {
-		pr_err("%s: could not allocate gated clk\n", __func__);
-		return ERR_PTR(-ENOMEM);
+	if (clk_gate_flags & CLK_GATE_HIWORD_MASK) {
+		if (bit_idx > 15) {
+			pr_err("gate bit exceeds LOWORD field\n");
+			return ERR_PTR(-EINVAL);
+		}
 	}
+
+	/* allocate the gate */
+	gate = kzalloc(sizeof(*gate), GFP_KERNEL);
+	if (!gate)
+		return ERR_PTR(-ENOMEM);
 
 	init.name = name;
 	init.ops = &clk_gate_ops;
@@ -156,3 +161,20 @@ struct clk *clk_register_gate(struct device *dev, const char *name,
 
 	return clk;
 }
+EXPORT_SYMBOL_GPL(clk_register_gate);
+
+void clk_unregister_gate(struct clk *clk)
+{
+	struct clk_gate *gate;
+	struct clk_hw *hw;
+
+	hw = __clk_get_hw(clk);
+	if (!hw)
+		return;
+
+	gate = to_clk_gate(hw);
+
+	clk_unregister(clk);
+	kfree(gate);
+}
+EXPORT_SYMBOL_GPL(clk_unregister_gate);

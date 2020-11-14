@@ -24,6 +24,7 @@
 #include <linux/platform_device.h>
 #include <linux/hw_random.h>
 #include <linux/delay.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <asm/io.h>
 
@@ -94,7 +95,7 @@ static struct hwrng pasemi_rng = {
 	.data_read	= pasemi_rng_data_read,
 };
 
-static int __devinit rng_probe(struct platform_device *ofdev)
+static int rng_probe(struct platform_device *ofdev)
 {
 	void __iomem *rng_regs;
 	struct device_node *rng_np = ofdev->dev.of_node;
@@ -112,7 +113,7 @@ static int __devinit rng_probe(struct platform_device *ofdev)
 
 	pasemi_rng.priv = (unsigned long)rng_regs;
 
-	printk(KERN_INFO "Registering PA Semi RNG\n");
+	pr_info("Registering PA Semi RNG\n");
 
 	err = hwrng_register(&pasemi_rng);
 
@@ -122,7 +123,7 @@ static int __devinit rng_probe(struct platform_device *ofdev)
 	return err;
 }
 
-static int __devexit rng_remove(struct platform_device *dev)
+static int rng_remove(struct platform_device *dev)
 {
 	void __iomem *rng_regs = (void __iomem *)pasemi_rng.priv;
 
@@ -132,16 +133,16 @@ static int __devexit rng_remove(struct platform_device *dev)
 	return 0;
 }
 
-static struct of_device_id rng_match[] = {
+static const struct of_device_id rng_match[] = {
 	{ .compatible      = "1682m-rng", },
 	{ .compatible      = "pasemi,pwrficient-rng", },
 	{ },
 };
+MODULE_DEVICE_TABLE(of, rng_match);
 
 static struct platform_driver rng_driver = {
 	.driver = {
 		.name = "pasemi-rng",
-		.owner = THIS_MODULE,
 		.of_match_table = rng_match,
 	},
 	.probe		= rng_probe,

@@ -11,7 +11,6 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
@@ -48,13 +47,6 @@ eeprom_93xx46_bin_read(struct file *filp, struct kobject *kobj,
 
 	dev = container_of(kobj, struct device, kobj);
 	edev = dev_get_drvdata(dev);
-
-	if (unlikely(off >= edev->bin.size))
-		return 0;
-	if ((off + count) > edev->bin.size)
-		count = edev->bin.size - off;
-	if (unlikely(!count))
-		return count;
 
 	cmd_addr = OP_READ << edev->addrlen;
 
@@ -201,13 +193,6 @@ eeprom_93xx46_bin_write(struct file *filp, struct kobject *kobj,
 	dev = container_of(kobj, struct device, kobj);
 	edev = dev_get_drvdata(dev);
 
-	if (unlikely(off >= edev->bin.size))
-		return 0;
-	if ((off + count) > edev->bin.size)
-		count = edev->bin.size - off;
-	if (unlikely(!count))
-		return count;
-
 	/* only write even number of bytes on 16-bit devices */
 	if (edev->addrlen == 6) {
 		step = 2;
@@ -309,7 +294,7 @@ static ssize_t eeprom_93xx46_store_erase(struct device *dev,
 }
 static DEVICE_ATTR(erase, S_IWUSR, NULL, eeprom_93xx46_store_erase);
 
-static int __devinit eeprom_93xx46_probe(struct spi_device *spi)
+static int eeprom_93xx46_probe(struct spi_device *spi)
 {
 	struct eeprom_93xx46_platform_data *pd;
 	struct eeprom_93xx46_dev *edev;
@@ -363,22 +348,21 @@ static int __devinit eeprom_93xx46_probe(struct spi_device *spi)
 			dev_err(&spi->dev, "can't create erase interface\n");
 	}
 
-	dev_set_drvdata(&spi->dev, edev);
+	spi_set_drvdata(spi, edev);
 	return 0;
 fail:
 	kfree(edev);
 	return err;
 }
 
-static int __devexit eeprom_93xx46_remove(struct spi_device *spi)
+static int eeprom_93xx46_remove(struct spi_device *spi)
 {
-	struct eeprom_93xx46_dev *edev = dev_get_drvdata(&spi->dev);
+	struct eeprom_93xx46_dev *edev = spi_get_drvdata(spi);
 
 	if (!(edev->pdata->flags & EE_READONLY))
 		device_remove_file(&spi->dev, &dev_attr_erase);
 
 	sysfs_remove_bin_file(&spi->dev.kobj, &edev->bin);
-	dev_set_drvdata(&spi->dev, NULL);
 	kfree(edev);
 	return 0;
 }
@@ -386,10 +370,9 @@ static int __devexit eeprom_93xx46_remove(struct spi_device *spi)
 static struct spi_driver eeprom_93xx46_driver = {
 	.driver = {
 		.name	= "93xx46",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= eeprom_93xx46_probe,
-	.remove		= __devexit_p(eeprom_93xx46_remove),
+	.remove		= eeprom_93xx46_remove,
 };
 
 module_spi_driver(eeprom_93xx46_driver);

@@ -18,6 +18,7 @@
 #include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/mtd.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/of_gpio.h>
 #include <linux/io.h>
@@ -152,9 +153,9 @@ static void fun_write_buf(struct mtd_info *mtd, const uint8_t *buf, int len)
 		fun_wait_rnb(fun);
 }
 
-static int __devinit fun_chip_init(struct fsl_upm_nand *fun,
-				   const struct device_node *upm_np,
-				   const struct resource *io_res)
+static int fun_chip_init(struct fsl_upm_nand *fun,
+			 const struct device_node *upm_np,
+			 const struct resource *io_res)
 {
 	int ret;
 	struct device_node *flash_np;
@@ -175,7 +176,7 @@ static int __devinit fun_chip_init(struct fsl_upm_nand *fun,
 		fun->chip.dev_ready = fun_chip_ready;
 
 	fun->mtd.priv = &fun->chip;
-	fun->mtd.owner = THIS_MODULE;
+	fun->mtd.dev.parent = fun->dev;
 
 	flash_np = of_get_next_child(upm_np, NULL);
 	if (!flash_np)
@@ -201,7 +202,7 @@ err:
 	return ret;
 }
 
-static int __devinit fun_probe(struct platform_device *ofdev)
+static int fun_probe(struct platform_device *ofdev)
 {
 	struct fsl_upm_nand *fun;
 	struct resource io_res;
@@ -318,7 +319,7 @@ err1:
 	return ret;
 }
 
-static int __devexit fun_remove(struct platform_device *ofdev)
+static int fun_remove(struct platform_device *ofdev)
 {
 	struct fsl_upm_nand *fun = dev_get_drvdata(&ofdev->dev);
 	int i;
@@ -346,11 +347,10 @@ MODULE_DEVICE_TABLE(of, of_fun_match);
 static struct platform_driver of_fun_driver = {
 	.driver = {
 		.name = "fsl,upm-nand",
-		.owner = THIS_MODULE,
 		.of_match_table = of_fun_match,
 	},
 	.probe		= fun_probe,
-	.remove		= __devexit_p(fun_remove),
+	.remove		= fun_remove,
 };
 
 module_platform_driver(of_fun_driver);

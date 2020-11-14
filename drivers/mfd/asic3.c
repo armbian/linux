@@ -138,7 +138,7 @@ static void asic3_irq_flip_edge(struct asic3 *asic,
 	spin_unlock_irqrestore(&asic->lock, flags);
 }
 
-static void asic3_irq_demux(unsigned int irq, struct irq_desc *desc)
+static void asic3_irq_demux(struct irq_desc *desc)
 {
 	struct asic3 *asic = irq_desc_get_handler_data(desc);
 	struct irq_data *data = irq_desc_get_irq_data(desc);
@@ -353,12 +353,28 @@ static int asic3_gpio_irq_type(struct irq_data *data, unsigned int type)
 	return 0;
 }
 
+static int asic3_gpio_irq_set_wake(struct irq_data *data, unsigned int on)
+{
+	struct asic3 *asic = irq_data_get_irq_chip_data(data);
+	u32 bank, index;
+	u16 bit;
+
+	bank = asic3_irq_to_bank(asic, data->irq);
+	index = asic3_irq_to_index(asic, data->irq);
+	bit = 1<<index;
+
+	asic3_set_register(asic, bank + ASIC3_GPIO_SLEEP_MASK, bit, !on);
+
+	return 0;
+}
+
 static struct irq_chip asic3_gpio_irq_chip = {
 	.name		= "ASIC3-GPIO",
 	.irq_ack	= asic3_mask_gpio_irq,
 	.irq_mask	= asic3_mask_gpio_irq,
 	.irq_unmask	= asic3_unmask_gpio_irq,
 	.irq_set_type	= asic3_gpio_irq_type,
+	.irq_set_wake	= asic3_gpio_irq_set_wake,
 };
 
 static struct irq_chip asic3_irq_chip = {
@@ -395,15 +411,14 @@ static int __init asic3_irq_probe(struct platform_device *pdev)
 
 		irq_set_chip_data(irq, asic);
 		irq_set_handler(irq, handle_level_irq);
-		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 
 	asic3_write_register(asic, ASIC3_OFFSET(INTR, INT_MASK),
 			     ASIC3_INTMASK_GINTMASK);
 
-	irq_set_chained_handler(asic->irq_nr, asic3_irq_demux);
+	irq_set_chained_handler_and_data(asic->irq_nr, asic3_irq_demux, asic);
 	irq_set_irq_type(asic->irq_nr, IRQ_TYPE_EDGE_RISING);
-	irq_set_handler_data(asic->irq_nr, asic);
 
 	return 0;
 }
@@ -416,7 +431,7 @@ static void asic3_irq_remove(struct platform_device *pdev)
 	irq_base = asic->irq_base;
 
 	for (irq = irq_base; irq < irq_base + ASIC3_NR_IRQS; irq++) {
-		set_irq_flags(irq, 0);
+		irq_set_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
 		irq_set_chip_and_handler(irq, NULL, NULL);
 		irq_set_chip_data(irq, NULL);
 	}
@@ -529,7 +544,7 @@ static int asic3_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
 {
 	struct asic3 *asic = container_of(chip, struct asic3, gpio);
 
-	return (offset < ASIC3_NUM_GPIOS) ? asic->irq_base + offset : -ENXIO;
+	return asic->irq_base + offset;
 }
 
 static __init int asic3_gpio_probe(struct platform_device *pdev,
@@ -589,7 +604,8 @@ static int asic3_gpio_remove(struct platform_device *pdev)
 {
 	struct asic3 *asic = platform_get_drvdata(pdev);
 
-	return gpiochip_remove(&asic->gpio);
+	gpiochip_remove(&asic->gpio);
+	return 0;
 }
 
 static void asic3_clk_enable(struct asic3 *asic, struct asic3_clk *clk)
@@ -679,7 +695,7 @@ static int ds1wm_disable(struct platform_device *pdev)
 	return 0;
 }
 
-static struct mfd_cell asic3_cell_ds1wm = {
+static const struct mfd_cell asic3_cell_ds1wm = {
 	.name          = "ds1wm",
 	.enable        = ds1wm_enable,
 	.disable       = ds1wm_disable,
@@ -781,7 +797,7 @@ static int asic3_mmc_disable(struct platform_device *pdev)
 	return 0;
 }
 
-static struct mfd_cell asic3_cell_mmc = {
+static const struct mfd_cell asic3_cell_mmc = {
 	.name          = "tmio-mmc",
 	.enable        = asic3_mmc_enable,
 	.disable       = asic3_mmc_disable,
@@ -883,29 +899,35 @@ static int __init asic3_mfd_probe(struct platform_device *pdev,
 	ds1wm_resources[0].end   >>= asic->bus_shift;
 
 	/* MMC */
-	asic->tmio_cnf = ioremap((ASIC3_SD_CONFIG_BASE >> asic->bus_shift) +
+	if (mem_sdio) {
+		asic->tmio_cnf = ioremap((ASIC3_SD_CONFIG_BASE >> asic->bus_shift) +
 				 mem_sdio->start,
 				 ASIC3_SD_CONFIG_SIZE >> asic->bus_shift);
-	if (!asic->tmio_cnf) {
-		ret = -ENOMEM;
-		dev_dbg(asic->dev, "Couldn't ioremap SD_CONFIG\n");
-		goto out;
+		if (!asic->tmio_cnf) {
+			ret = -ENOMEM;
+			dev_dbg(asic->dev, "Couldn't ioremap SD_CONFIG\n");
+			goto out;
+		}
 	}
 	asic3_mmc_resources[0].start >>= asic->bus_shift;
 	asic3_mmc_resources[0].end   >>= asic->bus_shift;
 
-	ret = mfd_add_devices(&pdev->dev, pdev->id,
-			&asic3_cell_ds1wm, 1, mem, asic->irq_base);
-	if (ret < 0)
-		goto out;
-
-	if (mem_sdio && (irq >= 0)) {
+	if (pdata->clock_rate) {
+		ds1wm_pdata.clock_rate = pdata->clock_rate;
 		ret = mfd_add_devices(&pdev->dev, pdev->id,
-			&asic3_cell_mmc, 1, mem_sdio, irq);
+			&asic3_cell_ds1wm, 1, mem, asic->irq_base, NULL);
 		if (ret < 0)
 			goto out;
 	}
 
+	if (mem_sdio && (irq >= 0)) {
+		ret = mfd_add_devices(&pdev->dev, pdev->id,
+			&asic3_cell_mmc, 1, mem_sdio, irq, NULL);
+		if (ret < 0)
+			goto out;
+	}
+
+	ret = 0;
 	if (pdata->leds) {
 		int i;
 
@@ -914,7 +936,7 @@ static int __init asic3_mfd_probe(struct platform_device *pdev,
 			asic3_cell_leds[i].pdata_size = sizeof(pdata->leds[i]);
 		}
 		ret = mfd_add_devices(&pdev->dev, 0,
-			asic3_cell_leds, ASIC3_NUM_LEDS, NULL, 0);
+			asic3_cell_leds, ASIC3_NUM_LEDS, NULL, 0, NULL);
 	}
 
  out:
@@ -932,13 +954,14 @@ static void asic3_mfd_remove(struct platform_device *pdev)
 /* Core */
 static int __init asic3_probe(struct platform_device *pdev)
 {
-	struct asic3_platform_data *pdata = pdev->dev.platform_data;
+	struct asic3_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct asic3 *asic;
 	struct resource *mem;
 	unsigned long clksel;
 	int ret = 0;
 
-	asic = kzalloc(sizeof(struct asic3), GFP_KERNEL);
+	asic = devm_kzalloc(&pdev->dev,
+			    sizeof(struct asic3), GFP_KERNEL);
 	if (asic == NULL) {
 		printk(KERN_ERR "kzalloc failed\n");
 		return -ENOMEM;
@@ -950,16 +973,14 @@ static int __init asic3_probe(struct platform_device *pdev)
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!mem) {
-		ret = -ENOMEM;
 		dev_err(asic->dev, "no MEM resource\n");
-		goto out_free;
+		return -ENOMEM;
 	}
 
 	asic->mapping = ioremap(mem->start, resource_size(mem));
 	if (!asic->mapping) {
-		ret = -ENOMEM;
 		dev_err(asic->dev, "Couldn't ioremap\n");
-		goto out_free;
+		return -ENOMEM;
 	}
 
 	asic->irq_base = pdata->irq_base;
@@ -1000,6 +1021,9 @@ static int __init asic3_probe(struct platform_device *pdev)
 
 	asic3_mfd_probe(pdev, pdata, mem);
 
+	asic3_set_register(asic, ASIC3_OFFSET(EXTCF, SELECT),
+		(ASIC3_EXTCF_CF0_BUF_EN|ASIC3_EXTCF_CF0_PWAIT_EN), 1);
+
 	dev_info(asic->dev, "ASIC3 Core driver\n");
 
 	return 0;
@@ -1010,16 +1034,16 @@ static int __init asic3_probe(struct platform_device *pdev)
  out_unmap:
 	iounmap(asic->mapping);
 
- out_free:
-	kfree(asic);
-
 	return ret;
 }
 
-static int __devexit asic3_remove(struct platform_device *pdev)
+static int asic3_remove(struct platform_device *pdev)
 {
 	int ret;
 	struct asic3 *asic = platform_get_drvdata(pdev);
+
+	asic3_set_register(asic, ASIC3_OFFSET(EXTCF, SELECT),
+		(ASIC3_EXTCF_CF0_BUF_EN|ASIC3_EXTCF_CF0_PWAIT_EN), 0);
 
 	asic3_mfd_remove(pdev);
 
@@ -1032,8 +1056,6 @@ static int __devexit asic3_remove(struct platform_device *pdev)
 
 	iounmap(asic->mapping);
 
-	kfree(asic);
-
 	return 0;
 }
 
@@ -1045,7 +1067,7 @@ static struct platform_driver asic3_device_driver = {
 	.driver		= {
 		.name	= "asic3",
 	},
-	.remove		= __devexit_p(asic3_remove),
+	.remove		= asic3_remove,
 	.shutdown	= asic3_shutdown,
 };
 

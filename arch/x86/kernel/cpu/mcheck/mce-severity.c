@@ -31,6 +31,7 @@
 
 enum context { IN_KERNEL = 1, IN_USER = 2 };
 enum ser { SER_REQUIRED = 1, NO_SER = 2 };
+enum exception { EXCP_CONTEXT = 1, NO_EXCP = 2 };
 
 static struct severity {
 	u64 mask;
@@ -40,6 +41,7 @@ static struct severity {
 	unsigned char mcgres;
 	unsigned char ser;
 	unsigned char context;
+	unsigned char excp;
 	unsigned char covered;
 	char *msg;
 } severities[] = {
@@ -48,6 +50,8 @@ static struct severity {
 #define  USER		.context = IN_USER
 #define  SER		.ser = SER_REQUIRED
 #define  NOSER		.ser = NO_SER
+#define  EXCP		.excp = EXCP_CONTEXT
+#define  NOEXCP		.excp = NO_EXCP
 #define  BITCLR(x)	.mask = x, .result = 0
 #define  BITSET(x)	.mask = x, .result = x
 #define  MCGMASK(x, y)	.mcgmask = x, .mcgres = y
@@ -55,13 +59,6 @@ static struct severity {
 #define MCI_UC_S (MCI_STATUS_UC|MCI_STATUS_S)
 #define MCI_UC_SAR (MCI_STATUS_UC|MCI_STATUS_S|MCI_STATUS_AR)
 #define	MCI_ADDR (MCI_STATUS_ADDRV|MCI_STATUS_MISCV)
-#define MCACOD 0xffff
-/* Architecturally defined codes from SDM Vol. 3B Chapter 15 */
-#define MCACOD_SCRUB	0x00C0	/* 0xC0-0xCF Memory Scrubbing */
-#define MCACOD_SCRUBMSK	0xfff0
-#define MCACOD_L3WB	0x017A	/* L3 Explicit Writeback */
-#define MCACOD_DATA	0x0134	/* Data Load */
-#define MCACOD_INSTR	0x0150	/* Instruction Fetch */
 
 	MCESEV(
 		NO, "Invalid",
@@ -69,7 +66,7 @@ static struct severity {
 		),
 	MCESEV(
 		NO, "Not enabled",
-		BITCLR(MCI_STATUS_EN)
+		EXCP, BITCLR(MCI_STATUS_EN)
 		),
 	MCESEV(
 		PANIC, "Processor context corrupt",
@@ -78,16 +75,20 @@ static struct severity {
 	/* When MCIP is not set something is very confused */
 	MCESEV(
 		PANIC, "MCIP not set in MCA handler",
-		MCGMASK(MCG_STATUS_MCIP, 0)
+		EXCP, MCGMASK(MCG_STATUS_MCIP, 0)
 		),
 	/* Neither return not error IP -- no chance to recover -> PANIC */
 	MCESEV(
 		PANIC, "Neither restart nor error IP",
-		MCGMASK(MCG_STATUS_RIPV|MCG_STATUS_EIPV, 0)
+		EXCP, MCGMASK(MCG_STATUS_RIPV|MCG_STATUS_EIPV, 0)
 		),
 	MCESEV(
 		PANIC, "In kernel and no restart IP",
-		KERNEL, MCGMASK(MCG_STATUS_RIPV, 0)
+		EXCP, KERNEL, MCGMASK(MCG_STATUS_RIPV, 0)
+		),
+	MCESEV(
+		DEFERRED, "Deferred error",
+		NOSER, MASK(MCI_STATUS_UC|MCI_STATUS_DEFERRED|MCI_STATUS_POISON, MCI_STATUS_DEFERRED)
 		),
 	MCESEV(
 		KEEP, "Corrected error",
@@ -96,7 +97,7 @@ static struct severity {
 
 	/* ignore OVER for UCNA */
 	MCESEV(
-		KEEP, "Uncorrected no action required",
+		UCNA, "Uncorrected no action required",
 		SER, MASK(MCI_UC_SAR, MCI_STATUS_UC)
 		),
 	MCESEV(
@@ -117,13 +118,18 @@ static struct severity {
 	/* known AR MCACODs: */
 #ifdef	CONFIG_MEMORY_FAILURE
 	MCESEV(
-		KEEP, "HT thread notices Action required: data load error",
-		SER, MASK(MCI_STATUS_OVER|MCI_UC_SAR|MCI_ADDR|MCACOD, MCI_UC_SAR|MCI_ADDR|MCACOD_DATA),
-		MCGMASK(MCG_STATUS_EIPV, 0)
+		KEEP, "Action required but unaffected thread is continuable",
+		SER, MASK(MCI_STATUS_OVER|MCI_UC_SAR|MCI_ADDR, MCI_UC_SAR|MCI_ADDR),
+		MCGMASK(MCG_STATUS_RIPV|MCG_STATUS_EIPV, MCG_STATUS_RIPV)
 		),
 	MCESEV(
-		AR, "Action required: data load error",
+		AR, "Action required: data load error in a user process",
 		SER, MASK(MCI_STATUS_OVER|MCI_UC_SAR|MCI_ADDR|MCACOD, MCI_UC_SAR|MCI_ADDR|MCACOD_DATA),
+		USER
+		),
+	MCESEV(
+		AR, "Action required: instruction fetch error in a user process",
+		SER, MASK(MCI_STATUS_OVER|MCI_UC_SAR|MCI_ADDR|MCACOD, MCI_UC_SAR|MCI_ADDR|MCACOD_INSTR),
 		USER
 		),
 #endif
@@ -180,8 +186,63 @@ static int error_context(struct mce *m)
 	return ((m->cs & 3) == 3) ? IN_USER : IN_KERNEL;
 }
 
-int mce_severity(struct mce *m, int tolerant, char **msg)
+/*
+ * See AMD Error Scope Hierarchy table in a newer BKDG. For example
+ * 49125_15h_Models_30h-3Fh_BKDG.pdf, section "RAS Features"
+ */
+static int mce_severity_amd(struct mce *m, int tolerant, char **msg, bool is_excp)
 {
+	enum context ctx = error_context(m);
+
+	/* Processor Context Corrupt, no need to fumble too much, die! */
+	if (m->status & MCI_STATUS_PCC)
+		return MCE_PANIC_SEVERITY;
+
+	if (m->status & MCI_STATUS_UC) {
+
+		/*
+		 * On older systems where overflow_recov flag is not present, we
+		 * should simply panic if an error overflow occurs. If
+		 * overflow_recov flag is present and set, then software can try
+		 * to at least kill process to prolong system operation.
+		 */
+		if (mce_flags.overflow_recov) {
+			/* software can try to contain */
+			if (!(m->mcgstatus & MCG_STATUS_RIPV) && (ctx == IN_KERNEL))
+				return MCE_PANIC_SEVERITY;
+
+			/* kill current process */
+			return MCE_AR_SEVERITY;
+		} else {
+			/* at least one error was not logged */
+			if (m->status & MCI_STATUS_OVER)
+				return MCE_PANIC_SEVERITY;
+		}
+
+		/*
+		 * For any other case, return MCE_UC_SEVERITY so that we log the
+		 * error and exit #MC handler.
+		 */
+		return MCE_UC_SEVERITY;
+	}
+
+	/*
+	 * deferred error: poll handler catches these and adds to mce_ring so
+	 * memory-failure can take recovery actions.
+	 */
+	if (m->status & MCI_STATUS_DEFERRED)
+		return MCE_DEFERRED_SEVERITY;
+
+	/*
+	 * corrected error: poll handler catches these and passes responsibility
+	 * of decoding the error to EDAC
+	 */
+	return MCE_KEEP_SEVERITY;
+}
+
+static int mce_severity_intel(struct mce *m, int tolerant, char **msg, bool is_excp)
+{
+	enum exception excp = (is_excp ? EXCP_CONTEXT : NO_EXCP);
 	enum context ctx = error_context(m);
 	struct severity *s;
 
@@ -190,11 +251,13 @@ int mce_severity(struct mce *m, int tolerant, char **msg)
 			continue;
 		if ((m->mcgstatus & s->mcgmask) != s->mcgres)
 			continue;
-		if (s->ser == SER_REQUIRED && !mce_ser)
+		if (s->ser == SER_REQUIRED && !mca_cfg.ser)
 			continue;
-		if (s->ser == NO_SER && mce_ser)
+		if (s->ser == NO_SER && mca_cfg.ser)
 			continue;
 		if (s->context && ctx != s->context)
+			continue;
+		if (s->excp && excp != s->excp)
 			continue;
 		if (msg)
 			*msg = s->msg;
@@ -205,6 +268,16 @@ int mce_severity(struct mce *m, int tolerant, char **msg)
 		}
 		return s->sev;
 	}
+}
+
+/* Default to mce_severity_intel */
+int (*mce_severity)(struct mce *m, int tolerant, char **msg, bool is_excp) =
+		    mce_severity_intel;
+
+void __init mcheck_vendor_init_severity(void)
+{
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
+		mce_severity = mce_severity_amd;
 }
 
 #ifdef CONFIG_DEBUG_FS

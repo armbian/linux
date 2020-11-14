@@ -775,8 +775,7 @@ static int h5_open(struct hci_uart *hu)
 	struct h5_struct *h5;
 
 	BT_DBG("hu %p", hu);
-	
-	BT_INFO("h5_open");
+
 	h5 = kzalloc(sizeof(*h5), GFP_ATOMIC);
 	if (!h5)
 		return -ENOMEM;
@@ -804,7 +803,7 @@ static int h5_close(struct hci_uart *hu)
 	hu->priv = NULL;
 
 	BT_DBG("hu %p", hu);
-	BT_INFO("h5_close");
+
 	skb_queue_purge(&h5->unack);
 	skb_queue_purge(&h5->rel);
 	skb_queue_purge(&h5->unrel);

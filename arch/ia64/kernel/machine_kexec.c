@@ -85,12 +85,13 @@ static void ia64_machine_kexec(struct unw_frame_info *info, void *arg)
 	struct kimage *image = arg;
 	relocate_new_kernel_t rnk;
 	void *pal_addr = efi_get_pal_addr();
-	unsigned long code_addr = (unsigned long)page_address(image->control_code_page);
+	unsigned long code_addr;
 	int ii;
 	u64 fp, gp;
 	ia64_fptr_t *init_handler = (ia64_fptr_t *)ia64_os_init_on_kdump;
 
 	BUG_ON(!image);
+	code_addr = (unsigned long)page_address(image->control_code_page);
 	if (image->type == KEXEC_TYPE_CRASH) {
 		crash_save_this_cpu();
 		current->thread.ksp = (__u64)info->sw - 16;
@@ -155,9 +156,9 @@ void arch_crash_save_vmcoreinfo(void)
 	VMCOREINFO_OFFSET(node_memblk_s, start_paddr);
 	VMCOREINFO_OFFSET(node_memblk_s, size);
 #endif
-#ifdef CONFIG_PGTABLE_3
+#if CONFIG_PGTABLE_LEVELS == 3
 	VMCOREINFO_CONFIG(PGTABLE_3);
-#elif defined(CONFIG_PGTABLE_4)
+#elif CONFIG_PGTABLE_LEVELS == 4
 	VMCOREINFO_CONFIG(PGTABLE_4);
 #endif
 }

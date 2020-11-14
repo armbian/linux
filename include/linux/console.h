@@ -75,18 +75,21 @@ extern const struct consw newport_con;	/* SGI Newport console  */
 extern const struct consw prom_con;	/* SPARC PROM console */
 
 int con_is_bound(const struct consw *csw);
-int register_con_driver(const struct consw *csw, int first, int last);
-int unregister_con_driver(const struct consw *csw);
 int do_unregister_con_driver(const struct consw *csw);
-int take_over_console(const struct consw *sw, int first, int last, int deflt);
 int do_take_over_console(const struct consw *sw, int first, int last, int deflt);
 void give_up_console(const struct consw *sw);
 #ifdef CONFIG_HW_CONSOLE
 int con_debug_enter(struct vc_data *vc);
 int con_debug_leave(void);
 #else
-#define con_debug_enter(vc) (0)
-#define con_debug_leave() (0)
+static inline int con_debug_enter(struct vc_data *vc)
+{
+	return 0;
+}
+static inline int con_debug_leave(void)
+{
+	return 0;
+}
 #endif
 
 /* scroll */
@@ -112,6 +115,10 @@ int con_debug_leave(void);
 #define CON_BOOT	(8)
 #define CON_ANYTIME	(16) /* Safe to call when cpu is offline */
 #define CON_BRL		(32) /* Used for a braille device */
+#define CON_EXTENDED	(64) /* Use the extended output format a la /dev/kmsg */
+#if defined(CONFIG_ARCH_ROCKCHIP) && defined(CONFIG_PSTORE_CONSOLE)
+#define CON_PSTORE	(128) /* Print to pstore console anyway */
+#endif
 
 struct console {
 	char	name[16];
@@ -120,7 +127,7 @@ struct console {
 	struct tty_driver *(*device)(struct console *, int *);
 	void	(*unblank)(void);
 	int	(*setup)(struct console *, char *);
-	int	(*early_setup)(void);
+	int	(*match)(struct console *, char *name, int idx, char *options);
 	short	flags;
 	short	index;
 	int	cflag;
@@ -135,9 +142,9 @@ struct console {
 	for (con = console_drivers; con != NULL; con = con->next)
 
 extern int console_set_on_cmdline;
+extern struct console *early_console;
 
 extern int add_preferred_console(char *name, int idx, char *options);
-extern int update_console_cmdline(char *name, int idx, char *name_new, int idx_new, char *options);
 extern void register_console(struct console *);
 extern int unregister_console(struct console *);
 extern struct console *console_drivers;
@@ -146,6 +153,7 @@ extern int console_trylock(void);
 extern void console_unlock(void);
 extern void console_conditional_schedule(void);
 extern void console_unblank(void);
+extern void console_flush_on_panic(void);
 extern struct tty_driver *console_device(int *);
 extern void console_stop(struct console *);
 extern void console_start(struct console *);
@@ -153,7 +161,12 @@ extern int is_console_locked(void);
 extern int braille_register_console(struct console *, int index,
 		char *console_options, char *braille_options);
 extern int braille_unregister_console(struct console *);
+#ifdef CONFIG_TTY
 extern void console_sysfs_notify(void);
+#else
+static inline void console_sysfs_notify(void)
+{ }
+#endif
 extern bool console_suspend_enabled;
 
 /* Suspend and resume console messages over PM events */

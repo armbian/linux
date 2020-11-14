@@ -22,8 +22,8 @@
  *
  */
 
-#include "rawmidi.h"
-#include "seq_midi_event.h"
+#include <sound/rawmidi.h>
+#include <sound/seq_midi_event.h>
 
 /*
  * device file instance:
@@ -60,6 +60,7 @@ struct snd_virmidi_dev {
 	int port;			/* created/attached port */
 	unsigned int flags;		/* SNDRV_VIRMIDI_* */
 	rwlock_t filelist_lock;
+	struct rw_semaphore filelist_sem;
 	struct list_head filelist;
 };
 

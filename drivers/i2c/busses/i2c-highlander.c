@@ -12,7 +12,6 @@
  * of this archive for more details.
  */
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
@@ -356,7 +355,7 @@ static const struct i2c_algorithm highlander_i2c_algo = {
 	.functionality	= highlander_i2c_func,
 };
 
-static int __devinit highlander_i2c_probe(struct platform_device *pdev)
+static int highlander_i2c_probe(struct platform_device *pdev)
 {
 	struct highlander_i2c_dev *dev;
 	struct i2c_adapter *adap;
@@ -436,12 +435,10 @@ err_unmap:
 err:
 	kfree(dev);
 
-	platform_set_drvdata(pdev, NULL);
-
 	return ret;
 }
 
-static int __devexit highlander_i2c_remove(struct platform_device *pdev)
+static int highlander_i2c_remove(struct platform_device *pdev)
 {
 	struct highlander_i2c_dev *dev = platform_get_drvdata(pdev);
 
@@ -453,19 +450,16 @@ static int __devexit highlander_i2c_remove(struct platform_device *pdev)
 	iounmap(dev->base);
 	kfree(dev);
 
-	platform_set_drvdata(pdev, NULL);
-
 	return 0;
 }
 
 static struct platform_driver highlander_i2c_driver = {
 	.driver		= {
 		.name	= "i2c-highlander",
-		.owner	= THIS_MODULE,
 	},
 
 	.probe		= highlander_i2c_probe,
-	.remove		= __devexit_p(highlander_i2c_remove),
+	.remove		= highlander_i2c_remove,
 };
 
 module_platform_driver(highlander_i2c_driver);

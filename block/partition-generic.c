@@ -84,7 +84,7 @@ ssize_t part_size_show(struct device *dev,
 		       struct device_attribute *attr, char *buf)
 {
 	struct hd_struct *p = dev_to_part(dev);
-	return sprintf(buf, "%llu\n",(unsigned long long)p->nr_sects);
+	return sprintf(buf, "%llu\n",(unsigned long long)part_nr_sects_read(p));
 }
 
 static ssize_t part_ro_show(struct device *dev,
@@ -212,8 +212,7 @@ static void part_release(struct device *dev)
 {
 	struct hd_struct *p = dev_to_part(dev);
 	blk_free_devt(dev->devt);
-	free_part_stats(p);
-	free_part_info(p);
+	hd_free_part(p);
 	kfree(p);
 }
 
@@ -244,8 +243,9 @@ static void delete_partition_rcu_cb(struct rcu_head *head)
 	put_device(part_to_dev(part));
 }
 
-void __delete_partition(struct hd_struct *part)
+void __delete_partition(struct percpu_ref *ref)
 {
+	struct hd_struct *part = container_of(ref, struct hd_struct, ref);
 	call_rcu(&part->rcu_head, delete_partition_rcu_cb);
 }
 
@@ -266,7 +266,7 @@ void delete_partition(struct gendisk *disk, int partno)
 	kobject_put(part->holder_dir);
 	device_del(part_to_dev(part));
 
-	hd_struct_put(part);
+	hd_struct_kill(part);
 }
 
 static ssize_t whole_disk_show(struct device *dev,
@@ -305,6 +305,8 @@ struct hd_struct *add_partition(struct gendisk *disk, int partno,
 		err = -ENOMEM;
 		goto out_free;
 	}
+
+	seqcount_init(&p->nr_sects_seq);
 	pdev = part_to_dev(p);
 
 	p->start_sect = start;
@@ -318,8 +320,10 @@ struct hd_struct *add_partition(struct gendisk *disk, int partno,
 
 	if (info) {
 		struct partition_meta_info *pinfo = alloc_part_info(disk);
-		if (!pinfo)
+		if (!pinfo) {
+			err = -ENOMEM;
 			goto out_free_stats;
+		}
 		memcpy(pinfo, info, sizeof(*info));
 		p->info = pinfo;
 	}
@@ -358,14 +362,19 @@ struct hd_struct *add_partition(struct gendisk *disk, int partno,
 			goto out_del;
 	}
 
+	err = hd_ref_init(p);
+	if (err) {
+		if (flags & ADDPART_FLAG_WHOLEDISK)
+			goto out_remove_file;
+		goto out_del;
+	}
+
 	/* everything is up and running, commence */
 	rcu_assign_pointer(ptbl->part[partno], p);
 
 	/* suppress uevent if the disk suppresses it */
 	if (!dev_get_uevent_suppress(ddev))
 		kobject_uevent(&pdev->kobj, KOBJ_ADD);
-
-	hd_ref_init(p);
 	return p;
 
 out_free_info:
@@ -375,6 +384,8 @@ out_free_stats:
 out_free:
 	kfree(p);
 	return ERR_PTR(err);
+out_remove_file:
+	device_remove_file(pdev, &dev_attr_whole_disk);
 out_del:
 	kobject_put(p->holder_dir);
 	device_del(pdev);
@@ -406,7 +417,7 @@ static int drop_partitions(struct gendisk *disk, struct block_device *bdev)
 	struct hd_struct *part;
 	int res;
 
-	if (bdev->bd_part_count)
+	if (bdev->bd_part_count || bdev->bd_super)
 		return -EBUSY;
 	res = invalidate_partition(disk, 0);
 	if (res)
@@ -427,7 +438,7 @@ int rescan_partitions(struct gendisk *disk, struct block_device *bdev)
 	int p, highest, res;
 rescan:
 	if (state && !IS_ERR(state)) {
-		kfree(state);
+		free_partitions(state);
 		state = NULL;
 	}
 
@@ -534,7 +545,7 @@ rescan:
 			md_autodetect_dev(part_to_dev(part)->devt);
 #endif
 	}
-	kfree(state);
+	free_partitions(state);
 	return 0;
 }
 

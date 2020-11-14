@@ -59,10 +59,6 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>		/* needed for in_interrupt() proto */
 #include <linux/dma-mapping.h>
-#include <asm/io.h>
-#ifdef CONFIG_MTRR
-#include <asm/mtrr.h>
-#endif
 #include <linux/kthread.h>
 #include <scsi/scsi_host.h>
 
@@ -346,7 +342,7 @@ static int mpt_remove_dead_ioc_func(void *arg)
 	if ((pdev == NULL))
 		return -1;
 
-	pci_stop_and_remove_bus_device(pdev);
+	pci_stop_and_remove_bus_device_locked(pdev);
 	return 0;
 }
 
@@ -649,12 +645,10 @@ mptbase_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
 	case MPI_FUNCTION_CONFIG:
 	case MPI_FUNCTION_SAS_IO_UNIT_CONTROL:
 		ioc->mptbase_cmds.status |= MPT_MGMT_STATUS_COMMAND_GOOD;
-		if (reply) {
-			ioc->mptbase_cmds.status |= MPT_MGMT_STATUS_RF_VALID;
-			memcpy(ioc->mptbase_cmds.reply, reply,
-			    min(MPT_DEFAULT_FRAME_SIZE,
-				4 * reply->u.reply.MsgLength));
-		}
+		ioc->mptbase_cmds.status |= MPT_MGMT_STATUS_RF_VALID;
+		memcpy(ioc->mptbase_cmds.reply, reply,
+		    min(MPT_DEFAULT_FRAME_SIZE,
+			4 * reply->u.reply.MsgLength));
 		if (ioc->mptbase_cmds.status & MPT_MGMT_STATUS_PENDING) {
 			ioc->mptbase_cmds.status &= ~MPT_MGMT_STATUS_PENDING;
 			complete(&ioc->mptbase_cmds.done);
@@ -1037,7 +1031,7 @@ mpt_free_msg_frame(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf)
 		goto out;
 	/* signature to know if this mf is freed */
 	mf->u.frame.linkage.arg1 = cpu_to_le32(0xdeadbeaf);
-	list_add_tail(&mf->u.frame.linkage.list, &ioc->FreeQ);
+	list_add(&mf->u.frame.linkage.list, &ioc->FreeQ);
 #ifdef MFCNT
 	ioc->mfcnt--;
 #endif
@@ -1402,14 +1396,13 @@ mpt_verify_adapter(int iocid, MPT_ADAPTER **iocpp)
  *	@vendor: pci vendor id
  *	@device: pci device id
  *	@revision: pci revision id
- *	@prod_name: string returned
  *
  *	Returns product string displayed when driver loads,
  *	in /proc/mpt/summary and /sysfs/class/scsi_host/host<X>/version_product
  *
  **/
-static void
-mpt_get_product_name(u16 vendor, u16 device, u8 revision, char *prod_name)
+static const char*
+mpt_get_product_name(u16 vendor, u16 device, u8 revision)
 {
 	char *product_str = NULL;
 
@@ -1635,8 +1628,7 @@ mpt_get_product_name(u16 vendor, u16 device, u8 revision, char *prod_name)
 	}
 
  out:
-	if (product_str)
-		sprintf(prod_name, "%s", product_str);
+	return product_str;
 }
 
 /**
@@ -1653,7 +1645,6 @@ mpt_mapresources(MPT_ADAPTER *ioc)
 	unsigned long	 port;
 	u32		 msize;
 	u32		 psize;
-	u8		 revision;
 	int		 r = -ENODEV;
 	struct pci_dev *pdev;
 
@@ -1667,10 +1658,8 @@ mpt_mapresources(MPT_ADAPTER *ioc)
 	if (pci_request_selected_regions(pdev, ioc->bars, "mpt")) {
 		printk(MYIOC_s_ERR_FMT "pci_request_selected_regions() with "
 		    "MEM failed\n", ioc->name);
-		return r;
+		goto out_pci_disable_device;
 	}
-
-	pci_read_config_byte(pdev, PCI_CLASS_REVISION, &revision);
 
 	if (sizeof(dma_addr_t) > 4) {
 		const uint64_t required_mask = dma_get_required_mask
@@ -1693,8 +1682,7 @@ mpt_mapresources(MPT_ADAPTER *ioc)
 		} else {
 			printk(MYIOC_s_WARN_FMT "no suitable DMA mask for %s\n",
 			    ioc->name, pci_name(pdev));
-			pci_release_selected_regions(pdev, ioc->bars);
-			return r;
+			goto out_pci_release_region;
 		}
 	} else {
 		if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))
@@ -1707,8 +1695,7 @@ mpt_mapresources(MPT_ADAPTER *ioc)
 		} else {
 			printk(MYIOC_s_WARN_FMT "no suitable DMA mask for %s\n",
 			    ioc->name, pci_name(pdev));
-			pci_release_selected_regions(pdev, ioc->bars);
-			return r;
+			goto out_pci_release_region;
 		}
 	}
 
@@ -1738,8 +1725,8 @@ mpt_mapresources(MPT_ADAPTER *ioc)
 	if (mem == NULL) {
 		printk(MYIOC_s_ERR_FMT ": ERROR - Unable to map adapter"
 			" memory!\n", ioc->name);
-		pci_release_selected_regions(pdev, ioc->bars);
-		return -EINVAL;
+		r = -EINVAL;
+		goto out_pci_release_region;
 	}
 	ioc->memmap = mem;
 	dinitprintk(ioc, printk(MYIOC_s_INFO_FMT "mem = %p, mem_phys = %llx\n",
@@ -1753,6 +1740,12 @@ mpt_mapresources(MPT_ADAPTER *ioc)
 	ioc->pio_chip = (SYSIF_REGS __iomem *)port;
 
 	return 0;
+
+out_pci_release_region:
+	pci_release_selected_regions(pdev, ioc->bars);
+out_pci_disable_device:
+	pci_disable_device(pdev);
+	return r;
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -1779,7 +1772,6 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 	MPT_ADAPTER	*ioc;
 	u8		 cb_idx;
 	int		 r = -ENODEV;
-	u8		 revision;
 	u8		 pcixcmd;
 	static int	 mpt_ids = 0;
 #ifdef CONFIG_PROC_FS
@@ -1887,8 +1879,8 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 	dinitprintk(ioc, printk(MYIOC_s_INFO_FMT "facts @ %p, pfacts[0] @ %p\n",
 	    ioc->name, &ioc->facts, &ioc->pfacts[0]));
 
-	pci_read_config_byte(pdev, PCI_CLASS_REVISION, &revision);
-	mpt_get_product_name(pdev->vendor, pdev->device, revision, ioc->prod_name);
+	ioc->prod_name = mpt_get_product_name(pdev->vendor, pdev->device,
+					      pdev->revision);
 
 	switch (pdev->device)
 	{
@@ -1903,7 +1895,7 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 		break;
 
 	case MPI_MANUFACTPAGE_DEVICEID_FC929X:
-		if (revision < XL_929) {
+		if (pdev->revision < XL_929) {
 			/* 929X Chip Fix. Set Split transactions level
 		 	* for PCIX. Set MOST bits to zero.
 		 	*/
@@ -1934,7 +1926,7 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 		/* 1030 Chip Fix. Disable Split transactions
 		 * for PCIX. Set MOST bits to zero if Rev < C0( = 8).
 		 */
-		if (revision < C0_1030) {
+		if (pdev->revision < C0_1030) {
 			pci_read_config_byte(pdev, 0x6a, &pcixcmd);
 			pcixcmd &= 0x8F;
 			pci_write_config_byte(pdev, 0x6a, pcixcmd);
@@ -2824,13 +2816,6 @@ mpt_adapter_dispose(MPT_ADAPTER *ioc)
 	pci_disable_device(ioc->pcidev);
 	pci_release_selected_regions(ioc->pcidev, ioc->bars);
 
-#if defined(CONFIG_MTRR) && 0
-	if (ioc->mtrr_reg > 0) {
-		mtrr_del(ioc->mtrr_reg, 0, 0);
-		dprintk(ioc, printk(MYIOC_s_INFO_FMT "MTRR region de-registered\n", ioc->name));
-	}
-#endif
-
 	/*  Zap the adapter lookup ptr!  */
 	list_del(&ioc->list);
 
@@ -3175,12 +3160,7 @@ GetIocFacts(MPT_ADAPTER *ioc, int sleepFlag, int reason)
 			facts->FWImageSize = le32_to_cpu(facts->FWImageSize);
 		}
 
-		sz = facts->FWImageSize;
-		if ( sz & 0x01 )
-			sz += 1;
-		if ( sz & 0x02 )
-			sz += 2;
-		facts->FWImageSize = sz;
+		facts->FWImageSize = ALIGN(facts->FWImageSize, 4);
 
 		if (!facts->RequestFrameSize) {
 			/*  Something is wrong!  */
@@ -4520,19 +4500,6 @@ PrimeIocFifos(MPT_ADAPTER *ioc)
 			 	ioc->name, mem, (void *)(ulong)alloc_dma));
 
 		ioc->req_frames_low_dma = (u32) (alloc_dma & 0xFFFFFFFF);
-
-#if defined(CONFIG_MTRR) && 0
-		/*
-		 *  Enable Write Combining MTRR for IOC's memory region.
-		 *  (at least as much as we can; "size and base must be
-		 *  multiples of 4 kiB"
-		 */
-		ioc->mtrr_reg = mtrr_add(ioc->req_frames_dma,
-					 sz,
-					 MTRR_TYPE_WRCOMB, 1);
-		dprintk(ioc, printk(MYIOC_s_DEBUG_FMT "MTRR region registered (base:size=%08x:%x)\n",
-				ioc->name, ioc->req_frames_dma, sz));
-#endif
 
 		for (i = 0; i < ioc->req_depth; i++) {
 			alloc_dma += ioc->req_sz;
@@ -6483,6 +6450,7 @@ mpt_config(MPT_ADAPTER *ioc, CONFIGPARMS *pCfg)
 				printk(MYIOC_s_INFO_FMT "%s: host reset in"
 					" progress mpt_config timed out.!!\n",
 					__func__, ioc->name);
+				mutex_unlock(&ioc->mptbase_cmds.mutex);
 				return -EFAULT;
 			}
 			spin_unlock_irqrestore(&ioc->taskmgmt_lock, flags);
@@ -6655,7 +6623,7 @@ static int mpt_summary_proc_show(struct seq_file *m, void *v)
 
 static int mpt_summary_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, mpt_summary_proc_show, PDE(inode)->data);
+	return single_open(file, mpt_summary_proc_show, PDE_DATA(inode));
 }
 
 static const struct file_operations mpt_summary_proc_fops = {
@@ -6804,7 +6772,7 @@ static int mpt_iocinfo_proc_show(struct seq_file *m, void *v)
 
 static int mpt_iocinfo_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, mpt_iocinfo_proc_show, PDE(inode)->data);
+	return single_open(file, mpt_iocinfo_proc_show, PDE_DATA(inode));
 }
 
 static const struct file_operations mpt_iocinfo_proc_fops = {
@@ -6880,6 +6848,7 @@ mpt_print_ioc_summary(MPT_ADAPTER *ioc, char *buffer, int *size, int len, int sh
 	*size = y;
 }
 
+#ifdef CONFIG_PROC_FS
 static void seq_mpt_print_ioc_summary(MPT_ADAPTER *ioc, struct seq_file *m, int showlan)
 {
 	char expVer[32];
@@ -6911,6 +6880,7 @@ static void seq_mpt_print_ioc_summary(MPT_ADAPTER *ioc, struct seq_file *m, int 
 
 	seq_putc(m, '\n');
 }
+#endif
 
 /**
  *	mpt_set_taskmgmt_in_progress_flag - set flags associated with task management
@@ -7006,7 +6976,7 @@ EXPORT_SYMBOL(mpt_halt_firmware);
  *	IOC doesn't reply to any outstanding request. This will transfer IOC
  *	to READY state.
  **/
-int
+static int
 mpt_SoftResetHandler(MPT_ADAPTER *ioc, int sleepFlag)
 {
 	int		 rc;

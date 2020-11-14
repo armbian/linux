@@ -1,10 +1,8 @@
 #ifndef _FALLOC_H_
 #define _FALLOC_H_
 
-#define FALLOC_FL_KEEP_SIZE	0x01 /* default is extend size */
-#define FALLOC_FL_PUNCH_HOLE	0x02 /* de-allocates range */
+#include <uapi/linux/falloc.h>
 
-#ifdef __KERNEL__
 
 /*
  * Space reservation ioctls and argument structure
@@ -23,6 +21,10 @@ struct space_resv {
 #define FS_IOC_RESVSP		_IOW('X', 40, struct space_resv)
 #define FS_IOC_RESVSP64		_IOW('X', 42, struct space_resv)
 
-#endif /* __KERNEL__ */
+#define	FALLOC_FL_SUPPORTED_MASK	(FALLOC_FL_KEEP_SIZE |		\
+					 FALLOC_FL_PUNCH_HOLE |		\
+					 FALLOC_FL_COLLAPSE_RANGE |	\
+					 FALLOC_FL_ZERO_RANGE |		\
+					 FALLOC_FL_INSERT_RANGE)
 
 #endif /* _FALLOC_H_ */

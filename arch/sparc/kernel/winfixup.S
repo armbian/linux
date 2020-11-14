@@ -32,8 +32,7 @@ fill_fixup:
 	 rd	%pc, %g7
 	call	do_sparc64_fault
 	 add	%sp, PTREGS_OFF, %o0
-	ba,pt	%xcc, rtrap
-	 nop
+	ba,a,pt	%xcc, rtrap
 
 	/* Be very careful about usage of the trap globals here.
 	 * You cannot touch %g5 as that has the fault information.
@@ -43,6 +42,8 @@ spill_fixup_mna:
 spill_fixup_dax:
 	TRAP_LOAD_THREAD_REG(%g6, %g1)
 	ldx	[%g6 + TI_FLAGS], %g1
+	andcc	%sp, 0x1, %g0
+	movne	%icc, 0, %g1
 	andcc	%g1, _TIF_32BIT, %g0
 	ldub	[%g6 + TI_WSAVED], %g1
 	sll	%g1, 3, %g3

@@ -35,6 +35,8 @@
  *                              Turned xenfs into a loadable module.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/uio.h>
@@ -314,26 +316,31 @@ static int xenbus_write_transaction(unsigned msg_type,
 			rc = -ENOMEM;
 			goto out;
 		}
+	} else if (u->u.msg.tx_id != 0) {
+		list_for_each_entry(trans, &u->transactions, list)
+			if (trans->handle.id == u->u.msg.tx_id)
+				break;
+		if (&trans->list == &u->transactions)
+			return -ESRCH;
 	}
 
 	reply = xenbus_dev_request_and_reply(&u->u.msg);
 	if (IS_ERR(reply)) {
-		kfree(trans);
+		if (msg_type == XS_TRANSACTION_START)
+			kfree(trans);
 		rc = PTR_ERR(reply);
 		goto out;
 	}
 
 	if (msg_type == XS_TRANSACTION_START) {
-		trans->handle.id = simple_strtoul(reply, NULL, 0);
-
-		list_add(&trans->list, &u->transactions);
-	} else if (msg_type == XS_TRANSACTION_END) {
-		list_for_each_entry(trans, &u->transactions, list)
-			if (trans->handle.id == u->u.msg.tx_id)
-				break;
-		BUG_ON(&trans->list == &u->transactions);
+		if (u->u.msg.type == XS_ERROR)
+			kfree(trans);
+		else {
+			trans->handle.id = simple_strtoul(reply, NULL, 0);
+			list_add(&trans->list, &u->transactions);
+		}
+	} else if (u->u.msg.type == XS_TRANSACTION_END) {
 		list_del(&trans->list);
-
 		kfree(trans);
 	}
 
@@ -458,7 +465,7 @@ static ssize_t xenbus_file_write(struct file *filp,
 		goto out;
 
 	/* Can't write a xenbus message larger we can buffer */
-	if ((len + u->len) > sizeof(u->u.buffer)) {
+	if (len > sizeof(u->u.buffer) - u->len) {
 		/* On error, dump existing buffer */
 		u->len = 0;
 		rc = -EINVAL;
@@ -616,7 +623,7 @@ static int __init xenbus_init(void)
 
 	err = misc_register(&xenbus_dev);
 	if (err)
-		printk(KERN_ERR "Could not register xenbus frontend device\n");
+		pr_err("Could not register xenbus frontend device\n");
 	return err;
 }
 

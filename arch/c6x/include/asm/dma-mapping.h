@@ -17,6 +17,14 @@
 
 #define dma_supported(d, m)	1
 
+static inline void dma_sync_single_range_for_device(struct device *dev,
+						    dma_addr_t addr,
+						    unsigned long offset,
+						    size_t size,
+						    enum dma_data_direction dir)
+{
+}
+
 static inline int dma_set_mask(struct device *dev, u64 dma_mask)
 {
 	if (!dev->dma_mask || !dma_supported(dev, dma_mask))
@@ -32,6 +40,7 @@ static inline int dma_set_mask(struct device *dev, u64 dma_mask)
  */
 static inline int dma_mapping_error(struct device *dev, dma_addr_t dma_addr)
 {
+	debug_dma_mapping_error(dev, dma_addr);
 	return dma_addr == ~0;
 }
 
@@ -87,5 +96,20 @@ extern void dma_free_coherent(struct device *, size_t, void *, dma_addr_t);
 
 #define dma_alloc_noncoherent(d, s, h, f) dma_alloc_coherent((d), (s), (h), (f))
 #define dma_free_noncoherent(d, s, v, h)  dma_free_coherent((d), (s), (v), (h))
+
+/* Not supported for now */
+static inline int dma_mmap_coherent(struct device *dev,
+				    struct vm_area_struct *vma, void *cpu_addr,
+				    dma_addr_t dma_addr, size_t size)
+{
+	return -EINVAL;
+}
+
+static inline int dma_get_sgtable(struct device *dev, struct sg_table *sgt,
+				  void *cpu_addr, dma_addr_t dma_addr,
+				  size_t size)
+{
+	return -EINVAL;
+}
 
 #endif	/* _ASM_C6X_DMA_MAPPING_H */

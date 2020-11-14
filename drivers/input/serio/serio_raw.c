@@ -15,7 +15,6 @@
 #include <linux/poll.h>
 #include <linux/module.h>
 #include <linux/serio.h>
-#include <linux/init.h>
 #include <linux/major.h>
 #include <linux/device.h>
 #include <linux/miscdevice.h>
@@ -165,31 +164,38 @@ static ssize_t serio_raw_read(struct file *file, char __user *buffer,
 	struct serio_raw *serio_raw = client->serio_raw;
 	char uninitialized_var(c);
 	ssize_t read = 0;
-	int retval;
+	int error;
 
-	if (serio_raw->dead)
-		return -ENODEV;
+	for (;;) {
+		if (serio_raw->dead)
+			return -ENODEV;
 
-	if (serio_raw->head == serio_raw->tail && (file->f_flags & O_NONBLOCK))
-		return -EAGAIN;
+		if (serio_raw->head == serio_raw->tail &&
+		    (file->f_flags & O_NONBLOCK))
+			return -EAGAIN;
 
-	retval = wait_event_interruptible(serio_raw->wait,
-			serio_raw->head != serio_raw->tail || serio_raw->dead);
-	if (retval)
-		return retval;
-
-	if (serio_raw->dead)
-		return -ENODEV;
-
-	while (read < count && serio_raw_fetch_byte(serio_raw, &c)) {
-		if (put_user(c, buffer++)) {
-			retval = -EFAULT;
+		if (count == 0)
 			break;
+
+		while (read < count && serio_raw_fetch_byte(serio_raw, &c)) {
+			if (put_user(c, buffer++))
+				return -EFAULT;
+			read++;
 		}
-		read++;
+
+		if (read)
+			break;
+
+		if (!(file->f_flags & O_NONBLOCK)) {
+			error = wait_event_interruptible(serio_raw->wait,
+					serio_raw->head != serio_raw->tail ||
+					serio_raw->dead);
+			if (error)
+				return error;
+		}
 	}
 
-	return read ?: retval;
+	return read;
 }
 
 static ssize_t serio_raw_write(struct file *file, const char __user *buffer,
@@ -197,8 +203,7 @@ static ssize_t serio_raw_write(struct file *file, const char __user *buffer,
 {
 	struct serio_raw_client *client = file->private_data;
 	struct serio_raw *serio_raw = client->serio_raw;
-	ssize_t written = 0;
-	int retval;
+	int retval = 0;
 	unsigned char c;
 
 	retval = mutex_lock_interruptible(&serio_raw_mutex);
@@ -218,16 +223,20 @@ static ssize_t serio_raw_write(struct file *file, const char __user *buffer,
 			retval = -EFAULT;
 			goto out;
 		}
+
 		if (serio_write(serio_raw->serio, c)) {
-			retval = -EIO;
+			/* Either signal error or partial write */
+			if (retval == 0)
+				retval = -EIO;
 			goto out;
 		}
-		written++;
+
+		retval++;
 	}
 
 out:
 	mutex_unlock(&serio_raw_mutex);
-	return written ?: retval;
+	return retval;
 }
 
 static unsigned int serio_raw_poll(struct file *file, poll_table *wait)
@@ -283,7 +292,7 @@ static irqreturn_t serio_raw_interrupt(struct serio *serio, unsigned char data,
 
 static int serio_raw_connect(struct serio *serio, struct serio_driver *drv)
 {
-	static atomic_t serio_raw_no = ATOMIC_INIT(0);
+	static atomic_t serio_raw_no = ATOMIC_INIT(-1);
 	struct serio_raw *serio_raw;
 	int err;
 
@@ -294,7 +303,7 @@ static int serio_raw_connect(struct serio *serio, struct serio_driver *drv)
 	}
 
 	snprintf(serio_raw->name, sizeof(serio_raw->name),
-		 "serio_raw%ld", (long)atomic_inc_return(&serio_raw_no) - 1);
+		 "serio_raw%ld", (long)atomic_inc_return(&serio_raw_no));
 	kref_init(&serio_raw->kref);
 	INIT_LIST_HEAD(&serio_raw->client_list);
 	init_waitqueue_head(&serio_raw->wait);
@@ -432,15 +441,4 @@ static struct serio_driver serio_raw_drv = {
 	.manual_bind	= true,
 };
 
-static int __init serio_raw_init(void)
-{
-	return serio_register_driver(&serio_raw_drv);
-}
-
-static void __exit serio_raw_exit(void)
-{
-	serio_unregister_driver(&serio_raw_drv);
-}
-
-module_init(serio_raw_init);
-module_exit(serio_raw_exit);
+module_serio_driver(serio_raw_drv);

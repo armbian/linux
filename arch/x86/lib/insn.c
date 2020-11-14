@@ -18,13 +18,17 @@
  * Copyright (C) IBM Corporation, 2002, 2004, 2009
  */
 
+#ifdef __KERNEL__
 #include <linux/string.h>
+#else
+#include <string.h>
+#endif
 #include <asm/inat.h>
 #include <asm/insn.h>
 
 /* Verify next sizeof(t) bytes can be on the same instruction */
 #define validate_next(t, insn, n)	\
-	((insn)->next_byte + sizeof(t) + n - (insn)->kaddr <= MAX_INSN_SIZE)
+	((insn)->next_byte + sizeof(t) + n <= (insn)->end_kaddr)
 
 #define __get_next(t, insn)	\
 	({ t r = *(t*)insn->next_byte; insn->next_byte += sizeof(t); r; })
@@ -46,10 +50,18 @@
  * @kaddr:	address (in kernel memory) of instruction (or copy thereof)
  * @x86_64:	!0 for 64-bit kernel or 64-bit app
  */
-void insn_init(struct insn *insn, const void *kaddr, int x86_64)
+void insn_init(struct insn *insn, const void *kaddr, int buf_len, int x86_64)
 {
+	/*
+	 * Instructions longer than MAX_INSN_SIZE (15 bytes) are invalid
+	 * even if the input buffer is long enough to hold them.
+	 */
+	if (buf_len > MAX_INSN_SIZE)
+		buf_len = MAX_INSN_SIZE;
+
 	memset(insn, 0, sizeof(*insn));
 	insn->kaddr = kaddr;
+	insn->end_kaddr = kaddr + buf_len;
 	insn->next_byte = kaddr;
 	insn->x86_64 = x86_64 ? 1 : 0;
 	insn->opnd_bytes = 4;
@@ -159,6 +171,12 @@ found:
 				/* VEX.W overrides opnd_size */
 				insn->opnd_bytes = 8;
 		} else {
+			/*
+			 * For VEX2, fake VEX3-like byte#2.
+			 * Makes it easier to decode vex.W, vex.vvvv,
+			 * vex.L and vex.pp. Masking with 0x7f sets vex.W == 0.
+			 */
+			insn->vex_prefix.bytes[2] = b2 & 0x7f;
 			insn->vex_prefix.nbytes = 2;
 			insn->next_byte += 2;
 		}

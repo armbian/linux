@@ -1,21 +1,14 @@
 #ifndef _ASM_X86_MSR_H
 #define _ASM_X86_MSR_H
 
-#include <asm/msr-index.h>
+#include "msr-index.h"
 
 #ifndef __ASSEMBLY__
-
-#include <linux/types.h>
-#include <linux/ioctl.h>
-
-#define X86_IOC_RDMSR_REGS	_IOWR('c', 0xA0, __u32[8])
-#define X86_IOC_WRMSR_REGS	_IOWR('c', 0xA1, __u32[8])
-
-#ifdef __KERNEL__
 
 #include <asm/asm.h>
 #include <asm/errno.h>
 #include <asm/cpumask.h>
+#include <uapi/asm/msr.h>
 
 struct msr {
 	union {
@@ -54,14 +47,13 @@ static inline unsigned long long native_read_tscp(unsigned int *aux)
  * it means rax *or* rdx.
  */
 #ifdef CONFIG_X86_64
-#define DECLARE_ARGS(val, low, high)	unsigned low, high
-#define EAX_EDX_VAL(val, low, high)	((low) | ((u64)(high) << 32))
-#define EAX_EDX_ARGS(val, low, high)	"a" (low), "d" (high)
+/* Using 64-bit values saves one instruction clearing the high half of low */
+#define DECLARE_ARGS(val, low, high)	unsigned long low, high
+#define EAX_EDX_VAL(val, low, high)	((low) | (high) << 32)
 #define EAX_EDX_RET(val, low, high)	"=a" (low), "=d" (high)
 #else
 #define DECLARE_ARGS(val, low, high)	unsigned long long val
 #define EAX_EDX_VAL(val, low, high)	(val)
-#define EAX_EDX_ARGS(val, low, high)	"A" (val)
 #define EAX_EDX_RET(val, low, high)	"=A" (val)
 #endif
 
@@ -113,12 +105,19 @@ notrace static inline int native_write_msr_safe(unsigned int msr,
 	return err;
 }
 
-extern unsigned long long native_read_tsc(void);
+extern int rdmsr_safe_regs(u32 regs[8]);
+extern int wrmsr_safe_regs(u32 regs[8]);
 
-extern int native_rdmsr_safe_regs(u32 regs[8]);
-extern int native_wrmsr_safe_regs(u32 regs[8]);
-
-static __always_inline unsigned long long __native_read_tsc(void)
+/**
+ * rdtsc() - returns the current TSC without ordering constraints
+ *
+ * rdtsc() returns the result of RDTSC as a 64-bit integer.  The
+ * only ordering constraint it supplies is the ordering implied by
+ * "asm volatile": it will put the RDTSC in the place you expect.  The
+ * CPU can and will speculatively execute that RDTSC, though, so the
+ * results can be non-monotonic if compared on different CPUs.
+ */
+static __always_inline unsigned long long rdtsc(void)
 {
 	DECLARE_ARGS(val, low, high);
 
@@ -126,6 +125,34 @@ static __always_inline unsigned long long __native_read_tsc(void)
 
 	return EAX_EDX_VAL(val, low, high);
 }
+
+/**
+ * rdtsc_ordered() - read the current TSC in program order
+ *
+ * rdtsc_ordered() returns the result of RDTSC as a 64-bit integer.
+ * It is ordered like a load to a global in-memory counter.  It should
+ * be impossible to observe non-monotonic rdtsc_unordered() behavior
+ * across multiple CPUs as long as the TSC is synced.
+ */
+static __always_inline unsigned long long rdtsc_ordered(void)
+{
+	/*
+	 * The RDTSC instruction is not ordered relative to memory
+	 * access.  The Intel SDM and the AMD APM are both vague on this
+	 * point, but empirically an RDTSC instruction can be
+	 * speculatively executed before prior loads.  An RDTSC
+	 * immediately after an appropriate barrier appears to be
+	 * ordered as a normal load, that is, it provides the same
+	 * ordering guarantees as reading from a global memory location
+	 * that some other imaginary CPU is updating continuously with a
+	 * time stamp.
+	 */
+	barrier_nospec();
+	return rdtsc();
+}
+
+/* Deprecated, keep it for a cycle for easier merging: */
+#define rdtscll(now)	do { (now) = rdtsc_ordered(); } while (0)
 
 static inline unsigned long long native_read_pmc(int counter)
 {
@@ -145,11 +172,11 @@ static inline unsigned long long native_read_pmc(int counter)
  * pointer indirection), this allows gcc to optimize better
  */
 
-#define rdmsr(msr, val1, val2)					\
+#define rdmsr(msr, low, high)					\
 do {								\
 	u64 __val = native_read_msr((msr));			\
-	(void)((val1) = (u32)__val);				\
-	(void)((val2) = (u32)(__val >> 32));			\
+	(void)((low) = (u32)__val);				\
+	(void)((high) = (u32)(__val >> 32));			\
 } while (0)
 
 static inline void wrmsr(unsigned msr, unsigned low, unsigned high)
@@ -160,8 +187,10 @@ static inline void wrmsr(unsigned msr, unsigned low, unsigned high)
 #define rdmsrl(msr, val)			\
 	((val) = native_read_msr((msr)))
 
-#define wrmsrl(msr, val)						\
-	native_write_msr((msr), (u32)((u64)(val)), (u32)((u64)(val) >> 32))
+static inline void wrmsrl(unsigned msr, u64 val)
+{
+	native_write_msr(msr, (u32)val, (u32)(val >> 32));
+}
 
 /* wrmsr with exception handling */
 static inline int wrmsr_safe(unsigned msr, unsigned low, unsigned high)
@@ -169,20 +198,13 @@ static inline int wrmsr_safe(unsigned msr, unsigned low, unsigned high)
 	return native_write_msr_safe(msr, low, high);
 }
 
-/*
- * rdmsr with exception handling.
- *
- * Please note that the exception handling works only after we've
- * switched to the "smart" #GP handler in trap_init() which knows about
- * exception tables - using this macro earlier than that causes machine
- * hangs on boxes which do not implement the @msr in the first argument.
- */
-#define rdmsr_safe(msr, p1, p2)					\
+/* rdmsr with exception handling */
+#define rdmsr_safe(msr, low, high)				\
 ({								\
 	int __err;						\
 	u64 __val = native_read_msr_safe((msr), &__err);	\
-	(*p1) = (u32)__val;					\
-	(*p2) = (u32)(__val >> 32);				\
+	(*low) = (u32)__val;					\
+	(*high) = (u32)(__val >> 32);				\
 	__err;							\
 })
 
@@ -194,49 +216,6 @@ static inline int rdmsrl_safe(unsigned msr, unsigned long long *p)
 	return err;
 }
 
-static inline int rdmsrl_amd_safe(unsigned msr, unsigned long long *p)
-{
-	u32 gprs[8] = { 0 };
-	int err;
-
-	gprs[1] = msr;
-	gprs[7] = 0x9c5a203a;
-
-	err = native_rdmsr_safe_regs(gprs);
-
-	*p = gprs[0] | ((u64)gprs[2] << 32);
-
-	return err;
-}
-
-static inline int wrmsrl_amd_safe(unsigned msr, unsigned long long val)
-{
-	u32 gprs[8] = { 0 };
-
-	gprs[0] = (u32)val;
-	gprs[1] = msr;
-	gprs[2] = val >> 32;
-	gprs[7] = 0x9c5a203a;
-
-	return native_wrmsr_safe_regs(gprs);
-}
-
-static inline int rdmsr_safe_regs(u32 regs[8])
-{
-	return native_rdmsr_safe_regs(regs);
-}
-
-static inline int wrmsr_safe_regs(u32 regs[8])
-{
-	return native_wrmsr_safe_regs(regs);
-}
-
-#define rdtscl(low)						\
-	((low) = (u32)__native_read_tsc())
-
-#define rdtscll(val)						\
-	((val) = __native_read_tsc())
-
 #define rdpmc(counter, low, high)			\
 do {							\
 	u64 _l = native_read_pmc((counter));		\
@@ -244,35 +223,38 @@ do {							\
 	(high) = (u32)(_l >> 32);			\
 } while (0)
 
-#define rdtscp(low, high, aux)					\
-do {                                                            \
-	unsigned long long _val = native_read_tscp(&(aux));     \
-	(low) = (u32)_val;                                      \
-	(high) = (u32)(_val >> 32);                             \
-} while (0)
-
-#define rdtscpll(val, aux) (val) = native_read_tscp(&(aux))
+#define rdpmcl(counter, val) ((val) = native_read_pmc(counter))
 
 #endif	/* !CONFIG_PARAVIRT */
 
+/*
+ * 64-bit version of wrmsr_safe():
+ */
+static inline int wrmsrl_safe(u32 msr, u64 val)
+{
+	return wrmsr_safe(msr, (u32)val,  (u32)(val >> 32));
+}
 
-#define checking_wrmsrl(msr, val) wrmsr_safe((msr), (u32)(val),		\
-					     (u32)((val) >> 32))
-
-#define write_tsc(val1, val2) wrmsr(MSR_IA32_TSC, (val1), (val2))
+#define write_tsc(low, high) wrmsr(MSR_IA32_TSC, (low), (high))
 
 #define write_rdtscp_aux(val) wrmsr(MSR_TSC_AUX, (val), 0)
 
 struct msr *msrs_alloc(void);
 void msrs_free(struct msr *msrs);
+int msr_set_bit(u32 msr, u8 bit);
+int msr_clear_bit(u32 msr, u8 bit);
 
 #ifdef CONFIG_SMP
 int rdmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h);
 int wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h);
+int rdmsrl_on_cpu(unsigned int cpu, u32 msr_no, u64 *q);
+int wrmsrl_on_cpu(unsigned int cpu, u32 msr_no, u64 q);
 void rdmsr_on_cpus(const struct cpumask *mask, u32 msr_no, struct msr *msrs);
 void wrmsr_on_cpus(const struct cpumask *mask, u32 msr_no, struct msr *msrs);
 int rdmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h);
 int wrmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h);
+int rdmsrl_safe_on_cpu(unsigned int cpu, u32 msr_no, u64 *q);
+int wrmsrl_safe_on_cpu(unsigned int cpu, u32 msr_no, u64 q);
 int rdmsr_safe_regs_on_cpu(unsigned int cpu, u32 regs[8]);
 int wrmsr_safe_regs_on_cpu(unsigned int cpu, u32 regs[8]);
 #else  /*  CONFIG_SMP  */
@@ -284,6 +266,16 @@ static inline int rdmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 *l, u32 *h)
 static inline int wrmsr_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
 {
 	wrmsr(msr_no, l, h);
+	return 0;
+}
+static inline int rdmsrl_on_cpu(unsigned int cpu, u32 msr_no, u64 *q)
+{
+	rdmsrl(msr_no, *q);
+	return 0;
+}
+static inline int wrmsrl_on_cpu(unsigned int cpu, u32 msr_no, u64 q)
+{
+	wrmsrl(msr_no, q);
 	return 0;
 }
 static inline void rdmsr_on_cpus(const struct cpumask *m, u32 msr_no,
@@ -305,6 +297,14 @@ static inline int wrmsr_safe_on_cpu(unsigned int cpu, u32 msr_no, u32 l, u32 h)
 {
 	return wrmsr_safe(msr_no, l, h);
 }
+static inline int rdmsrl_safe_on_cpu(unsigned int cpu, u32 msr_no, u64 *q)
+{
+	return rdmsrl_safe(msr_no, q);
+}
+static inline int wrmsrl_safe_on_cpu(unsigned int cpu, u32 msr_no, u64 q)
+{
+	return wrmsrl_safe(msr_no, q);
+}
 static inline int rdmsr_safe_regs_on_cpu(unsigned int cpu, u32 regs[8])
 {
 	return rdmsr_safe_regs(regs);
@@ -314,6 +314,5 @@ static inline int wrmsr_safe_regs_on_cpu(unsigned int cpu, u32 regs[8])
 	return wrmsr_safe_regs(regs);
 }
 #endif  /* CONFIG_SMP */
-#endif /* __KERNEL__ */
 #endif /* __ASSEMBLY__ */
 #endif /* _ASM_X86_MSR_H */

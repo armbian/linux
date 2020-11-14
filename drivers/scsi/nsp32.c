@@ -76,7 +76,7 @@ static const char *nsp32_release_version = "1.2";
 /****************************************************************************
  * Supported hardware
  */
-static struct pci_device_id nsp32_pci_table[] __devinitdata = {
+static struct pci_device_id nsp32_pci_table[] = {
 	{
 		.vendor      = PCI_VENDOR_ID_IODATA,
 		.device      = PCI_DEVICE_ID_NINJASCSI_32BI_CBSC_II,
@@ -186,13 +186,13 @@ static nsp32_sync_table nsp32_sync_table_pci[] = {
  * function declaration
  */
 /* module entry point */
-static int  __devinit nsp32_probe (struct pci_dev *, const struct pci_device_id *);
-static void __devexit nsp32_remove(struct pci_dev *);
-static int  __init    init_nsp32  (void);
-static void __exit    exit_nsp32  (void);
+static int         nsp32_probe (struct pci_dev *, const struct pci_device_id *);
+static void        nsp32_remove(struct pci_dev *);
+static int  __init init_nsp32  (void);
+static void __exit exit_nsp32  (void);
 
 /* struct struct scsi_host_template */
-static int         nsp32_proc_info   (struct Scsi_Host *, char *, char **, off_t, int, int);
+static int         nsp32_show_info   (struct seq_file *, struct Scsi_Host *);
 
 static int         nsp32_detect      (struct pci_dev *pdev);
 static int         nsp32_queuecommand(struct Scsi_Host *, struct scsi_cmnd *);
@@ -268,13 +268,12 @@ static void nsp32_dmessage(const char *, int, int,    char *, ...);
 static struct scsi_host_template nsp32_template = {
 	.proc_name			= "nsp32",
 	.name				= "Workbit NinjaSCSI-32Bi/UDE",
-	.proc_info			= nsp32_proc_info,
+	.show_info			= nsp32_show_info,
 	.info				= nsp32_info,
 	.queuecommand			= nsp32_queuecommand,
 	.can_queue			= 1,
 	.sg_tablesize			= NSP32_SG_SIZE,
 	.max_sectors			= 128,
-	.cmd_per_lun			= 1,
 	.this_id			= NSP32_HOST_SCSIID,
 	.use_clustering			= DISABLE_CLUSTERING,
 	.eh_abort_handler       	= nsp32_eh_abort,
@@ -915,7 +914,7 @@ static int nsp32_queuecommand_lck(struct scsi_cmnd *SCpnt, void (*done)(struct s
 	int ret;
 
 	nsp32_dbg(NSP32_DEBUG_QUEUECOMMAND,
-		  "enter. target: 0x%x LUN: 0x%x cmnd: 0x%x cmndlen: 0x%x "
+		  "enter. target: 0x%x LUN: 0x%llx cmnd: 0x%x cmndlen: 0x%x "
 		  "use_sg: 0x%x reqbuf: 0x%lx reqlen: 0x%x",
 		  SCpnt->device->id, SCpnt->device->lun, SCpnt->cmnd[0], SCpnt->cmd_len,
 		  scsi_sg_count(SCpnt), scsi_sglist(SCpnt), scsi_bufflen(SCpnt));
@@ -930,7 +929,7 @@ static int nsp32_queuecommand_lck(struct scsi_cmnd *SCpnt, void (*done)(struct s
 
 	/* check target ID is not same as this initiator ID */
 	if (scmd_id(SCpnt) == SCpnt->device->host->this_id) {
-		nsp32_dbg(NSP32_DEBUG_QUEUECOMMAND, "terget==host???");
+		nsp32_dbg(NSP32_DEBUG_QUEUECOMMAND, "target==host???");
 		SCpnt->result = DID_BAD_TARGET << 16;
 		done(SCpnt);
 		return 0;
@@ -1441,20 +1440,9 @@ static irqreturn_t do_nsp32_isr(int irq, void *dev_id)
 	return IRQ_RETVAL(handled);
 }
 
-#undef SPRINTF
-#define SPRINTF(args...) \
-	do { \
-		if(length > (pos - buffer)) { \
-			pos += snprintf(pos, length - (pos - buffer) + 1, ## args); \
-			nsp32_dbg(NSP32_DEBUG_PROC, "buffer=0x%p pos=0x%p length=%d %d\n", buffer, pos, length,  length - (pos - buffer));\
-		} \
-	} while(0)
 
-static int nsp32_proc_info(struct Scsi_Host *host, char *buffer, char **start,
-			   off_t offset, int length, int inout)
+static int nsp32_show_info(struct seq_file *m, struct Scsi_Host *host)
 {
-	char             *pos = buffer;
-	int               thislength;
 	unsigned long     flags;
 	nsp32_hw_data    *data;
 	int               hostno;
@@ -1463,86 +1451,67 @@ static int nsp32_proc_info(struct Scsi_Host *host, char *buffer, char **start,
 	int               id, speed;
 	long              model;
 
-	/* Write is not supported, just return. */
-	if (inout == TRUE) {
-		return -EINVAL;
-	}
-
 	hostno = host->host_no;
 	data = (nsp32_hw_data *)host->hostdata;
 	base = host->io_port;
 
-	SPRINTF("NinjaSCSI-32 status\n\n");
-	SPRINTF("Driver version:        %s, $Revision: 1.33 $\n", nsp32_release_version);
-	SPRINTF("SCSI host No.:         %d\n",		hostno);
-	SPRINTF("IRQ:                   %d\n",		host->irq);
-	SPRINTF("IO:                    0x%lx-0x%lx\n", host->io_port, host->io_port + host->n_io_port - 1);
-	SPRINTF("MMIO(virtual address): 0x%lx-0x%lx\n",	host->base, host->base + data->MmioLength - 1);
-	SPRINTF("sg_tablesize:          %d\n",		host->sg_tablesize);
-	SPRINTF("Chip revision:         0x%x\n",       	(nsp32_read2(base, INDEX_REG) >> 8) & 0xff);
+	seq_puts(m, "NinjaSCSI-32 status\n\n");
+	seq_printf(m, "Driver version:        %s, $Revision: 1.33 $\n", nsp32_release_version);
+	seq_printf(m, "SCSI host No.:         %d\n",		hostno);
+	seq_printf(m, "IRQ:                   %d\n",		host->irq);
+	seq_printf(m, "IO:                    0x%lx-0x%lx\n", host->io_port, host->io_port + host->n_io_port - 1);
+	seq_printf(m, "MMIO(virtual address): 0x%lx-0x%lx\n",	host->base, host->base + data->MmioLength - 1);
+	seq_printf(m, "sg_tablesize:          %d\n",		host->sg_tablesize);
+	seq_printf(m, "Chip revision:         0x%x\n",		(nsp32_read2(base, INDEX_REG) >> 8) & 0xff);
 
 	mode_reg = nsp32_index_read1(base, CHIP_MODE);
 	model    = data->pci_devid->driver_data;
 
 #ifdef CONFIG_PM
-	SPRINTF("Power Management:      %s\n",          (mode_reg & OPTF) ? "yes" : "no");
+	seq_printf(m, "Power Management:      %s\n",          (mode_reg & OPTF) ? "yes" : "no");
 #endif
-	SPRINTF("OEM:                   %ld, %s\n",     (mode_reg & (OEM0|OEM1)), nsp32_model[model]);
+	seq_printf(m, "OEM:                   %ld, %s\n",     (mode_reg & (OEM0|OEM1)), nsp32_model[model]);
 
 	spin_lock_irqsave(&(data->Lock), flags);
-	SPRINTF("CurrentSC:             0x%p\n\n",      data->CurrentSC);
+	seq_printf(m, "CurrentSC:             0x%p\n\n",      data->CurrentSC);
 	spin_unlock_irqrestore(&(data->Lock), flags);
 
 
-	SPRINTF("SDTR status\n");
+	seq_puts(m, "SDTR status\n");
 	for (id = 0; id < ARRAY_SIZE(data->target); id++) {
 
-                SPRINTF("id %d: ", id);
+		seq_printf(m, "id %d: ", id);
 
 		if (id == host->this_id) {
-			SPRINTF("----- NinjaSCSI-32 host adapter\n");
+			seq_puts(m, "----- NinjaSCSI-32 host adapter\n");
 			continue;
 		}
 
 		if (data->target[id].sync_flag == SDTR_DONE) {
 			if (data->target[id].period == 0            &&
 			    data->target[id].offset == ASYNC_OFFSET ) {
-				SPRINTF("async");
+				seq_puts(m, "async");
 			} else {
-				SPRINTF(" sync");
+				seq_puts(m, " sync");
 			}
 		} else {
-			SPRINTF(" none");
+			seq_puts(m, " none");
 		}
 
 		if (data->target[id].period != 0) {
 
 			speed = 1000000 / (data->target[id].period * 4);
 
-			SPRINTF(" transfer %d.%dMB/s, offset %d",
+			seq_printf(m, " transfer %d.%dMB/s, offset %d",
 				speed / 1000,
 				speed % 1000,
 				data->target[id].offset
 				);
 		}
-		SPRINTF("\n");
+		seq_putc(m, '\n');
 	}
-
-
-	thislength = pos - (buffer + offset);
-
-	if(thislength < 0) {
-		*start = NULL;
-                return 0;
-        }
-
-
-	thislength = min(thislength, length);
-	*start = buffer + offset;
-
-	return thislength;
+	return 0;
 }
-#undef SPRINTF
 
 
 
@@ -3382,7 +3351,7 @@ static int nsp32_resume(struct pci_dev *pdev)
 /************************************************************************
  * PCI/Cardbus probe/remove routine
  */
-static int __devinit nsp32_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+static int nsp32_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int ret;
 	nsp32_hw_data *data = &nsp32_data_base;
@@ -3418,7 +3387,7 @@ static int __devinit nsp32_probe(struct pci_dev *pdev, const struct pci_device_i
 	return ret;
 }
 
-static void __devexit nsp32_remove(struct pci_dev *pdev)
+static void nsp32_remove(struct pci_dev *pdev)
 {
 	struct Scsi_Host *host = pci_get_drvdata(pdev);
 
@@ -3435,7 +3404,7 @@ static struct pci_driver nsp32_driver = {
 	.name		= "nsp32",
 	.id_table	= nsp32_pci_table,
 	.probe		= nsp32_probe,
-	.remove		= __devexit_p(nsp32_remove),
+	.remove		= nsp32_remove,
 #ifdef CONFIG_PM
 	.suspend	= nsp32_suspend, 
 	.resume		= nsp32_resume, 

@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2015, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -81,7 +81,7 @@ acpi_status acpi_ut_mutex_initialize(void)
 		}
 	}
 
-	/* Create the spinlocks for use at interrupt level */
+	/* Create the spinlocks for use at interrupt level or for speed */
 
 	status = acpi_os_create_lock (&acpi_gbl_gpe_lock);
 	if (ACPI_FAILURE (status)) {
@@ -93,7 +93,13 @@ acpi_status acpi_ut_mutex_initialize(void)
 		return_ACPI_STATUS (status);
 	}
 
+	status = acpi_os_create_lock(&acpi_gbl_reference_count_lock);
+	if (ACPI_FAILURE(status)) {
+		return_ACPI_STATUS(status);
+	}
+
 	/* Mutex for _OSI support */
+
 	status = acpi_os_create_mutex(&acpi_gbl_osi_mutex);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
@@ -102,6 +108,21 @@ acpi_status acpi_ut_mutex_initialize(void)
 	/* Create the reader/writer lock for namespace access */
 
 	status = acpi_ut_create_rw_lock(&acpi_gbl_namespace_rw_lock);
+	if (ACPI_FAILURE(status)) {
+		return_ACPI_STATUS(status);
+	}
+#ifdef ACPI_DEBUGGER
+
+	/* Debugger Support */
+
+	status = acpi_os_create_mutex(&acpi_gbl_db_command_ready);
+	if (ACPI_FAILURE(status)) {
+		return_ACPI_STATUS(status);
+	}
+
+	status = acpi_os_create_mutex(&acpi_gbl_db_command_complete);
+#endif
+
 	return_ACPI_STATUS(status);
 }
 
@@ -136,10 +157,17 @@ void acpi_ut_mutex_terminate(void)
 
 	acpi_os_delete_lock(acpi_gbl_gpe_lock);
 	acpi_os_delete_lock(acpi_gbl_hardware_lock);
+	acpi_os_delete_lock(acpi_gbl_reference_count_lock);
 
 	/* Delete the reader/writer lock */
 
 	acpi_ut_delete_rw_lock(&acpi_gbl_namespace_rw_lock);
+
+#ifdef ACPI_DEBUGGER
+	acpi_os_delete_mutex(acpi_gbl_db_command_ready);
+	acpi_os_delete_mutex(acpi_gbl_db_command_complete);
+#endif
+
 	return_VOID;
 }
 
@@ -147,7 +175,7 @@ void acpi_ut_mutex_terminate(void)
  *
  * FUNCTION:    acpi_ut_create_mutex
  *
- * PARAMETERS:  mutex_iD        - ID of the mutex to be created
+ * PARAMETERS:  mutex_ID        - ID of the mutex to be created
  *
  * RETURN:      Status
  *
@@ -176,7 +204,7 @@ static acpi_status acpi_ut_create_mutex(acpi_mutex_handle mutex_id)
  *
  * FUNCTION:    acpi_ut_delete_mutex
  *
- * PARAMETERS:  mutex_iD        - ID of the mutex to be deleted
+ * PARAMETERS:  mutex_ID        - ID of the mutex to be deleted
  *
  * RETURN:      Status
  *
@@ -193,13 +221,15 @@ static void acpi_ut_delete_mutex(acpi_mutex_handle mutex_id)
 
 	acpi_gbl_mutex_info[mutex_id].mutex = NULL;
 	acpi_gbl_mutex_info[mutex_id].thread_id = ACPI_MUTEX_NOT_ACQUIRED;
+
+	return_VOID;
 }
 
 /*******************************************************************************
  *
  * FUNCTION:    acpi_ut_acquire_mutex
  *
- * PARAMETERS:  mutex_iD        - ID of the mutex to be acquired
+ * PARAMETERS:  mutex_ID        - ID of the mutex to be acquired
  *
  * RETURN:      Status
  *
@@ -226,9 +256,9 @@ acpi_status acpi_ut_acquire_mutex(acpi_mutex_handle mutex_id)
 		/*
 		 * Mutex debug code, for internal debugging only.
 		 *
-		 * Deadlock prevention.  Check if this thread owns any mutexes of value
-		 * greater than or equal to this one.  If so, the thread has violated
-		 * the mutex ordering rule.  This indicates a coding error somewhere in
+		 * Deadlock prevention. Check if this thread owns any mutexes of value
+		 * greater than or equal to this one. If so, the thread has violated
+		 * the mutex ordering rule. This indicates a coding error somewhere in
 		 * the ACPI subsystem code.
 		 */
 		for (i = mutex_id; i < ACPI_NUM_MUTEX; i++) {
@@ -283,7 +313,7 @@ acpi_status acpi_ut_acquire_mutex(acpi_mutex_handle mutex_id)
  *
  * FUNCTION:    acpi_ut_release_mutex
  *
- * PARAMETERS:  mutex_iD        - ID of the mutex to be released
+ * PARAMETERS:  mutex_ID        - ID of the mutex to be released
  *
  * RETURN:      Status
  *
@@ -319,9 +349,9 @@ acpi_status acpi_ut_release_mutex(acpi_mutex_handle mutex_id)
 		/*
 		 * Mutex debug code, for internal debugging only.
 		 *
-		 * Deadlock prevention.  Check if this thread owns any mutexes of value
-		 * greater than this one.  If so, the thread has violated the mutex
-		 * ordering rule.  This indicates a coding error somewhere in
+		 * Deadlock prevention. Check if this thread owns any mutexes of value
+		 * greater than this one. If so, the thread has violated the mutex
+		 * ordering rule. This indicates a coding error somewhere in
 		 * the ACPI subsystem code.
 		 */
 		for (i = mutex_id; i < ACPI_NUM_MUTEX; i++) {

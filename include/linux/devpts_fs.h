@@ -15,33 +15,23 @@
 
 #include <linux/errno.h>
 
+struct pts_fs_info;
+
 #ifdef CONFIG_UNIX98_PTYS
 
-int devpts_new_index(struct inode *ptmx_inode);
-void devpts_kill_index(struct inode *ptmx_inode, int idx);
+/* Look up a pts fs info and get a ref to it */
+struct pts_fs_info *devpts_get_ref(struct inode *, struct file *);
+void devpts_put_ref(struct pts_fs_info *);
+
+int devpts_new_index(struct pts_fs_info *);
+void devpts_kill_index(struct pts_fs_info *, int);
+
 /* mknod in devpts */
-int devpts_pty_new(struct inode *ptmx_inode, struct tty_struct *tty);
-/* get tty structure */
-struct tty_struct *devpts_get_tty(struct inode *pts_inode, int number);
+struct inode *devpts_pty_new(struct pts_fs_info *, dev_t, int, void *);
+/* get private structure */
+void *devpts_get_priv(struct inode *pts_inode);
 /* unlink */
-void devpts_pty_kill(struct tty_struct *tty);
-
-#else
-
-/* Dummy stubs in the no-pty case */
-static inline int devpts_new_index(struct inode *ptmx_inode) { return -EINVAL; }
-static inline void devpts_kill_index(struct inode *ptmx_inode, int idx) { }
-static inline int devpts_pty_new(struct inode *ptmx_inode,
-				struct tty_struct *tty)
-{
-	return -EINVAL;
-}
-static inline struct tty_struct *devpts_get_tty(struct inode *pts_inode,
-		int number)
-{
-	return NULL;
-}
-static inline void devpts_pty_kill(struct tty_struct *tty) { }
+void devpts_pty_kill(struct inode *inode);
 
 #endif
 

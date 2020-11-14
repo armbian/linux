@@ -68,12 +68,14 @@ enum CountryCode {
 	CTRY_AUSTRALIA = 36,
 	CTRY_AUSTRIA = 40,
 	CTRY_AZERBAIJAN = 31,
+	CTRY_BAHAMAS = 44,
 	CTRY_BAHRAIN = 48,
 	CTRY_BANGLADESH = 50,
 	CTRY_BARBADOS = 52,
 	CTRY_BELARUS = 112,
 	CTRY_BELGIUM = 56,
 	CTRY_BELIZE = 84,
+	CTRY_BERMUDA = 60,
 	CTRY_BOLIVIA = 68,
 	CTRY_BOSNIA_HERZ = 70,
 	CTRY_BRAZIL = 76,
@@ -159,6 +161,7 @@ enum CountryCode {
 	CTRY_ROMANIA = 642,
 	CTRY_RUSSIA = 643,
 	CTRY_SAUDI_ARABIA = 682,
+	CTRY_SERBIA = 688,
 	CTRY_SERBIA_MONTENEGRO = 891,
 	CTRY_SINGAPORE = 702,
 	CTRY_SLOVAKIA = 703,
@@ -170,11 +173,13 @@ enum CountryCode {
 	CTRY_SWITZERLAND = 756,
 	CTRY_SYRIA = 760,
 	CTRY_TAIWAN = 158,
+	CTRY_TANZANIA = 834,
 	CTRY_THAILAND = 764,
 	CTRY_TRINIDAD_Y_TOBAGO = 780,
 	CTRY_TUNISIA = 788,
 	CTRY_TURKEY = 792,
 	CTRY_UAE = 784,
+	CTRY_UGANDA = 800,
 	CTRY_UKRAINE = 804,
 	CTRY_UNITED_KINGDOM = 826,
 	CTRY_UNITED_STATES = 840,
@@ -252,12 +257,12 @@ enum CountryCode {
 bool ath_is_world_regd(struct ath_regulatory *reg);
 bool ath_is_49ghz_allowed(u16 redomain);
 int ath_regd_init(struct ath_regulatory *reg, struct wiphy *wiphy,
-		  int (*reg_notifier)(struct wiphy *wiphy,
-		  struct regulatory_request *request));
+		  void (*reg_notifier)(struct wiphy *wiphy,
+				       struct regulatory_request *request));
 u32 ath_regd_get_band_ctl(struct ath_regulatory *reg,
 			  enum ieee80211_band band);
-int ath_reg_notifier_apply(struct wiphy *wiphy,
-			   struct regulatory_request *request,
-			   struct ath_regulatory *reg);
+void ath_reg_notifier_apply(struct wiphy *wiphy,
+			    struct regulatory_request *request,
+			    struct ath_regulatory *reg);
 
 #endif

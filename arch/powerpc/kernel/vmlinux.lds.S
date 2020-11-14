@@ -55,6 +55,7 @@ SECTIONS
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
+		SOFTIRQENTRY_TEXT
 
 #ifdef CONFIG_PPC32
 		*(.got1)
@@ -71,6 +72,15 @@ SECTIONS
 
 	/* Read-only data */
 	RODATA
+
+#ifdef CONFIG_PPC64
+	. = ALIGN(8);
+	__rfi_flush_fixup : AT(ADDR(__rfi_flush_fixup) - LOAD_OFFSET) {
+		__start___rfi_flush_fixup = .;
+		*(__rfi_flush_fixup)
+		__stop___rfi_flush_fixup = .;
+	}
+#endif
 
 	EXCEPTION_TABLE(0)
 
@@ -183,6 +193,12 @@ SECTIONS
 		*(.rela*)
 	}
 #endif
+	/* .exit.data is discarded at runtime, not link time,
+	 * to deal with references from .exit.text
+	 */
+	.exit.data : AT(ADDR(.exit.data) - LOAD_OFFSET) {
+		EXIT_DATA
+	}
 
 	/* freed after init ends here */
 	. = ALIGN(PAGE_SIZE);
@@ -216,6 +232,11 @@ SECTIONS
 	. = ALIGN(256);
 	.got : AT(ADDR(.got) - LOAD_OFFSET) {
 		__toc_start = .;
+#ifndef CONFIG_RELOCATABLE
+		__prom_init_toc_start = .;
+		arch/powerpc/kernel/prom_init.o*(.toc .got)
+		__prom_init_toc_end = .;
+#endif
 		*(.got)
 		*(.toc)
 	}

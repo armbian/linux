@@ -18,6 +18,7 @@ unsigned long convert_ip_to_linear(struct task_struct *child, struct pt_regs *re
 		return addr;
 	}
 
+#ifdef CONFIG_MODIFY_LDT_SYSCALL
 	/*
 	 * We'll assume that the code segments in the GDT
 	 * are all zero-based. That is largely true: the
@@ -45,6 +46,7 @@ unsigned long convert_ip_to_linear(struct task_struct *child, struct pt_regs *re
 		}
 		mutex_unlock(&child->mm->context.lock);
 	}
+#endif
 
 	return addr;
 }
@@ -159,7 +161,7 @@ static int enable_single_step(struct task_struct *child)
 	return 1;
 }
 
-static void set_task_blockstep(struct task_struct *task, bool on)
+void set_task_blockstep(struct task_struct *task, bool on)
 {
 	unsigned long debugctl;
 
@@ -167,10 +169,11 @@ static void set_task_blockstep(struct task_struct *task, bool on)
 	 * Ensure irq/preemption can't change debugctl in between.
 	 * Note also that both TIF_BLOCKSTEP and debugctl should
 	 * be changed atomically wrt preemption.
-	 * FIXME: this means that set/clear TIF_BLOCKSTEP is simply
-	 * wrong if task != current, SIGKILL can wakeup the stopped
-	 * tracee and set/clear can play with the running task, this
-	 * can confuse the next __switch_to_xtra().
+	 *
+	 * NOTE: this means that set/clear TIF_BLOCKSTEP is only safe if
+	 * task is current or it can't be running, otherwise we can race
+	 * with __switch_to_xtra(). We rely on ptrace_freeze_traced() but
+	 * PTRACE_KILL is not safe.
 	 */
 	local_irq_disable();
 	debugctl = get_debugctlmsr();

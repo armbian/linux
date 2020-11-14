@@ -22,11 +22,10 @@
 
 #include <asm/mach-types.h>
 
-#include <plat/board.h>
-#include <plat/mux.h>
-#include <plat/fpga.h>
+#include <mach/mux.h>
 
 #include "pm.h"
+#include "soc.h"
 
 static struct clk * uart1_ck;
 static struct clk * uart2_ck;
@@ -237,7 +236,7 @@ static void __init omap_serial_set_port_wakeup(int gpio_nr)
 	enable_irq_wake(gpio_to_irq(gpio_nr));
 }
 
-static int __init omap_serial_wakeup_init(void)
+int __init omap_serial_wakeup_init(void)
 {
 	if (!cpu_is_omap16xx())
 		return 0;
@@ -251,7 +250,6 @@ static int __init omap_serial_wakeup_init(void)
 
 	return 0;
 }
-late_initcall(omap_serial_wakeup_init);
 
 #endif	/* CONFIG_OMAP_SERIAL_WAKE */
 

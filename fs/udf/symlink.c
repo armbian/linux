@@ -20,14 +20,13 @@
  */
 
 #include "udfdecl.h"
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/time.h>
 #include <linux/mm.h>
 #include <linux/stat.h>
 #include <linux/pagemap.h>
-#include <linux/buffer_head.h>
 #include "udf_i.h"
 
 static int udf_pc_to_char(struct super_block *sb, unsigned char *from,
@@ -83,6 +82,9 @@ static int udf_pc_to_char(struct super_block *sb, unsigned char *from,
 			comp_len = udf_get_filename(sb, pc->componentIdent,
 						    pc->lengthComponentIdent,
 						    p, tolen);
+			if (comp_len < 0)
+				return comp_len;
+
 			p += comp_len;
 			tolen -= comp_len;
 			if (tolen == 0)
@@ -116,7 +118,7 @@ static int udf_symlink_filler(struct file *file, struct page *page)
 	}
 
 	iinfo = UDF_I(inode);
-	pos = udf_block_map(inode, 0, NULL);
+	pos = udf_block_map(inode, 0);
 
 	down_read(&iinfo->i_data_sem);
 	if (iinfo->i_alloc_type == ICBTAG_FLAG_AD_IN_ICB) {

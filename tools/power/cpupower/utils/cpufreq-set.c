@@ -17,15 +17,16 @@
 
 #include "cpufreq.h"
 #include "helpers/helpers.h"
+#include "helpers/sysfs.h"
 
 #define NORM_FREQ_LEN 32
 
 static struct option set_opts[] = {
-	{ .name = "min",	.has_arg = required_argument,	.flag = NULL,	.val = 'd'},
-	{ .name = "max",	.has_arg = required_argument,	.flag = NULL,	.val = 'u'},
-	{ .name = "governor",	.has_arg = required_argument,	.flag = NULL,	.val = 'g'},
-	{ .name = "freq",	.has_arg = required_argument,	.flag = NULL,	.val = 'f'},
-	{ .name = "related",	.has_arg = no_argument,		.flag = NULL,	.val='r'},
+	{"min",		required_argument,	NULL, 'd'},
+	{"max",		required_argument,	NULL, 'u'},
+	{"governor",	required_argument,	NULL, 'g'},
+	{"freq",	required_argument,	NULL, 'f'},
+	{"related",	no_argument,		NULL, 'r'},
 	{ },
 };
 
@@ -257,7 +258,7 @@ int cmd_freq_set(int argc, char **argv)
 				print_unknown_arg();
 				return -EINVAL;
 			}
-			if ((sscanf(optarg, "%s", gov)) != 1) {
+			if ((sscanf(optarg, "%19s", gov)) != 1) {
 				print_unknown_arg();
 				return -EINVAL;
 			}
@@ -318,14 +319,16 @@ int cmd_freq_set(int argc, char **argv)
 		    cpufreq_cpu_exists(cpu))
 			continue;
 
+		if (sysfs_is_cpu_online(cpu) != 1)
+			continue;
+
 		printf(_("Setting cpu: %d\n"), cpu);
 		ret = do_one_cpu(cpu, &new_pol, freq, policychange);
-		if (ret)
-			break;
+		if (ret) {
+			print_error();
+			return ret;
+		}
 	}
 
-	if (ret)
-		print_error();
-
-	return ret;
+	return 0;
 }

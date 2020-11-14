@@ -93,9 +93,10 @@ static inline void __hlist_bl_del(struct hlist_bl_node *n)
 	LIST_BL_BUG_ON((unsigned long)n & LIST_BL_LOCKMASK);
 
 	/* pprev may be `first`, so be careful not to lose the lock bit */
-	*pprev = (struct hlist_bl_node *)
+	WRITE_ONCE(*pprev,
+		   (struct hlist_bl_node *)
 			((unsigned long)next |
-			 ((unsigned long)*pprev & LIST_BL_LOCKMASK));
+			 ((unsigned long)*pprev & LIST_BL_LOCKMASK)));
 	if (next)
 		next->pprev = pprev;
 }
@@ -123,6 +124,11 @@ static inline void hlist_bl_lock(struct hlist_bl_head *b)
 static inline void hlist_bl_unlock(struct hlist_bl_head *b)
 {
 	__bit_spin_unlock(0, (unsigned long *)b);
+}
+
+static inline bool hlist_bl_is_locked(struct hlist_bl_head *b)
+{
+	return bit_spin_is_locked(0, (unsigned long *)b);
 }
 
 /**

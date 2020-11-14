@@ -1,4 +1,0 @@
-config AW_TSC
-    tristate "AW tsc module support"
-    help
-      This enables support for the RAONTECH tsc module=======

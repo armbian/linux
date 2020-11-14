@@ -120,7 +120,7 @@ int afs_write_begin(struct file *file, struct address_space *mapping,
 		    struct page **pagep, void **fsdata)
 {
 	struct afs_writeback *candidate, *wb;
-	struct afs_vnode *vnode = AFS_FS_I(file->f_dentry->d_inode);
+	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
 	struct page *page;
 	struct key *key = file->private_data;
 	unsigned from = pos & (PAGE_CACHE_SIZE - 1);
@@ -148,18 +148,21 @@ int afs_write_begin(struct file *file, struct address_space *mapping,
 		kfree(candidate);
 		return -ENOMEM;
 	}
-	*pagep = page;
-	/* page won't leak in error case: it eventually gets cleaned off LRU */
 
 	if (!PageUptodate(page) && len != PAGE_CACHE_SIZE) {
 		ret = afs_fill_page(vnode, key, index << PAGE_CACHE_SHIFT, page);
 		if (ret < 0) {
+			unlock_page(page);
+			put_page(page);
 			kfree(candidate);
 			_leave(" = %d [prep]", ret);
 			return ret;
 		}
 		SetPageUptodate(page);
 	}
+
+	/* page won't leak in error case: it eventually gets cleaned off LRU */
+	*pagep = page;
 
 try_again:
 	spin_lock(&vnode->writeback_lock);
@@ -245,7 +248,7 @@ int afs_write_end(struct file *file, struct address_space *mapping,
 		  loff_t pos, unsigned len, unsigned copied,
 		  struct page *page, void *fsdata)
 {
-	struct afs_vnode *vnode = AFS_FS_I(file->f_dentry->d_inode);
+	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
 	loff_t i_size, maybe_i_size;
 
 	_enter("{%x:%u},{%lx}",
@@ -296,10 +299,14 @@ static void afs_kill_pages(struct afs_vnode *vnode, bool error,
 		ASSERTCMP(pv.nr, ==, count);
 
 		for (loop = 0; loop < count; loop++) {
-			ClearPageUptodate(pv.pages[loop]);
+			struct page *page = pv.pages[loop];
+			ClearPageUptodate(page);
 			if (error)
-				SetPageError(pv.pages[loop]);
-			end_page_writeback(pv.pages[loop]);
+				SetPageError(page);
+			if (PageWriteback(page))
+				end_page_writeback(page);
+			if (page->index >= first)
+				first = page->index + 1;
 		}
 
 		__pagevec_release(&pv);
@@ -503,6 +510,7 @@ static int afs_writepages_region(struct address_space *mapping,
 
 		if (PageWriteback(page) || !PageDirty(page)) {
 			unlock_page(page);
+			put_page(page);
 			continue;
 		}
 
@@ -624,16 +632,14 @@ void afs_pages_written_back(struct afs_vnode *vnode, struct afs_call *call)
 /*
  * write to an AFS file
  */
-ssize_t afs_file_write(struct kiocb *iocb, const struct iovec *iov,
-		       unsigned long nr_segs, loff_t pos)
+ssize_t afs_file_write(struct kiocb *iocb, struct iov_iter *from)
 {
-	struct dentry *dentry = iocb->ki_filp->f_path.dentry;
-	struct afs_vnode *vnode = AFS_FS_I(dentry->d_inode);
+	struct afs_vnode *vnode = AFS_FS_I(file_inode(iocb->ki_filp));
 	ssize_t result;
-	size_t count = iov_length(iov, nr_segs);
+	size_t count = iov_iter_count(from);
 
-	_enter("{%x.%u},{%zu},%lu,",
-	       vnode->fid.vid, vnode->fid.vnode, count, nr_segs);
+	_enter("{%x.%u},{%zu},",
+	       vnode->fid.vid, vnode->fid.vnode, count);
 
 	if (IS_SWAPFILE(&vnode->vfs_inode)) {
 		printk(KERN_INFO
@@ -644,7 +650,7 @@ ssize_t afs_file_write(struct kiocb *iocb, const struct iovec *iov,
 	if (!count)
 		return 0;
 
-	result = generic_file_aio_write(iocb, iov, nr_segs, pos);
+	result = generic_file_write_iter(iocb, from);
 	if (IS_ERR_VALUE(result)) {
 		_leave(" = %zd", result);
 		return result;
@@ -683,14 +689,13 @@ int afs_writeback_all(struct afs_vnode *vnode)
  */
 int afs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
-	struct dentry *dentry = file->f_path.dentry;
-	struct inode *inode = file->f_mapping->host;
+	struct inode *inode = file_inode(file);
 	struct afs_writeback *wb, *xwb;
-	struct afs_vnode *vnode = AFS_FS_I(dentry->d_inode);
+	struct afs_vnode *vnode = AFS_FS_I(inode);
 	int ret;
 
-	_enter("{%x:%u},{n=%s},%d",
-	       vnode->fid.vid, vnode->fid.vnode, dentry->d_name.name,
+	_enter("{%x:%u},{n=%pD},%d",
+	       vnode->fid.vid, vnode->fid.vnode, file,
 	       datasync);
 
 	ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
@@ -740,6 +745,20 @@ int afs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 out:
 	mutex_unlock(&inode->i_mutex);
 	return ret;
+}
+
+/*
+ * Flush out all outstanding writes on a file opened for writing when it is
+ * closed.
+ */
+int afs_flush(struct file *file, fl_owner_t id)
+{
+	_enter("");
+
+	if ((file->f_mode & FMODE_WRITE) == 0)
+		return 0;
+
+	return vfs_fsync(file, 0);
 }
 
 /*

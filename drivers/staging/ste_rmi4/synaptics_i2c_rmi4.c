@@ -31,6 +31,7 @@
 #include <linux/interrupt.h>
 #include <linux/regulator/consumer.h>
 #include <linux/module.h>
+#include <linux/input/mt.h>
 #include "synaptics_i2c_rmi4.h"
 
 /* TODO: for multiple device support will need a per-device mutex */
@@ -67,7 +68,6 @@
 #define PDT_START_SCAN_LOCATION (0x00E9)
 #define PDT_END_SCAN_LOCATION	(0x000A)
 #define PDT_ENTRY_SIZE		(0x0006)
-#define RMI4_NUMBER_OF_MAX_FINGERS		(8)
 #define SYNAPTICS_RMI4_TOUCHPAD_FUNC_NUM	(0x11)
 #define SYNAPTICS_RMI4_DEVICE_CONTROL_FUNC_NUM	(0x01)
 
@@ -164,6 +164,7 @@ struct synaptics_rmi4_device_info {
  * @regulator: pointer to the regulator structure
  * @wait: wait queue structure variable
  * @touch_stopped: flag to stop the thread function
+ * @fingers_supported: maximum supported fingers
  *
  * This structure gives the device data information.
  */
@@ -184,6 +185,7 @@ struct synaptics_rmi4_data {
 	struct regulator	*regulator;
 	wait_queue_head_t	wait;
 	bool			touch_stopped;
+	unsigned char		fingers_supported;
 };
 
 /**
@@ -207,7 +209,7 @@ static int synaptics_rmi4_set_page(struct synaptics_rmi4_data *pdata,
 		txbuf[1]	= page;
 		retval	= i2c_master_send(i2c, txbuf, PAGE_LEN);
 		if (retval != PAGE_LEN)
-			dev_err(&i2c->dev, "%s:failed:%d\n", __func__, retval);
+			dev_err(&i2c->dev, "failed:%d\n", retval);
 		else
 			pdata->current_page = page;
 	} else
@@ -281,7 +283,7 @@ static int synaptics_rmi4_i2c_byte_write(struct synaptics_rmi4_data *pdata,
 	retval		= i2c_master_send(pdata->i2c_client, txbuf, 2);
 	/* Add in retry on writes only in certain error return values */
 	if (retval != 2) {
-		dev_err(&i2c->dev, "%s:failed:%d\n", __func__, retval);
+		dev_err(&i2c->dev, "failed:%d\n", retval);
 		retval = -EIO;
 	} else
 		retval = 1;
@@ -303,22 +305,21 @@ static int synpatics_rmi4_touchpad_report(struct synaptics_rmi4_data *pdata,
 	/* number of touch points - fingers down in this case */
 	int	touch_count = 0;
 	int	finger;
-	int	fingers_supported;
 	int	finger_registers;
 	int	reg;
 	int	finger_shift;
 	int	finger_status;
 	int	retval;
+	int	x, y;
+	int	wx, wy;
 	unsigned short	data_base_addr;
 	unsigned short	data_offset;
 	unsigned char	data_reg_blk_size;
 	unsigned char	values[2];
 	unsigned char	data[DATA_LEN];
-	int	x[RMI4_NUMBER_OF_MAX_FINGERS];
-	int	y[RMI4_NUMBER_OF_MAX_FINGERS];
-	int	wx[RMI4_NUMBER_OF_MAX_FINGERS];
-	int	wy[RMI4_NUMBER_OF_MAX_FINGERS];
+	unsigned char	fingers_supported = pdata->fingers_supported;
 	struct	i2c_client *client = pdata->i2c_client;
+	struct	input_dev *input_dev = pdata->input_dev;
 
 	/* get 2D sensor finger data */
 	/*
@@ -333,7 +334,6 @@ static int synpatics_rmi4_touchpad_report(struct synaptics_rmi4_data *pdata,
 	 *	10 = finger present but data may not be accurate,
 	 *	11 = reserved for product use.
 	 */
-	fingers_supported	= rfi->num_of_data_points;
 	finger_registers	= (fingers_supported + 3)/4;
 	data_base_addr		= rfi->fn_desc.data_base_addr;
 	retval = synaptics_rmi4_i2c_block_read(pdata, data_base_addr, values,
@@ -358,7 +358,11 @@ static int synpatics_rmi4_touchpad_report(struct synaptics_rmi4_data *pdata,
 		 * if finger status indicates a finger is present then
 		 * read the finger data and report it
 		 */
-		if (finger_status == 1 || finger_status == 2) {
+		input_mt_slot(input_dev, finger);
+		input_mt_report_slot_state(input_dev, MT_TOOL_FINGER,
+							finger_status != 0);
+
+		if (finger_status) {
 			/* Read the finger data */
 			data_offset = data_base_addr +
 					((finger * data_reg_blk_size) +
@@ -367,50 +371,33 @@ static int synpatics_rmi4_touchpad_report(struct synaptics_rmi4_data *pdata,
 						data_offset, data,
 						data_reg_blk_size);
 			if (retval != data_reg_blk_size) {
-				printk(KERN_ERR "%s:read data failed\n",
+				dev_err(&client->dev, "%s:read data failed\n",
 								__func__);
 				return 0;
-			} else {
-				x[touch_count]	=
-					(data[0] << 4) | (data[2] & MASK_4BIT);
-				y[touch_count]	=
-					(data[1] << 4) |
-					((data[2] >> 4) & MASK_4BIT);
-				wy[touch_count]	=
-						(data[3] >> 4) & MASK_4BIT;
-				wx[touch_count]	=
-						(data[3] & MASK_4BIT);
-
-				if (pdata->board->x_flip)
-					x[touch_count] =
-						pdata->sensor_max_x -
-								x[touch_count];
-				if (pdata->board->y_flip)
-					y[touch_count] =
-						pdata->sensor_max_y -
-								y[touch_count];
 			}
+			x = (data[0] << 4) | (data[2] & MASK_4BIT);
+			y = (data[1] << 4) | ((data[2] >> 4) & MASK_4BIT);
+			wy = (data[3] >> 4) & MASK_4BIT;
+			wx = (data[3] & MASK_4BIT);
+
+			if (pdata->board->x_flip)
+				x = pdata->sensor_max_x - x;
+			if (pdata->board->y_flip)
+				y = pdata->sensor_max_y - y;
+
+			input_report_abs(input_dev, ABS_MT_TOUCH_MAJOR,
+								max(wx, wy));
+			input_report_abs(input_dev, ABS_MT_POSITION_X, x);
+			input_report_abs(input_dev, ABS_MT_POSITION_Y, y);
+
 			/* number of active touch points */
 			touch_count++;
 		}
 	}
 
-	/* report to input subsystem */
-	if (touch_count) {
-		for (finger = 0; finger < touch_count; finger++) {
-			input_report_abs(pdata->input_dev, ABS_MT_TOUCH_MAJOR,
-						max(wx[finger] , wy[finger]));
-			input_report_abs(pdata->input_dev, ABS_MT_POSITION_X,
-								x[finger]);
-			input_report_abs(pdata->input_dev, ABS_MT_POSITION_Y,
-								y[finger]);
-			input_mt_sync(pdata->input_dev);
-		}
-	} else
-		input_mt_sync(pdata->input_dev);
-
 	/* sync after groups of events */
-	input_sync(pdata->input_dev);
+	input_mt_sync_frame(input_dev);
+	input_sync(input_dev);
 	/* return the number of touch points */
 	return touch_count;
 }
@@ -428,6 +415,7 @@ static int synaptics_rmi4_report_device(struct synaptics_rmi4_data *pdata,
 	int touch = 0;
 	struct	i2c_client *client = pdata->i2c_client;
 	static int num_error_reports;
+
 	if (rfi->fn_number != SYNAPTICS_RMI4_TOUCHPAD_FUNC_NUM) {
 		num_error_reports++;
 		if (num_error_reports < MAX_ERROR_REPORT)
@@ -498,6 +486,7 @@ static irqreturn_t synaptics_rmi4_irq(int irq, void *data)
 {
 	struct synaptics_rmi4_data *pdata = data;
 	int touch_count;
+
 	do {
 		touch_count = synaptics_rmi4_sensor_report(pdata);
 		if (touch_count)
@@ -575,6 +564,7 @@ static int synpatics_rmi4_touchpad_detect(struct synaptics_rmi4_data *pdata,
 		if ((queries[1] & MASK_3BIT) == 5)
 			rfi->num_of_data_points = 10;
 	}
+	pdata->fingers_supported = rfi->num_of_data_points;
 	/* Need to get interrupt info for handling interrupts */
 	rfi->index_to_intr_reg = (interruptcount + 7)/8;
 	if (rfi->index_to_intr_reg != 0)
@@ -655,13 +645,13 @@ static int synpatics_rmi4_touchpad_detect(struct synaptics_rmi4_data *pdata,
 }
 
 /**
- * synpatics_rmi4_touchpad_config() - confiures the rmi4 touchpad device
+ * synaptics_rmi4_touchpad_config() - configures the rmi4 touchpad device
  * @pdata: pointer to synaptics_rmi4_data structure
  * @rfi: pointer to synaptics_rmi4_fn structure
  *
- * This function calls to confiures the rmi4 touchpad device
+ * This function calls to configures the rmi4 touchpad device
  */
-int synpatics_rmi4_touchpad_config(struct synaptics_rmi4_data *pdata,
+static int synaptics_rmi4_touchpad_config(struct synaptics_rmi4_data *pdata,
 						struct synaptics_rmi4_fn *rfi)
 {
 	/*
@@ -754,13 +744,9 @@ static int synaptics_rmi4_i2c_query_device(struct synaptics_rmi4_data *pdata)
 			case SYNAPTICS_RMI4_TOUCHPAD_FUNC_NUM:
 				if (rmi_fd.intr_src_count) {
 					rfi = kmalloc(sizeof(*rfi),
-								GFP_KERNEL);
-					if (!rfi) {
-						dev_err(&client->dev,
-							"%s:kmalloc failed\n",
-								__func__);
-							return -ENOMEM;
-					}
+						      GFP_KERNEL);
+					if (!rfi)
+						return -ENOMEM;
 					retval = synpatics_rmi4_touchpad_detect
 								(pdata,	rfi,
 								&rmi_fd,
@@ -844,8 +830,8 @@ static int synaptics_rmi4_i2c_query_device(struct synaptics_rmi4_data *pdata)
 
 	/* Check if this is a Synaptics device - report if not. */
 	if (pdata->rmi4_mod_info.manufacturer_id != 1)
-		dev_err(&client->dev, "%s: non-Synaptics mfg id:%d\n",
-			__func__, pdata->rmi4_mod_info.manufacturer_id);
+		dev_err(&client->dev, "non-Synaptics mfg id:%d\n",
+			pdata->rmi4_mod_info.manufacturer_id);
 
 	list_for_each_entry(rfi, &pdata->rmi4_mod_info.support_fn_list, link)
 		data_sources += rfi->num_of_data_sources;
@@ -855,7 +841,7 @@ static int synaptics_rmi4_i2c_query_device(struct synaptics_rmi4_data *pdata)
 			if (rfi->num_of_data_sources) {
 				if (rfi->fn_number ==
 					SYNAPTICS_RMI4_TOUCHPAD_FUNC_NUM) {
-					retval = synpatics_rmi4_touchpad_config
+					retval = synaptics_rmi4_touchpad_config
 								(pdata, rfi);
 					if (retval < 0)
 						return retval;
@@ -880,6 +866,16 @@ static int synaptics_rmi4_i2c_query_device(struct synaptics_rmi4_data *pdata)
 	return 0;
 }
 
+/*
+ * Descriptor structure.
+ * Describes the number of i2c devices on the bus that speak RMI.
+ */
+static struct synaptics_rmi4_platform_data synaptics_rmi4_platformdata = {
+	.irq_type       = (IRQF_TRIGGER_FALLING | IRQF_SHARED),
+	.x_flip		= false,
+	.y_flip		= true,
+};
+
 /**
  * synaptics_rmi4_probe() - Initialze the i2c-client touchscreen driver
  * @i2c: i2c client structure pointer
@@ -891,7 +887,7 @@ static int synaptics_rmi4_i2c_query_device(struct synaptics_rmi4_data *pdata)
  * the rmi4 Physical Device Table and enumerate any rmi4 functions that
  * have data sources associated with them.
  */
-static int __devinit synaptics_rmi4_probe
+static int synaptics_rmi4_probe
 	(struct i2c_client *client, const struct i2c_device_id *dev_id)
 {
 	int retval;
@@ -906,23 +902,17 @@ static int __devinit synaptics_rmi4_probe
 		return -EIO;
 	}
 
-	if (!platformdata) {
-		dev_err(&client->dev, "%s: no platform data\n", __func__);
-		return -EINVAL;
-	}
+	if (!platformdata)
+		platformdata = &synaptics_rmi4_platformdata;
 
 	/* Allocate and initialize the instance data for this client */
-	rmi4_data = kzalloc(sizeof(struct synaptics_rmi4_data) * 2,
-							GFP_KERNEL);
-	if (!rmi4_data) {
-		dev_err(&client->dev, "%s: no memory allocated\n", __func__);
+	rmi4_data = kcalloc(2, sizeof(struct synaptics_rmi4_data),
+			    GFP_KERNEL);
+	if (!rmi4_data)
 		return -ENOMEM;
-	}
 
 	rmi4_data->input_dev = input_allocate_device();
 	if (rmi4_data->input_dev == NULL) {
-		dev_err(&client->dev, "%s:input device alloc failed\n",
-						__func__);
 		retval = -ENOMEM;
 		goto err_input;
 	}
@@ -988,18 +978,20 @@ static int __devinit synaptics_rmi4_probe
 					rmi4_data->sensor_max_y, 0, 0);
 	input_set_abs_params(rmi4_data->input_dev, ABS_MT_TOUCH_MAJOR, 0,
 						MAX_TOUCH_MAJOR, 0, 0);
+	input_mt_init_slots(rmi4_data->input_dev,
+				rmi4_data->fingers_supported, 0);
 
 	/* Clear interrupts */
 	synaptics_rmi4_i2c_block_read(rmi4_data,
 			rmi4_data->fn01_data_base_addr + 1, intr_status,
 				rmi4_data->number_of_interrupt_register);
-	retval = request_threaded_irq(platformdata->irq_number, NULL,
+	retval = request_threaded_irq(client->irq, NULL,
 					synaptics_rmi4_irq,
 					platformdata->irq_type,
 					DRIVER_NAME, rmi4_data);
 	if (retval) {
-		dev_err(&client->dev, "%s:Unable to get attn irq %d\n",
-				__func__, platformdata->irq_number);
+		dev_err(&client->dev, "Unable to get attn irq %d\n",
+			client->irq);
 		goto err_query_dev;
 	}
 
@@ -1012,7 +1004,7 @@ static int __devinit synaptics_rmi4_probe
 	return retval;
 
 err_free_irq:
-	free_irq(platformdata->irq_number, rmi4_data);
+	free_irq(client->irq, rmi4_data);
 err_query_dev:
 	regulator_disable(rmi4_data->regulator);
 err_regulator_enable:
@@ -1032,14 +1024,13 @@ err_input:
  * This function uses to remove the i2c-client
  * touchscreen driver and returns integer.
  */
-static int __devexit synaptics_rmi4_remove(struct i2c_client *client)
+static int synaptics_rmi4_remove(struct i2c_client *client)
 {
 	struct synaptics_rmi4_data *rmi4_data = i2c_get_clientdata(client);
-	const struct synaptics_rmi4_platform_data *pdata = rmi4_data->board;
 
 	rmi4_data->touch_stopped = true;
 	wake_up(&rmi4_data->wait);
-	free_irq(pdata->irq_number, rmi4_data);
+	free_irq(client->irq, rmi4_data);
 	input_unregister_device(rmi4_data->input_dev);
 	regulator_disable(rmi4_data->regulator);
 	regulator_put(rmi4_data->regulator);
@@ -1048,7 +1039,6 @@ static int __devexit synaptics_rmi4_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_PM
 /**
  * synaptics_rmi4_suspend() - suspend the touch screen controller
  * @dev: pointer to device structure
@@ -1056,16 +1046,15 @@ static int __devexit synaptics_rmi4_remove(struct i2c_client *client)
  * This function is used to suspend the
  * touch panel controller and returns integer
  */
-static int synaptics_rmi4_suspend(struct device *dev)
+static int __maybe_unused synaptics_rmi4_suspend(struct device *dev)
 {
 	/* Touch sleep mode */
 	int retval;
 	unsigned char intr_status;
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
-	const struct synaptics_rmi4_platform_data *pdata = rmi4_data->board;
 
 	rmi4_data->touch_stopped = true;
-	disable_irq(pdata->irq_number);
+	disable_irq(rmi4_data->i2c_client->irq);
 
 	retval = synaptics_rmi4_i2c_block_read(rmi4_data,
 				rmi4_data->fn01_data_base_addr + 1,
@@ -1091,16 +1080,19 @@ static int synaptics_rmi4_suspend(struct device *dev)
  * This function is used to resume the touch panel
  * controller and returns integer.
  */
-static int synaptics_rmi4_resume(struct device *dev)
+static int __maybe_unused synaptics_rmi4_resume(struct device *dev)
 {
 	int retval;
 	unsigned char intr_status;
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
-	const struct synaptics_rmi4_platform_data *pdata = rmi4_data->board;
 
-	regulator_enable(rmi4_data->regulator);
+	retval = regulator_enable(rmi4_data->regulator);
+	if (retval) {
+		dev_err(dev, "Regulator enable failed (%d)\n", retval);
+		return retval;
+	}
 
-	enable_irq(pdata->irq_number);
+	enable_irq(rmi4_data->i2c_client->irq);
 	rmi4_data->touch_stopped = false;
 
 	retval = synaptics_rmi4_i2c_block_read(rmi4_data,
@@ -1119,11 +1111,8 @@ static int synaptics_rmi4_resume(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops synaptics_rmi4_dev_pm_ops = {
-	.suspend = synaptics_rmi4_suspend,
-	.resume  = synaptics_rmi4_resume,
-};
-#endif
+static SIMPLE_DEV_PM_OPS(synaptics_rmi4_dev_pm_ops, synaptics_rmi4_suspend,
+			 synaptics_rmi4_resume);
 
 static const struct i2c_device_id synaptics_rmi4_id_table[] = {
 	{ DRIVER_NAME, 0 },
@@ -1134,41 +1123,15 @@ MODULE_DEVICE_TABLE(i2c, synaptics_rmi4_id_table);
 static struct i2c_driver synaptics_rmi4_driver = {
 	.driver = {
 		.name	=	DRIVER_NAME,
-		.owner	=	THIS_MODULE,
-#ifdef CONFIG_PM
 		.pm	=	&synaptics_rmi4_dev_pm_ops,
-#endif
 	},
 	.probe		=	synaptics_rmi4_probe,
-	.remove		=	__devexit_p(synaptics_rmi4_remove),
+	.remove		=	synaptics_rmi4_remove,
 	.id_table	=	synaptics_rmi4_id_table,
 };
-/**
- * synaptics_rmi4_init() - Initialize the touchscreen driver
- *
- * This function uses to initializes the synaptics
- * touchscreen driver and returns integer.
- */
-static int __init synaptics_rmi4_init(void)
-{
-	return i2c_add_driver(&synaptics_rmi4_driver);
-}
-/**
- * synaptics_rmi4_exit() - De-initialize the touchscreen driver
- *
- * This function uses to de-initialize the synaptics
- * touchscreen driver and returns none.
- */
-static void __exit synaptics_rmi4_exit(void)
-{
-	i2c_del_driver(&synaptics_rmi4_driver);
-}
 
-
-module_init(synaptics_rmi4_init);
-module_exit(synaptics_rmi4_exit);
+module_i2c_driver(synaptics_rmi4_driver);
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("naveen.gaddipati@stericsson.com, js.ha@stericsson.com");
 MODULE_DESCRIPTION("synaptics rmi4 i2c touch Driver");
-MODULE_ALIAS("i2c:synaptics_rmi4_ts");

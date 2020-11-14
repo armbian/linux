@@ -102,7 +102,7 @@ err_reset:
 	return rc;
 }
 
-static int __devexit tosa_bt_remove(struct platform_device *dev)
+static int tosa_bt_remove(struct platform_device *dev)
 {
 	struct tosa_bt_data *data = dev->dev.platform_data;
 	struct rfkill *rfk = platform_get_drvdata(dev);
@@ -125,24 +125,14 @@ static int __devexit tosa_bt_remove(struct platform_device *dev)
 
 static struct platform_driver tosa_bt_driver = {
 	.probe = tosa_bt_probe,
-	.remove = __devexit_p(tosa_bt_remove),
+	.remove = tosa_bt_remove,
 
 	.driver = {
 		.name = "tosa-bt",
-		.owner = THIS_MODULE,
 	},
 };
+module_platform_driver(tosa_bt_driver);
 
-
-static int __init tosa_bt_init(void)
-{
-	return platform_driver_register(&tosa_bt_driver);
-}
-
-static void __exit tosa_bt_exit(void)
-{
-	platform_driver_unregister(&tosa_bt_driver);
-}
-
-module_init(tosa_bt_init);
-module_exit(tosa_bt_exit);
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Dmitry Baryshkov");
+MODULE_DESCRIPTION("Bluetooth built-in chip control");

@@ -90,8 +90,9 @@ __clmul_gf128mul_ble:
 	pxor T2, T1
 	pxor T1, DATA
 	ret
+ENDPROC(__clmul_gf128mul_ble)
 
-/* void clmul_ghash_mul(char *dst, const be128 *shash) */
+/* void clmul_ghash_mul(char *dst, const u128 *shash) */
 ENTRY(clmul_ghash_mul)
 	movups (%rdi), DATA
 	movups (%rsi), SHASH
@@ -101,10 +102,11 @@ ENTRY(clmul_ghash_mul)
 	PSHUFB_XMM BSWAP DATA
 	movups DATA, (%rdi)
 	ret
+ENDPROC(clmul_ghash_mul)
 
 /*
  * void clmul_ghash_update(char *dst, const char *src, unsigned int srclen,
- *			   const be128 *shash);
+ *			   const u128 *shash);
  */
 ENTRY(clmul_ghash_update)
 	cmp $16, %rdx
@@ -127,3 +129,4 @@ ENTRY(clmul_ghash_update)
 	movups DATA, (%rdi)
 .Lupdate_just_ret:
 	ret
+ENDPROC(clmul_ghash_update)

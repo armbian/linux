@@ -34,7 +34,7 @@
 #define DRV_MODULE_VERSION	"0.2"
 #define DRV_MODULE_RELDATE	"July 28, 2011"
 
-static char version[] __devinitdata =
+static const char version[] =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
 MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
@@ -42,7 +42,7 @@ MODULE_DESCRIPTION("Niagara2 Crypto driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
 
-#define N2_CRA_PRIORITY		300
+#define N2_CRA_PRIORITY		200
 
 static DEFINE_MUTEX(spu_lock);
 
@@ -356,7 +356,7 @@ static int n2_hash_async_finup(struct ahash_request *req)
 
 static int n2_hash_cra_init(struct crypto_tfm *tfm)
 {
-	const char *fallback_driver_name = tfm->__crt_alg->cra_name;
+	const char *fallback_driver_name = crypto_tfm_alg_name(tfm);
 	struct crypto_ahash *ahash = __crypto_ahash_cast(tfm);
 	struct n2_hash_ctx *ctx = crypto_ahash_ctx(ahash);
 	struct crypto_ahash *fallback_tfm;
@@ -391,7 +391,7 @@ static void n2_hash_cra_exit(struct crypto_tfm *tfm)
 
 static int n2_hmac_cra_init(struct crypto_tfm *tfm)
 {
-	const char *fallback_driver_name = tfm->__crt_alg->cra_name;
+	const char *fallback_driver_name = crypto_tfm_alg_name(tfm);
 	struct crypto_ahash *ahash = __crypto_ahash_cast(tfm);
 	struct n2_hmac_ctx *ctx = crypto_ahash_ctx(ahash);
 	struct n2_hmac_alg *n2alg = n2_hmac_alg(tfm);
@@ -445,10 +445,7 @@ static int n2_hmac_async_setkey(struct crypto_ahash *tfm, const u8 *key,
 	struct n2_hmac_ctx *ctx = crypto_ahash_ctx(tfm);
 	struct crypto_shash *child_shash = ctx->child_shash;
 	struct crypto_ahash *fallback_tfm;
-	struct {
-		struct shash_desc shash;
-		char ctx[crypto_shash_descsize(child_shash)];
-	} desc;
+	SHASH_DESC_ON_STACK(shash, child_shash);
 	int err, bs, ds;
 
 	fallback_tfm = ctx->base.fallback_tfm;
@@ -456,15 +453,15 @@ static int n2_hmac_async_setkey(struct crypto_ahash *tfm, const u8 *key,
 	if (err)
 		return err;
 
-	desc.shash.tfm = child_shash;
-	desc.shash.flags = crypto_ahash_get_flags(tfm) &
+	shash->tfm = child_shash;
+	shash->flags = crypto_ahash_get_flags(tfm) &
 		CRYPTO_TFM_REQ_MAY_SLEEP;
 
 	bs = crypto_shash_blocksize(child_shash);
 	ds = crypto_shash_digestsize(child_shash);
 	BUG_ON(ds > N2_HASH_KEY_MAX);
 	if (keylen > bs) {
-		err = crypto_shash_digest(&desc.shash, key, keylen,
+		err = crypto_shash_digest(shash, key, keylen,
 					  ctx->hash_key);
 		if (err)
 			return err;
@@ -1284,10 +1281,10 @@ static const char md5_zero[MD5_DIGEST_SIZE] = {
 	0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e,
 };
 static const u32 md5_init[MD5_HASH_WORDS] = {
-	cpu_to_le32(0x67452301),
-	cpu_to_le32(0xefcdab89),
-	cpu_to_le32(0x98badcfe),
-	cpu_to_le32(0x10325476),
+	cpu_to_le32(MD5_H0),
+	cpu_to_le32(MD5_H1),
+	cpu_to_le32(MD5_H2),
+	cpu_to_le32(MD5_H3),
 };
 static const char sha1_zero[SHA1_DIGEST_SIZE] = {
 	0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32,
@@ -1388,7 +1385,7 @@ static int n2_cipher_cra_init(struct crypto_tfm *tfm)
 	return 0;
 }
 
-static int __devinit __n2_register_one_cipher(const struct n2_cipher_tmpl *tmpl)
+static int __n2_register_one_cipher(const struct n2_cipher_tmpl *tmpl)
 {
 	struct n2_cipher_alg *p = kzalloc(sizeof(*p), GFP_KERNEL);
 	struct crypto_alg *alg;
@@ -1424,7 +1421,7 @@ static int __devinit __n2_register_one_cipher(const struct n2_cipher_tmpl *tmpl)
 	return err;
 }
 
-static int __devinit __n2_register_one_hmac(struct n2_ahash_alg *n2ahash)
+static int __n2_register_one_hmac(struct n2_ahash_alg *n2ahash)
 {
 	struct n2_hmac_alg *p = kzalloc(sizeof(*p), GFP_KERNEL);
 	struct ahash_alg *ahash;
@@ -1462,7 +1459,7 @@ static int __devinit __n2_register_one_hmac(struct n2_ahash_alg *n2ahash)
 	return err;
 }
 
-static int __devinit __n2_register_one_ahash(const struct n2_hash_tmpl *tmpl)
+static int __n2_register_one_ahash(const struct n2_hash_tmpl *tmpl)
 {
 	struct n2_ahash_alg *p = kzalloc(sizeof(*p), GFP_KERNEL);
 	struct hash_alg_common *halg;
@@ -1517,7 +1514,7 @@ static int __devinit __n2_register_one_ahash(const struct n2_hash_tmpl *tmpl)
 	return err;
 }
 
-static int __devinit n2_register_algs(void)
+static int n2_register_algs(void)
 {
 	int i, err = 0;
 
@@ -1545,7 +1542,7 @@ out:
 	return err;
 }
 
-static void __devexit n2_unregister_algs(void)
+static void n2_unregister_algs(void)
 {
 	mutex_lock(&spu_lock);
 	if (!--algs_registered)
@@ -1610,8 +1607,7 @@ static int spu_map_ino(struct platform_device *dev, struct spu_mdesc_info *ip,
 
 	sprintf(p->irq_name, "%s-%d", irq_name, index);
 
-	return request_irq(p->irq, handler, IRQF_SAMPLE_RANDOM,
-			   p->irq_name, p);
+	return request_irq(p->irq, handler, 0, p->irq_name, p);
 }
 
 static struct kmem_cache *queue_cache[2];
@@ -1645,6 +1641,7 @@ static int queue_cache_init(void)
 					  CWQ_ENTRY_SIZE, 0, NULL);
 	if (!queue_cache[HV_NCS_QTYPE_CWQ - 1]) {
 		kmem_cache_destroy(queue_cache[HV_NCS_QTYPE_MAU - 1]);
+		queue_cache[HV_NCS_QTYPE_MAU - 1] = NULL;
 		return -ENOMEM;
 	}
 	return 0;
@@ -1654,6 +1651,8 @@ static void queue_cache_destroy(void)
 {
 	kmem_cache_destroy(queue_cache[HV_NCS_QTYPE_MAU - 1]);
 	kmem_cache_destroy(queue_cache[HV_NCS_QTYPE_CWQ - 1]);
+	queue_cache[HV_NCS_QTYPE_MAU - 1] = NULL;
+	queue_cache[HV_NCS_QTYPE_CWQ - 1] = NULL;
 }
 
 static int spu_queue_register(struct spu_queue *p, unsigned long q_type)
@@ -1758,7 +1757,7 @@ static int spu_mdesc_walk_arcs(struct mdesc_handle *mdesc,
 				dev->dev.of_node->full_name);
 			return -EINVAL;
 		}
-		cpu_set(*id, p->sharing);
+		cpumask_set_cpu(*id, &p->sharing);
 		table[*id] = p;
 	}
 	return 0;
@@ -1780,7 +1779,7 @@ static int handle_exec_unit(struct spu_mdesc_info *ip, struct list_head *list,
 		return -ENOMEM;
 	}
 
-	cpus_clear(p->sharing);
+	cpumask_clear(&p->sharing);
 	spin_lock_init(&p->lock);
 	p->q_type = q_type;
 	INIT_LIST_HEAD(&p->jobs);
@@ -1823,8 +1822,8 @@ static int spu_mdesc_scan(struct mdesc_handle *mdesc, struct platform_device *de
 	return err;
 }
 
-static int __devinit get_irq_props(struct mdesc_handle *mdesc, u64 node,
-				   struct spu_mdesc_info *ip)
+static int get_irq_props(struct mdesc_handle *mdesc, u64 node,
+			 struct spu_mdesc_info *ip)
 {
 	const u64 *ino;
 	int ino_len;
@@ -1852,10 +1851,10 @@ static int __devinit get_irq_props(struct mdesc_handle *mdesc, u64 node,
 	return 0;
 }
 
-static int __devinit grab_mdesc_irq_props(struct mdesc_handle *mdesc,
-					  struct platform_device *dev,
-					  struct spu_mdesc_info *ip,
-					  const char *node_name)
+static int grab_mdesc_irq_props(struct mdesc_handle *mdesc,
+				struct platform_device *dev,
+				struct spu_mdesc_info *ip,
+				const char *node_name)
 {
 	const unsigned int *reg;
 	u64 node;
@@ -1884,7 +1883,7 @@ static int __devinit grab_mdesc_irq_props(struct mdesc_handle *mdesc,
 static unsigned long n2_spu_hvapi_major;
 static unsigned long n2_spu_hvapi_minor;
 
-static int __devinit n2_spu_hvapi_register(void)
+static int n2_spu_hvapi_register(void)
 {
 	int err;
 
@@ -1910,7 +1909,7 @@ static void n2_spu_hvapi_unregister(void)
 
 static int global_ref;
 
-static int __devinit grab_global_resources(void)
+static int grab_global_resources(void)
 {
 	int err = 0;
 
@@ -1974,7 +1973,7 @@ static void release_global_resources(void)
 	mutex_unlock(&spu_lock);
 }
 
-static struct n2_crypto * __devinit alloc_n2cp(void)
+static struct n2_crypto *alloc_n2cp(void)
 {
 	struct n2_crypto *np = kzalloc(sizeof(struct n2_crypto), GFP_KERNEL);
 
@@ -1994,7 +1993,7 @@ static void free_n2cp(struct n2_crypto *np)
 	kfree(np);
 }
 
-static void __devinit n2_spu_driver_version(void)
+static void n2_spu_driver_version(void)
 {
 	static int n2_spu_version_printed;
 
@@ -2002,7 +2001,7 @@ static void __devinit n2_spu_driver_version(void)
 		pr_info("%s", version);
 }
 
-static int __devinit n2_crypto_probe(struct platform_device *dev)
+static int n2_crypto_probe(struct platform_device *dev)
 {
 	struct mdesc_handle *mdesc;
 	const char *full_name;
@@ -2078,7 +2077,7 @@ out_free_n2cp:
 	return err;
 }
 
-static int __devexit n2_crypto_remove(struct platform_device *dev)
+static int n2_crypto_remove(struct platform_device *dev)
 {
 	struct n2_crypto *np = dev_get_drvdata(&dev->dev);
 
@@ -2093,7 +2092,7 @@ static int __devexit n2_crypto_remove(struct platform_device *dev)
 	return 0;
 }
 
-static struct n2_mau * __devinit alloc_ncp(void)
+static struct n2_mau *alloc_ncp(void)
 {
 	struct n2_mau *mp = kzalloc(sizeof(struct n2_mau), GFP_KERNEL);
 
@@ -2113,7 +2112,7 @@ static void free_ncp(struct n2_mau *mp)
 	kfree(mp);
 }
 
-static int __devinit n2_mau_probe(struct platform_device *dev)
+static int n2_mau_probe(struct platform_device *dev)
 {
 	struct mdesc_handle *mdesc;
 	const char *full_name;
@@ -2180,7 +2179,7 @@ out_free_ncp:
 	return err;
 }
 
-static int __devexit n2_mau_remove(struct platform_device *dev)
+static int n2_mau_remove(struct platform_device *dev)
 {
 	struct n2_mau *mp = dev_get_drvdata(&dev->dev);
 
@@ -2214,11 +2213,10 @@ MODULE_DEVICE_TABLE(of, n2_crypto_match);
 static struct platform_driver n2_crypto_driver = {
 	.driver = {
 		.name		=	"n2cp",
-		.owner		=	THIS_MODULE,
 		.of_match_table	=	n2_crypto_match,
 	},
 	.probe		=	n2_crypto_probe,
-	.remove		=	__devexit_p(n2_crypto_remove),
+	.remove		=	n2_crypto_remove,
 };
 
 static struct of_device_id n2_mau_match[] = {
@@ -2242,11 +2240,10 @@ MODULE_DEVICE_TABLE(of, n2_mau_match);
 static struct platform_driver n2_mau_driver = {
 	.driver = {
 		.name		=	"ncp",
-		.owner		=	THIS_MODULE,
 		.of_match_table	=	n2_mau_match,
 	},
 	.probe		=	n2_mau_probe,
-	.remove		=	__devexit_p(n2_mau_remove),
+	.remove		=	n2_mau_remove,
 };
 
 static int __init n2_init(void)

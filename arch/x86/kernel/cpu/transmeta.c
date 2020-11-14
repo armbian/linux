@@ -1,11 +1,10 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/init.h>
-#include <asm/processor.h>
+#include <asm/cpufeature.h>
 #include <asm/msr.h>
 #include "cpu.h"
 
-static void __cpuinit early_init_transmeta(struct cpuinfo_x86 *c)
+static void early_init_transmeta(struct cpuinfo_x86 *c)
 {
 	u32 xlvl;
 
@@ -13,11 +12,11 @@ static void __cpuinit early_init_transmeta(struct cpuinfo_x86 *c)
 	xlvl = cpuid_eax(0x80860000);
 	if ((xlvl & 0xffff0000) == 0x80860000) {
 		if (xlvl >= 0x80860001)
-			c->x86_capability[2] = cpuid_edx(0x80860001);
+			c->x86_capability[CPUID_8086_0001_EDX] = cpuid_edx(0x80860001);
 	}
 }
 
-static void __cpuinit init_transmeta(struct cpuinfo_x86 *c)
+static void init_transmeta(struct cpuinfo_x86 *c)
 {
 	unsigned int cap_mask, uk, max, dummy;
 	unsigned int cms_rev1, cms_rev2;
@@ -83,7 +82,7 @@ static void __cpuinit init_transmeta(struct cpuinfo_x86 *c)
 	/* Unhide possibly hidden capability flags */
 	rdmsr(0x80860004, cap_mask, uk);
 	wrmsr(0x80860004, ~0, uk);
-	c->x86_capability[0] = cpuid_edx(0x00000001);
+	c->x86_capability[CPUID_1_EDX] = cpuid_edx(0x00000001);
 	wrmsr(0x80860004, cap_mask, uk);
 
 	/* All Transmeta CPUs have a constant TSC */
@@ -98,7 +97,7 @@ static void __cpuinit init_transmeta(struct cpuinfo_x86 *c)
 #endif
 }
 
-static const struct cpu_dev __cpuinitconst transmeta_cpu_dev = {
+static const struct cpu_dev transmeta_cpu_dev = {
 	.c_vendor	= "Transmeta",
 	.c_ident	= { "GenuineTMx86", "TransmetaCPU" },
 	.c_early_init	= early_init_transmeta,

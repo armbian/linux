@@ -70,7 +70,7 @@ static int _fdt_sw_check_header(void *fdt)
 			return err; \
 	}
 
-static void *_fdt_grab_space(void *fdt, int len)
+static void *_fdt_grab_space(void *fdt, size_t len)
 {
 	int offset = fdt_size_dt_struct(fdt);
 	int spaceleft;
@@ -82,7 +82,7 @@ static void *_fdt_grab_space(void *fdt, int len)
 		return NULL;
 
 	fdt_set_size_dt_struct(fdt, offset + len);
-	return fdt_offset_ptr_w(fdt, offset, len);
+	return _fdt_offset_ptr_w(fdt, offset);
 }
 
 int fdt_create(void *buf, int bufsize)
@@ -103,6 +103,38 @@ int fdt_create(void *buf, int bufsize)
 					      sizeof(struct fdt_reserve_entry)));
 	fdt_set_off_dt_struct(fdt, fdt_off_mem_rsvmap(fdt));
 	fdt_set_off_dt_strings(fdt, bufsize);
+
+	return 0;
+}
+
+int fdt_resize(void *fdt, void *buf, int bufsize)
+{
+	size_t headsize, tailsize;
+	char *oldtail, *newtail;
+
+	FDT_SW_CHECK_HEADER(fdt);
+
+	headsize = fdt_off_dt_struct(fdt);
+	tailsize = fdt_size_dt_strings(fdt);
+
+	if ((headsize + tailsize) > bufsize)
+		return -FDT_ERR_NOSPACE;
+
+	oldtail = (char *)fdt + fdt_totalsize(fdt) - tailsize;
+	newtail = (char *)buf + bufsize - tailsize;
+
+	/* Two cases to avoid clobbering data if the old and new
+	 * buffers partially overlap */
+	if (buf <= fdt) {
+		memmove(buf, fdt, headsize);
+		memmove(newtail, oldtail, tailsize);
+	} else {
+		memmove(newtail, oldtail, tailsize);
+		memmove(buf, fdt, headsize);
+	}
+
+	fdt_set_off_dt_strings(buf, bufsize);
+	fdt_set_totalsize(buf, bufsize);
 
 	return 0;
 }
@@ -153,7 +185,7 @@ int fdt_begin_node(void *fdt, const char *name)
 
 int fdt_end_node(void *fdt)
 {
-	uint32_t *en;
+	fdt32_t *en;
 
 	FDT_SW_CHECK_HEADER(fdt);
 
@@ -188,7 +220,7 @@ static int _fdt_find_add_string(void *fdt, const char *s)
 	return offset;
 }
 
-int fdt_property(void *fdt, const char *name, const void *val, int len)
+int fdt_property_placeholder(void *fdt, const char *name, int len, void **valp)
 {
 	struct fdt_property *prop;
 	int nameoff;
@@ -206,14 +238,26 @@ int fdt_property(void *fdt, const char *name, const void *val, int len)
 	prop->tag = cpu_to_fdt32(FDT_PROP);
 	prop->nameoff = cpu_to_fdt32(nameoff);
 	prop->len = cpu_to_fdt32(len);
-	memcpy(prop->data, val, len);
+	*valp = prop->data;
+	return 0;
+}
+
+int fdt_property(void *fdt, const char *name, const void *val, int len)
+{
+	void *ptr;
+	int ret;
+
+	ret = fdt_property_placeholder(fdt, name, len, &ptr);
+	if (ret)
+		return ret;
+	memcpy(ptr, val, len);
 	return 0;
 }
 
 int fdt_finish(void *fdt)
 {
 	char *p = (char *)fdt;
-	uint32_t *end;
+	fdt32_t *end;
 	int oldstroffset, newstroffset;
 	uint32_t tag;
 	int offset, nextoffset;
@@ -237,11 +281,8 @@ int fdt_finish(void *fdt)
 	while ((tag = fdt_next_tag(fdt, offset, &nextoffset)) != FDT_END) {
 		if (tag == FDT_PROP) {
 			struct fdt_property *prop =
-				fdt_offset_ptr_w(fdt, offset, sizeof(*prop));
+				_fdt_offset_ptr_w(fdt, offset);
 			int nameoff;
-
-			if (! prop)
-				return -FDT_ERR_BADSTRUCTURE;
 
 			nameoff = fdt32_to_cpu(prop->nameoff);
 			nameoff += fdt_size_dt_strings(fdt);
@@ -249,6 +290,8 @@ int fdt_finish(void *fdt)
 		}
 		offset = nextoffset;
 	}
+	if (nextoffset < 0)
+		return nextoffset;
 
 	/* Finally, adjust the header */
 	fdt_set_totalsize(fdt, newstroffset + fdt_size_dt_strings(fdt));

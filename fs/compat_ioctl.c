@@ -59,14 +59,13 @@
 #include <linux/gfp.h>
 
 #include <net/bluetooth/bluetooth.h>
-#include <net/bluetooth/hci.h>
+#include <net/bluetooth/hci_sock.h>
 #include <net/bluetooth/rfcomm.h>
 
 #include <linux/capi.h>
 #include <linux/gigaset_dev.h>
 
 #ifdef CONFIG_BLOCK
-#include <linux/loop.h>
 #include <linux/cdrom.h>
 #include <linux/fd.h>
 #include <scsi/scsi.h>
@@ -571,6 +570,7 @@ static int mt_ioctl_trans(unsigned int fd, unsigned int cmd, void __user *argp)
 #define BNEPCONNDEL	_IOW('B', 201, int)
 #define BNEPGETCONNLIST	_IOR('B', 210, int)
 #define BNEPGETCONNINFO	_IOR('B', 211, int)
+#define BNEPGETSUPPFEAT	_IOR('B', 212, int)
 
 #define CMTPCONNADD	_IOW('C', 200, int)
 #define CMTPCONNDEL	_IOW('C', 201, int)
@@ -608,7 +608,6 @@ struct serial_struct32 {
 static int serial_struct_ioctl(unsigned fd, unsigned cmd,
 			struct serial_struct32 __user *ss32)
 {
-        typedef struct serial_struct SS;
         typedef struct serial_struct32 SS32;
         int err;
         struct serial_struct ss;
@@ -682,11 +681,12 @@ static int do_i2c_rdwr_ioctl(unsigned int fd, unsigned int cmd,
 	struct i2c_msg			__user *tmsgs;
 	struct i2c_msg32		__user *umsgs;
 	compat_caddr_t			datap;
-	int				nmsgs, i;
+	u32				nmsgs;
+	int				i;
 
 	if (get_user(nmsgs, &udata->nmsgs))
 		return -EFAULT;
-	if (nmsgs > I2C_RDRW_IOCTL_MAX_MSGS)
+	if (nmsgs > I2C_RDWR_IOCTL_MAX_MSGS)
 		return -EINVAL;
 
 	if (get_user(datap, &udata->msgs))
@@ -811,7 +811,7 @@ static int compat_ioctl_preallocate(struct file *file,
  */
 #define XFORM(i) (((i) ^ ((i) << 27) ^ ((i) << 17)) & 0xffffffff)
 
-#define COMPATIBLE_IOCTL(cmd) XFORM(cmd),
+#define COMPATIBLE_IOCTL(cmd) XFORM((u32)cmd),
 /* ioctl should not be warned about even if it's not implemented.
    Valid reasons to use this:
    - It is implemented with ->compat_ioctl on some device, but programs
@@ -844,6 +844,9 @@ COMPATIBLE_IOCTL(TIOCGDEV)
 COMPATIBLE_IOCTL(TIOCCBRK)
 COMPATIBLE_IOCTL(TIOCGSID)
 COMPATIBLE_IOCTL(TIOCGICOUNT)
+COMPATIBLE_IOCTL(TIOCGPKT)
+COMPATIBLE_IOCTL(TIOCGPTLCK)
+COMPATIBLE_IOCTL(TIOCGEXCL)
 /* Little t */
 COMPATIBLE_IOCTL(TIOCGETD)
 COMPATIBLE_IOCTL(TIOCSETD)
@@ -868,6 +871,12 @@ COMPATIBLE_IOCTL(TIOCGPTN)
 COMPATIBLE_IOCTL(TIOCSPTLCK)
 COMPATIBLE_IOCTL(TIOCSERGETLSR)
 COMPATIBLE_IOCTL(TIOCSIG)
+#ifdef TIOCSRS485
+COMPATIBLE_IOCTL(TIOCSRS485)
+#endif
+#ifdef TIOCGRS485
+COMPATIBLE_IOCTL(TIOCGRS485)
+#endif
 #ifdef TCGETS2
 COMPATIBLE_IOCTL(TCGETS2)
 COMPATIBLE_IOCTL(TCSETS2)
@@ -887,6 +896,7 @@ COMPATIBLE_IOCTL(FIGETBSZ)
 /* 'X' - originally XFS but some now in the VFS */
 COMPATIBLE_IOCTL(FIFREEZE)
 COMPATIBLE_IOCTL(FITHAW)
+COMPATIBLE_IOCTL(FITRIM)
 COMPATIBLE_IOCTL(KDGETKEYCODE)
 COMPATIBLE_IOCTL(KDSETKEYCODE)
 COMPATIBLE_IOCTL(KDGKBTYPE)
@@ -899,6 +909,8 @@ COMPATIBLE_IOCTL(KDGKBSENT)
 COMPATIBLE_IOCTL(KDSKBSENT)
 COMPATIBLE_IOCTL(KDGKBDIACR)
 COMPATIBLE_IOCTL(KDSKBDIACR)
+COMPATIBLE_IOCTL(KDGKBDIACRUC)
+COMPATIBLE_IOCTL(KDSKBDIACRUC)
 COMPATIBLE_IOCTL(KDKBDREP)
 COMPATIBLE_IOCTL(KDGKBLED)
 COMPATIBLE_IOCTL(KDGETLED)
@@ -944,8 +956,6 @@ COMPATIBLE_IOCTL(MTIOCTOP)
 /* Socket level stuff */
 COMPATIBLE_IOCTL(FIOQSIZE)
 #ifdef CONFIG_BLOCK
-/* loop */
-IGNORE_IOCTL(LOOP_CLR_FD)
 /* md calls this on random blockdevs */
 IGNORE_IOCTL(RAID_VERSION)
 /* qemu/qemu-img might call these two on plain files for probing */
@@ -1239,6 +1249,7 @@ COMPATIBLE_IOCTL(BNEPCONNADD)
 COMPATIBLE_IOCTL(BNEPCONNDEL)
 COMPATIBLE_IOCTL(BNEPGETCONNLIST)
 COMPATIBLE_IOCTL(BNEPGETCONNINFO)
+COMPATIBLE_IOCTL(BNEPGETSUPPFEAT)
 COMPATIBLE_IOCTL(CMTPCONNADD)
 COMPATIBLE_IOCTL(CMTPCONNDEL)
 COMPATIBLE_IOCTL(CMTPGETCONNLIST)
@@ -1530,19 +1541,17 @@ static int compat_ioctl_check_table(unsigned int xcmd)
 	return ioctl_pointer[i] == xcmd;
 }
 
-asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
-				unsigned long arg)
+COMPAT_SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd,
+		       compat_ulong_t, arg32)
 {
-	struct file *filp;
+	unsigned long arg = arg32;
+	struct fd f = fdget(fd);
 	int error = -EBADF;
-	int fput_needed;
-
-	filp = fget_light(fd, &fput_needed);
-	if (!filp)
+	if (!f.file)
 		goto out;
 
 	/* RED-PEN how should LSM module know it's handling 32bit? */
-	error = security_file_ioctl(filp, cmd, arg);
+	error = security_file_ioctl(f.file, cmd, arg);
 	if (error)
 		goto out_fput;
 
@@ -1562,30 +1571,30 @@ asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
 #if defined(CONFIG_IA64) || defined(CONFIG_X86_64)
 	case FS_IOC_RESVSP_32:
 	case FS_IOC_RESVSP64_32:
-		error = compat_ioctl_preallocate(filp, compat_ptr(arg));
+		error = compat_ioctl_preallocate(f.file, compat_ptr(arg));
 		goto out_fput;
 #else
 	case FS_IOC_RESVSP:
 	case FS_IOC_RESVSP64:
-		error = ioctl_preallocate(filp, compat_ptr(arg));
+		error = ioctl_preallocate(f.file, compat_ptr(arg));
 		goto out_fput;
 #endif
 
 	case FIBMAP:
 	case FIGETBSZ:
 	case FIONREAD:
-		if (S_ISREG(filp->f_path.dentry->d_inode->i_mode))
+		if (S_ISREG(file_inode(f.file)->i_mode))
 			break;
 		/*FALL THROUGH*/
 
 	default:
-		if (filp->f_op && filp->f_op->compat_ioctl) {
-			error = filp->f_op->compat_ioctl(filp, cmd, arg);
+		if (f.file->f_op->compat_ioctl) {
+			error = f.file->f_op->compat_ioctl(f.file, cmd, arg);
 			if (error != -ENOIOCTLCMD)
 				goto out_fput;
 		}
 
-		if (!filp->f_op || !filp->f_op->unlocked_ioctl)
+		if (!f.file->f_op->unlocked_ioctl)
 			goto do_ioctl;
 		break;
 	}
@@ -1593,7 +1602,7 @@ asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
 	if (compat_ioctl_check_table(XFORM(cmd)))
 		goto found_handler;
 
-	error = do_ioctl_trans(fd, cmd, arg, filp);
+	error = do_ioctl_trans(fd, cmd, arg, f.file);
 	if (error == -ENOIOCTLCMD)
 		error = -ENOTTY;
 
@@ -1602,9 +1611,9 @@ asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
  found_handler:
 	arg = (unsigned long)compat_ptr(arg);
  do_ioctl:
-	error = do_vfs_ioctl(filp, fd, cmd, arg);
+	error = do_vfs_ioctl(f.file, fd, cmd, arg);
  out_fput:
-	fput_light(filp, fput_needed);
+	fdput(f);
  out:
 	return error;
 }

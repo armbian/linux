@@ -74,7 +74,7 @@ static struct net_device * __init ipddp_init(void)
 	if (!dev)
 		return ERR_PTR(-ENOMEM);
 
-	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
+	netif_keep_dst(dev);
 	strcpy(dev->name, "ipddp%d");
 
 	if (version_printed++ == 0)
@@ -191,7 +191,7 @@ static netdev_tx_t ipddp_xmit(struct sk_buff *skb, struct net_device *dev)
  */
 static int ipddp_create(struct ipddp_route *new_rt)
 {
-        struct ipddp_route *rt = kmalloc(sizeof(*rt), GFP_KERNEL);
+        struct ipddp_route *rt = kzalloc(sizeof(*rt), GFP_KERNEL);
 
         if (rt == NULL)
                 return -ENOMEM;

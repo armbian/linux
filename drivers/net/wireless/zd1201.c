@@ -18,7 +18,7 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/wireless.h>
-#include <linux/ieee80211.h>
+#include <net/cfg80211.h>
 #include <net/iw_handler.h>
 #include <linux/string.h>
 #include <linux/if_arp.h>
@@ -75,8 +75,10 @@ static int zd1201_fw_upload(struct usb_device *dev, int apfw)
         len = fw_entry->size;
 
 	buf = kmalloc(1024, GFP_ATOMIC);
-	if (!buf)
+	if (!buf) {
+		err = -ENOMEM;
 		goto exit;
+	}
 	
 	while (len > 0) {
 		int translen = (len > 1024) ? 1024 : len;
@@ -311,7 +313,6 @@ static void zd1201_usbrx(struct urb *urb)
 	if (data[urb->actual_length-1] == ZD1201_PACKET_RXDATA) {
 		int datalen = urb->actual_length-1;
 		unsigned short len, fc, seq;
-		struct hlist_node *node;
 
 		len = ntohs(*(__be16 *)&data[datalen-2]);
 		if (len>datalen)
@@ -364,7 +365,7 @@ static void zd1201_usbrx(struct urb *urb)
 				hlist_add_head(&frag->fnode, &zd->fraglist);
 				goto resubmit;
 			}
-			hlist_for_each_entry(frag, node, &zd->fraglist, fnode)
+			hlist_for_each_entry(frag, &zd->fraglist, fnode)
 				if (frag->seq == (seq&IEEE80211_SCTL_SEQ))
 					break;
 			if (!frag)
@@ -913,11 +914,8 @@ static int zd1201_set_freq(struct net_device *dev,
 
 	if (freq->e == 0)
 		channel = freq->m;
-	else {
-		channel = ieee80211_freq_to_dsss_chan(freq->m);
-		if (channel < 0)
-			channel = 0;
-	}
+	else
+		channel = ieee80211_frequency_to_channel(freq->m);
 
 	err = zd1201_setconfig16(zd, ZD1201_RID_CNFOWNCHANNEL, channel);
 	if (err)
@@ -1765,8 +1763,10 @@ static int zd1201_probe(struct usb_interface *interface,
 	zd->endp_out2 = 2;
 	zd->rx_urb = usb_alloc_urb(0, GFP_KERNEL);
 	zd->tx_urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (!zd->rx_urb || !zd->tx_urb)
+	if (!zd->rx_urb || !zd->tx_urb) {
+		err = -ENOMEM;
 		goto err_zd;
+	}
 
 	mdelay(100);
 	err = zd1201_drvr_start(zd);
@@ -1833,14 +1833,14 @@ err_zd:
 static void zd1201_disconnect(struct usb_interface *interface)
 {
 	struct zd1201 *zd = usb_get_intfdata(interface);
-	struct hlist_node *node, *node2;
+	struct hlist_node *node2;
 	struct zd1201_frag *frag;
 
 	if (!zd)
 		return;
 	usb_set_intfdata(interface, NULL);
 
-	hlist_for_each_entry_safe(frag, node, node2, &zd->fraglist, fnode) {
+	hlist_for_each_entry_safe(frag, node2, &zd->fraglist, fnode) {
 		hlist_del_init(&frag->fnode);
 		kfree_skb(frag->skb);
 		kfree(frag);
@@ -1907,6 +1907,7 @@ static struct usb_driver zd1201_usb = {
 	.id_table = zd1201_table,
 	.suspend = zd1201_suspend,
 	.resume = zd1201_resume,
+	.disable_hub_initiated_lpm = 1,
 };
 
 module_usb_driver(zd1201_usb);

@@ -281,12 +281,12 @@ static struct irq_chip gpio_irqchip = {
 	.irq_set_type	= gpio_irq_type,
 };
 
-static void gpio_irq_handler(unsigned irq, struct irq_desc *desc)
+static void gpio_irq_handler(struct irq_desc *desc)
 {
 	struct pio_device	*pio = irq_desc_get_chip_data(desc);
 	unsigned		gpio_irq;
 
-	gpio_irq = (unsigned) irq_get_handler_data(irq);
+	gpio_irq = (unsigned) irq_desc_get_handler_data(desc);
 	for (;;) {
 		u32		isr;
 
@@ -312,7 +312,6 @@ gpio_irq_setup(struct pio_device *pio, int irq, int gpio_irq)
 	unsigned	i;
 
 	irq_set_chip_data(irq, pio);
-	irq_set_handler_data(irq, (void *)gpio_irq);
 
 	for (i = 0; i < 32; i++, gpio_irq++) {
 		irq_set_chip_data(gpio_irq, pio);
@@ -320,7 +319,8 @@ gpio_irq_setup(struct pio_device *pio, int irq, int gpio_irq)
 					 handle_simple_irq);
 	}
 
-	irq_set_chained_handler(irq, gpio_irq_handler);
+	irq_set_chained_handler_and_data(irq, gpio_irq_handler,
+					 (void *)gpio_irq);
 }
 
 /*--------------------------------------------------------------------------*/
@@ -397,7 +397,7 @@ static int __init pio_probe(struct platform_device *pdev)
 	pio->chip.label = pio->name;
 	pio->chip.base = pdev->id * 32;
 	pio->chip.ngpio = 32;
-	pio->chip.dev = &pdev->dev;
+	pio->chip.parent = &pdev->dev;
 	pio->chip.owner = THIS_MODULE;
 
 	pio->chip.direction_input = direction_input;
@@ -435,7 +435,7 @@ void __init at32_init_pio(struct platform_device *pdev)
 	struct resource *regs;
 	struct pio_device *pio;
 
-	if (pdev->id > MAX_NR_PIO_DEVICES) {
+	if (pdev->id >= MAX_NR_PIO_DEVICES) {
 		dev_err(&pdev->dev, "only %d PIO devices supported\n",
 			MAX_NR_PIO_DEVICES);
 		return;

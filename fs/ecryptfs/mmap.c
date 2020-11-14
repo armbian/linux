@@ -299,7 +299,7 @@ static int ecryptfs_write_begin(struct file *file,
 			rc = ecryptfs_read_lower_page_segment(
 				page, index, 0, PAGE_CACHE_SIZE, mapping->host);
 			if (rc) {
-				printk(KERN_ERR "%s: Error attemping to read "
+				printk(KERN_ERR "%s: Error attempting to read "
 				       "lower page segment; rc = [%d]\n",
 				       __func__, rc);
 				ClearPageUptodate(page);
@@ -338,7 +338,8 @@ static int ecryptfs_write_begin(struct file *file,
 			if (prev_page_end_size
 			    >= i_size_read(page->mapping->host)) {
 				zero_user(page, 0, PAGE_CACHE_SIZE);
-			} else {
+				SetPageUptodate(page);
+			} else if (len < PAGE_CACHE_SIZE) {
 				rc = ecryptfs_decrypt_page(page);
 				if (rc) {
 					printk(KERN_ERR "%s: Error decrypting "
@@ -348,8 +349,8 @@ static int ecryptfs_write_begin(struct file *file,
 					ClearPageUptodate(page);
 					goto out;
 				}
+				SetPageUptodate(page);
 			}
-			SetPageUptodate(page);
 		}
 	}
 	/* If creating a page or more of holes, zero them out via truncate.
@@ -418,8 +419,8 @@ static int ecryptfs_write_inode_size_to_xattr(struct inode *ecryptfs_inode)
 	ssize_t size;
 	void *xattr_virt;
 	struct dentry *lower_dentry =
-		ecryptfs_inode_to_private(ecryptfs_inode)->lower_file->f_dentry;
-	struct inode *lower_inode = lower_dentry->d_inode;
+		ecryptfs_inode_to_private(ecryptfs_inode)->lower_file->f_path.dentry;
+	struct inode *lower_inode = d_inode(lower_dentry);
 	int rc;
 
 	if (!lower_inode->i_op->getxattr || !lower_inode->i_op->setxattr) {
@@ -498,6 +499,13 @@ static int ecryptfs_write_end(struct file *file,
 				ecryptfs_inode_to_lower(ecryptfs_inode));
 		}
 		goto out;
+	}
+	if (!PageUptodate(page)) {
+		if (copied < PAGE_CACHE_SIZE) {
+			rc = 0;
+			goto out;
+		}
+		SetPageUptodate(page);
 	}
 	/* Fills in zeros if 'to' goes beyond inode size */
 	rc = fill_zeros_to_end_of_page(page, to);

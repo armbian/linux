@@ -15,7 +15,6 @@
 #include <linux/input.h>
 #include <linux/skbuff.h>
 #include <linux/gpio_keys.h>
-#include <linux/mdio-gpio.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <asm/mach-types.h>
@@ -80,10 +79,6 @@ static struct platform_device wbd222_leds_device = {
 	},
 };
 
-static struct sys_timer wbd222_timer = {
-	.init	= gemini_timer_init,
-};
-
 static struct mtd_partition wbd222_partitions[] = {
 	{
 		.name		= "RedBoot",
@@ -132,6 +127,7 @@ MACHINE_START(WBD222, "Wiliboard WBD-222")
 	.atag_offset	= 0x100,
 	.map_io		= gemini_map_io,
 	.init_irq	= gemini_init_irq,
-	.timer		= &wbd222_timer,
+	.init_time	= gemini_timer_init,
 	.init_machine	= wbd222_init,
+	.restart	= gemini_restart,
 MACHINE_END

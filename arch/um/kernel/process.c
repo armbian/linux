@@ -1,4 +1,6 @@
 /*
+ * Copyright (C) 2015 Anton Ivanov (aivanov@{brocade.com,kot-begemot.co.uk})
+ * Copyright (C) 2015 Thomas Meyer (thomas@m3y3r.de)
  * Copyright (C) 2000 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  * Copyright 2003 PathScale, Inc.
  * Licensed under the GPL
@@ -18,14 +20,16 @@
 #include <linux/seq_file.h>
 #include <linux/tick.h>
 #include <linux/threads.h>
+#include <linux/tracehook.h>
 #include <asm/current.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
 #include <asm/uaccess.h>
-#include "as-layout.h"
-#include "kern_util.h"
-#include "os.h"
-#include "skas.h"
+#include <as-layout.h>
+#include <kern_util.h>
+#include <os.h>
+#include <skas.h>
+#include <timer-internal.h>
 
 /*
  * This is a per-cpu array.  A processor only modifies its entry and it only
@@ -68,18 +72,6 @@ unsigned long alloc_stack(int order, int atomic)
 	return page;
 }
 
-int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
-{
-	int pid;
-
-	current->thread.request.u.thread.proc = fn;
-	current->thread.request.u.thread.arg = arg;
-	pid = do_fork(CLONE_VM | CLONE_UNTRACED | flags, 0,
-		      &current->thread.regs, 0, NULL, NULL);
-	return pid;
-}
-EXPORT_SYMBOL(kernel_thread);
-
 static inline void set_current(struct task_struct *task)
 {
 	cpu_tasks[task_thread_info(task)->cpu] = ((struct cpu_task)
@@ -93,33 +85,22 @@ void *__switch_to(struct task_struct *from, struct task_struct *to)
 	to->thread.prev_sched = from;
 	set_current(to);
 
-	do {
-		current->thread.saved_task = NULL;
-
-		switch_threads(&from->thread.switch_buf,
-			       &to->thread.switch_buf);
-
-		arch_switch_to(current);
-
-		if (current->thread.saved_task)
-			show_regs(&(current->thread.regs));
-		to = current->thread.saved_task;
-		from = current;
-	} while (current->thread.saved_task);
+	switch_threads(&from->thread.switch_buf, &to->thread.switch_buf);
+	arch_switch_to(current);
 
 	return current->thread.prev_sched;
 }
 
 void interrupt_end(void)
 {
+	struct pt_regs *regs = &current->thread.regs;
+
 	if (need_resched())
 		schedule();
-	if (test_tsk_thread_flag(current, TIF_SIGPENDING))
-		do_signal();
-}
-
-void exit_thread(void)
-{
+	if (test_thread_flag(TIF_SIGPENDING))
+		do_signal(regs);
+	if (test_and_clear_thread_flag(TIF_NOTIFY_RESUME))
+		tracehook_notify_resume(regs);
 }
 
 int get_current_pid(void)
@@ -144,16 +125,10 @@ void new_thread_handler(void)
 	arg = current->thread.request.u.thread.arg;
 
 	/*
-	 * The return value is 1 if the kernel thread execs a process,
-	 * 0 if it just exits
+	 * callback returns only if the kernel thread execs a process
 	 */
-	n = run_kernel_thread(fn, arg, &current->thread.exec_buf);
-	if (n == 1) {
-		/* Handle any immediate reschedules or signals */
-		interrupt_end();
-		userspace(&current->thread.regs.regs);
-	}
-	else do_exit(0);
+	n = fn(arg);
+	userspace(&current->thread.regs.regs);
 }
 
 /* Called magically, see new_thread_handler above */
@@ -172,41 +147,38 @@ void fork_handler(void)
 
 	current->thread.prev_sched = NULL;
 
-	/* Handle any immediate reschedules or signals */
-	interrupt_end();
-
 	userspace(&current->thread.regs.regs);
 }
 
 int copy_thread(unsigned long clone_flags, unsigned long sp,
-		unsigned long stack_top, struct task_struct * p,
-		struct pt_regs *regs)
+		unsigned long arg, struct task_struct * p)
 {
 	void (*handler)(void);
+	int kthread = current->flags & PF_KTHREAD;
 	int ret = 0;
 
 	p->thread = (struct thread_struct) INIT_THREAD;
 
-	if (current->thread.forking) {
-	  	memcpy(&p->thread.regs.regs, &regs->regs,
+	if (!kthread) {
+	  	memcpy(&p->thread.regs.regs, current_pt_regs(),
 		       sizeof(p->thread.regs.regs));
-		REGS_SET_SYSCALL_RETURN(p->thread.regs.regs.gp, 0);
+		PT_REGS_SET_SYSCALL_RETURN(&p->thread.regs, 0);
 		if (sp != 0)
 			REGS_SP(p->thread.regs.regs.gp) = sp;
 
 		handler = fork_handler;
 
 		arch_copy_thread(&current->thread.arch, &p->thread.arch);
-	}
-	else {
+	} else {
 		get_safe_registers(p->thread.regs.regs.gp, p->thread.regs.regs.fp);
-		p->thread.request.u.thread = current->thread.request.u.thread;
+		p->thread.request.u.thread.proc = (int (*)(void *))sp;
+		p->thread.request.u.thread.arg = (void *)arg;
 		handler = new_thread_handler;
 	}
 
 	new_thread(task_stack_page(p), &p->thread.switch_buf, handler);
 
-	if (current->thread.forking) {
+	if (!kthread) {
 		clear_flushed_tls(p);
 
 		/*
@@ -228,33 +200,11 @@ void initial_thread_cb(void (*proc)(void *), void *arg)
 	kmalloc_ok = save_kmalloc_ok;
 }
 
-void default_idle(void)
-{
-	unsigned long long nsecs;
-
-	while (1) {
-		/* endless idle loop with no priority at all */
-
-		/*
-		 * although we are an idle CPU, we do not want to
-		 * get into the scheduler unnecessarily.
-		 */
-		if (need_resched())
-			schedule();
-
-		tick_nohz_idle_enter();
-		rcu_idle_enter();
-		nsecs = disable_timer();
-		idle_sleep(nsecs);
-		rcu_idle_exit();
-		tick_nohz_idle_exit();
-	}
-}
-
-void cpu_idle(void)
+void arch_cpu_idle(void)
 {
 	cpu_tasks[current_thread_info()->cpu].pid = os_getpid();
-	default_idle();
+	os_idle_sleep(UM_NSEC_PER_SEC);
+	local_irq_enable();
 }
 
 int __cant_sleep(void) {
@@ -305,17 +255,6 @@ int clear_user_proc(void __user *buf, int size)
 int strlen_user_proc(char __user *str)
 {
 	return strlen_user(str);
-}
-
-int smp_sigio_handler(void)
-{
-#ifdef CONFIG_SMP
-	int cpu = current_thread_info()->cpu;
-	IPI_handler(cpu);
-	if (cpu != 0)
-		return 1;
-#endif
-	return 0;
 }
 
 int cpu(void)
@@ -407,7 +346,7 @@ int singlestepping(void * t)
 /*
  * Only x86 and x86_64 have an arch_align_stack().
  * All other arches have "#define arch_align_stack(x) (x)"
- * in their asm/system.h
+ * in their asm/exec.h
  * As this is included in UML from asm-um/system-generic.h,
  * we can use it to behave as the subarch does.
  */

@@ -183,8 +183,8 @@ int omfs_sync_inode(struct inode *inode)
  */
 static void omfs_evict_inode(struct inode *inode)
 {
-	truncate_inode_pages(&inode->i_data, 0);
-	end_writeback(inode);
+	truncate_inode_pages_final(&inode->i_data);
+	clear_inode(inode);
 
 	if (inode->i_nlink)
 		return;
@@ -306,8 +306,7 @@ static const struct super_operations omfs_sops = {
  */
 static int omfs_get_imap(struct super_block *sb)
 {
-	int bitmap_size;
-	int array_size;
+	unsigned int bitmap_size, array_size;
 	int count;
 	struct omfs_sb_info *sbi = OMFS_SB(sb);
 	struct buffer_head *bh;
@@ -321,7 +320,7 @@ static int omfs_get_imap(struct super_block *sb)
 		goto out;
 
 	sbi->s_imap_size = array_size;
-	sbi->s_imap = kzalloc(array_size * sizeof(unsigned long *), GFP_KERNEL);
+	sbi->s_imap = kcalloc(array_size, sizeof(unsigned long *), GFP_KERNEL);
 	if (!sbi->s_imap)
 		goto nomem;
 
@@ -392,12 +391,16 @@ static int parse_options(char *options, struct omfs_sb_info *sbi)
 		case Opt_uid:
 			if (match_int(&args[0], &option))
 				return 0;
-			sbi->s_uid = option;
+			sbi->s_uid = make_kuid(current_user_ns(), option);
+			if (!uid_valid(sbi->s_uid))
+				return 0;
 			break;
 		case Opt_gid:
 			if (match_int(&args[0], &option))
 				return 0;
-			sbi->s_gid = option;
+			sbi->s_gid = make_kgid(current_user_ns(), option);
+			if (!gid_valid(sbi->s_gid))
+				return 0;
 			break;
 		case Opt_umask:
 			if (match_octal(&args[0], &option))
@@ -470,6 +473,12 @@ static int omfs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->s_sys_blocksize = be32_to_cpu(omfs_sb->s_sys_blocksize);
 	mutex_init(&sbi->s_bitmap_lock);
 
+	if (sbi->s_num_blocks > OMFS_MAX_BLOCKS) {
+		printk(KERN_ERR "omfs: sysblock number (%llx) is out of range\n",
+		       (unsigned long long)sbi->s_num_blocks);
+		goto out_brelse_bh;
+	}
+
 	if (sbi->s_sys_blocksize > PAGE_SIZE) {
 		printk(KERN_ERR "omfs: sysblock size (%d) is out of range\n",
 			sbi->s_sys_blocksize);
@@ -541,8 +550,10 @@ static int omfs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	sb->s_root = d_make_root(root);
-	if (!sb->s_root)
+	if (!sb->s_root) {
+		ret = -ENOMEM;
 		goto out_brelse_bh2;
+	}
 	printk(KERN_DEBUG "omfs: Mounted volume %s\n", omfs_rb->r_name);
 
 	ret = 0;
@@ -569,6 +580,7 @@ static struct file_system_type omfs_fs_type = {
 	.kill_sb = kill_block_super,
 	.fs_flags = FS_REQUIRES_DEV,
 };
+MODULE_ALIAS_FS("omfs");
 
 static int __init init_omfs_fs(void)
 {

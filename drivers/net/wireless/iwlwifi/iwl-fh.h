@@ -5,7 +5,7 @@
  *
  * GPL LICENSE SUMMARY
  *
- * Copyright(c) 2005 - 2012 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2014 Intel Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -22,7 +22,7 @@
  * USA
  *
  * The full GNU General Public License is included in this distribution
- * in the file called LICENSE.GPL.
+ * in the file called COPYING.
  *
  * Contact Information:
  *  Intel Linux Wireless <ilw@linux.intel.com>
@@ -30,7 +30,7 @@
  *
  * BSD LICENSE
  *
- * Copyright(c) 2005 - 2012 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2014 Intel Corporation. All rights reserved.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -225,6 +225,8 @@ static inline unsigned int FH_MEM_CBBC_QUEUE(unsigned int chnl)
 #define FH_RSCSR_CHNL0_RBDCB_WPTR_REG	(FH_MEM_RSCSR_CHNL0 + 0x008)
 #define FH_RSCSR_CHNL0_WPTR        (FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
 
+#define FW_RSCSR_CHNL0_RXDCB_RDPTR_REG	(FH_MEM_RSCSR_CHNL0 + 0x00c)
+#define FH_RSCSR_CHNL0_RDPTR		FW_RSCSR_CHNL0_RXDCB_RDPTR_REG
 
 /**
  * Rx Config/Status Registers (RCSR)
@@ -257,6 +259,8 @@ static inline unsigned int FH_MEM_CBBC_QUEUE(unsigned int chnl)
 #define FH_MEM_RCSR_CHNL0            (FH_MEM_RCSR_LOWER_BOUND)
 
 #define FH_MEM_RCSR_CHNL0_CONFIG_REG	(FH_MEM_RCSR_CHNL0)
+#define FH_MEM_RCSR_CHNL0_RBDCB_WPTR	(FH_MEM_RCSR_CHNL0 + 0x8)
+#define FH_MEM_RCSR_CHNL0_FLUSH_RB_REQ	(FH_MEM_RCSR_CHNL0 + 0x10)
 
 #define FH_RCSR_CHNL0_RX_CONFIG_RB_TIMEOUT_MSK (0x00000FF0) /* bits 4-11 */
 #define FH_RCSR_CHNL0_RX_CONFIG_IRQ_DEST_MSK   (0x00001000) /* bits 12 */
@@ -267,7 +271,7 @@ static inline unsigned int FH_MEM_CBBC_QUEUE(unsigned int chnl)
 
 #define FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS	(20)
 #define FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS	(4)
-#define RX_RB_TIMEOUT	(0x10)
+#define RX_RB_TIMEOUT	(0x11)
 
 #define FH_RCSR_RX_CONFIG_CHNL_EN_PAUSE_VAL         (0x00000000)
 #define FH_RCSR_RX_CONFIG_CHNL_EN_PAUSE_EOF_VAL     (0x40000000)
@@ -306,6 +310,7 @@ static inline unsigned int FH_MEM_CBBC_QUEUE(unsigned int chnl)
 #define FH_RSSR_CHNL0_RX_STATUS_CHNL_IDLE	(0x01000000)
 
 #define FH_MEM_TFDIB_REG1_ADDR_BITSHIFT	28
+#define FH_MEM_TB_MAX_LENGTH			(0x00020000)
 
 /* TFDB  Area - TFDs buffer table */
 #define FH_MEM_TFDIB_DRAM_ADDR_LSB_MSK      (0xFFFFFFFF)
@@ -410,6 +415,7 @@ static inline unsigned int FH_MEM_CBBC_QUEUE(unsigned int chnl)
  *	uCode/driver must write "1" in order to clear this flag
  */
 #define FH_TSSR_TX_ERROR_REG		(FH_TSSR_LOWER_BOUND + 0x018)
+#define FH_TSSR_TX_MSG_CONFIG_REG	(FH_TSSR_LOWER_BOUND + 0x008)
 
 #define FH_TSSR_TX_STATUS_REG_MSK_CHNL_IDLE(_chnl) ((1 << (_chnl)) << 16)
 
@@ -421,6 +427,8 @@ static inline unsigned int FH_MEM_CBBC_QUEUE(unsigned int chnl)
 		(FH_SRVC_LOWER_BOUND + ((_chnl) - 9) * 0x4)
 
 #define FH_TX_CHICKEN_BITS_REG	(FH_MEM_LOWER_BOUND + 0xE98)
+#define FH_TX_TRB_REG(_chan)	(FH_MEM_LOWER_BOUND + 0x958 + (_chan) * 4)
+
 /* Instruct FH to increment the retry count of a packet when
  * it is brought from the memory to TX-FIFO
  */
@@ -430,14 +438,8 @@ static inline unsigned int FH_MEM_CBBC_QUEUE(unsigned int chnl)
 #define RX_QUEUE_MASK                         255
 #define RX_QUEUE_SIZE_LOG                     8
 
-/*
- * RX related structures and functions
- */
-#define RX_FREE_BUFFERS 64
-#define RX_LOW_WATERMARK 8
-
 /**
- * struct iwl_rb_status - reseve buffer status
+ * struct iwl_rb_status - reserve buffer status
  * 	host memory mapped FH registers
  * @closed_rb_num [0:11] - Indicates the index of the RB which was closed
  * @closed_fr_num [0:11] - Indicates the index of the RX Frame which was closed

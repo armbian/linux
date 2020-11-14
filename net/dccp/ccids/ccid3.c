@@ -100,7 +100,7 @@ static void ccid3_update_send_interval(struct ccid3_hc_tx_sock *hc)
 
 	DCCP_BUG_ON(hc->tx_t_ipi == 0);
 	ccid3_pr_debug("t_ipi=%u, s=%u, X=%u\n", hc->tx_t_ipi,
-		       hc->tx_s, (unsigned)(hc->tx_x >> 6));
+		       hc->tx_s, (unsigned int)(hc->tx_x >> 6));
 }
 
 static u32 ccid3_hc_tx_idle_rtt(struct ccid3_hc_tx_sock *hc, ktime_t now)
@@ -113,6 +113,7 @@ static u32 ccid3_hc_tx_idle_rtt(struct ccid3_hc_tx_sock *hc, ktime_t now)
 /**
  * ccid3_hc_tx_update_x  -  Update allowed sending rate X
  * @stamp: most recent time if available - can be left NULL.
+ *
  * This function tracks draft rfc3448bis, check there for latest details.
  *
  * Note: X and X_recv are both stored in units of 64 * bytes/second, to support
@@ -153,17 +154,19 @@ static void ccid3_hc_tx_update_x(struct sock *sk, ktime_t *stamp)
 
 	if (hc->tx_x != old_x) {
 		ccid3_pr_debug("X_prev=%u, X_now=%u, X_calc=%u, "
-			       "X_recv=%u\n", (unsigned)(old_x >> 6),
-			       (unsigned)(hc->tx_x >> 6), hc->tx_x_calc,
-			       (unsigned)(hc->tx_x_recv >> 6));
+			       "X_recv=%u\n", (unsigned int)(old_x >> 6),
+			       (unsigned int)(hc->tx_x >> 6), hc->tx_x_calc,
+			       (unsigned int)(hc->tx_x_recv >> 6));
 
 		ccid3_update_send_interval(hc);
 	}
 }
 
-/*
- *	Track the mean packet size `s' (cf. RFC 4342, 5.3 and  RFC 3448, 4.1)
+/**
+ *	ccid3_hc_tx_update_s - Track the mean packet size `s'
  *	@len: DCCP packet payload size in bytes
+ *
+ *	cf. RFC 4342, 5.3 and  RFC 3448, 4.1
  */
 static inline void ccid3_hc_tx_update_s(struct ccid3_hc_tx_sock *hc, int len)
 {
@@ -270,6 +273,7 @@ out:
 /**
  * ccid3_hc_tx_send_packet  -  Delay-based dequeueing of TX packets
  * @skb: next packet candidate to send on @sk
+ *
  * This function uses the convention of ccid_packet_dequeue_eval() and
  * returns a millisecond-delay value between 0 and t_mbi = 64000 msec.
  */
@@ -425,8 +429,8 @@ done_computing_x:
 			       "p=%u, X_calc=%u, X_recv=%u, X=%u\n",
 			       dccp_role(sk), sk, hc->tx_rtt, r_sample,
 			       hc->tx_s, hc->tx_p, hc->tx_x_calc,
-			       (unsigned)(hc->tx_x_recv >> 6),
-			       (unsigned)(hc->tx_x >> 6));
+			       (unsigned int)(hc->tx_x_recv >> 6),
+			       (unsigned int)(hc->tx_x >> 6));
 
 	/* unschedule no feedback timer */
 	sk_stop_timer(sk, &hc->tx_no_feedback_timer);
@@ -595,7 +599,7 @@ static void ccid3_hc_rx_send_feedback(struct sock *sk,
 {
 	struct ccid3_hc_rx_sock *hc = ccid3_hc_rx_sk(sk);
 	struct dccp_sock *dp = dccp_sk(sk);
-	ktime_t now = ktime_get_real();
+	ktime_t now = ktime_get();
 	s64 delta = 0;
 
 	switch (fbtype) {
@@ -620,15 +624,14 @@ static void ccid3_hc_rx_send_feedback(struct sock *sk,
 	case CCID3_FBACK_PERIODIC:
 		delta = ktime_us_delta(now, hc->rx_tstamp_last_feedback);
 		if (delta <= 0)
-			DCCP_BUG("delta (%ld) <= 0", (long)delta);
-		else
-			hc->rx_x_recv = scaled_div32(hc->rx_bytes_recv, delta);
+			delta = 1;
+		hc->rx_x_recv = scaled_div32(hc->rx_bytes_recv, delta);
 		break;
 	default:
 		return;
 	}
 
-	ccid3_pr_debug("Interval %ldusec, X_recv=%u, 1/p=%u\n", (long)delta,
+	ccid3_pr_debug("Interval %lldusec, X_recv=%u, 1/p=%u\n", delta,
 		       hc->rx_x_recv, hc->rx_pinv);
 
 	hc->rx_tstamp_last_feedback = now;
@@ -675,7 +678,8 @@ static int ccid3_hc_rx_insert_options(struct sock *sk, struct sk_buff *skb)
 static u32 ccid3_first_li(struct sock *sk)
 {
 	struct ccid3_hc_rx_sock *hc = ccid3_hc_rx_sk(sk);
-	u32 x_recv, p, delta;
+	u32 x_recv, p;
+	s64 delta;
 	u64 fval;
 
 	if (hc->rx_rtt == 0) {
@@ -683,7 +687,9 @@ static u32 ccid3_first_li(struct sock *sk)
 		hc->rx_rtt = DCCP_FALLBACK_RTT;
 	}
 
-	delta  = ktime_to_us(net_timedelta(hc->rx_tstamp_last_feedback));
+	delta = ktime_us_delta(ktime_get(), hc->rx_tstamp_last_feedback);
+	if (delta <= 0)
+		delta = 1;
 	x_recv = scaled_div32(hc->rx_bytes_recv, delta);
 	if (x_recv == 0) {		/* would also trigger divide-by-zero */
 		DCCP_WARN("X_recv==0\n");

@@ -32,7 +32,7 @@
 /**
  * ecryptfs_d_revalidate - revalidate an ecryptfs dentry
  * @dentry: The ecryptfs dentry
- * @nd: The associated nameidata
+ * @flags: lookup flags
  *
  * Called when the VFS needs to revalidate a dentry. This
  * is called whenever a name lookup finds a dentry in the
@@ -42,34 +42,19 @@
  * Returns 1 if valid, 0 otherwise.
  *
  */
-static int ecryptfs_d_revalidate(struct dentry *dentry, struct nameidata *nd)
+static int ecryptfs_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
-	struct dentry *lower_dentry;
-	struct vfsmount *lower_mnt;
-	struct dentry *dentry_save = NULL;
-	struct vfsmount *vfsmount_save = NULL;
+	struct dentry *lower_dentry = ecryptfs_dentry_to_lower(dentry);
 	int rc = 1;
 
-	if (nd && nd->flags & LOOKUP_RCU)
+	if (flags & LOOKUP_RCU)
 		return -ECHILD;
 
-	lower_dentry = ecryptfs_dentry_to_lower(dentry);
-	lower_mnt = ecryptfs_dentry_to_lower_mnt(dentry);
-	if (lower_dentry->d_op && lower_dentry->d_op->d_revalidate) {
-		if (nd) {
-			dentry_save = nd->path.dentry;
-			vfsmount_save = nd->path.mnt;
-			nd->path.dentry = lower_dentry;
-			nd->path.mnt = lower_mnt;
-		}
-		rc = lower_dentry->d_op->d_revalidate(lower_dentry, nd);
-		if (nd) {
-			nd->path.dentry = dentry_save;
-			nd->path.mnt = vfsmount_save;
-		}
-	}
-	if (dentry->d_inode) {
-		struct inode *inode = dentry->d_inode;
+	if (lower_dentry->d_flags & DCACHE_OP_REVALIDATE)
+		rc = lower_dentry->d_op->d_revalidate(lower_dentry, flags);
+
+	if (d_really_is_positive(dentry)) {
+		struct inode *inode = d_inode(dentry);
 
 		fsstack_copy_attr_all(inode, ecryptfs_inode_to_lower(inode));
 		if (!inode->i_nlink)
@@ -80,6 +65,12 @@ static int ecryptfs_d_revalidate(struct dentry *dentry, struct nameidata *nd)
 
 struct kmem_cache *ecryptfs_dentry_info_cache;
 
+static void ecryptfs_dentry_free_rcu(struct rcu_head *head)
+{
+	kmem_cache_free(ecryptfs_dentry_info_cache,
+		container_of(head, struct ecryptfs_dentry_info, rcu));
+}
+
 /**
  * ecryptfs_d_release
  * @dentry: The ecryptfs dentry
@@ -88,15 +79,11 @@ struct kmem_cache *ecryptfs_dentry_info_cache;
  */
 static void ecryptfs_d_release(struct dentry *dentry)
 {
-	if (ecryptfs_dentry_to_private(dentry)) {
-		if (ecryptfs_dentry_to_lower(dentry)) {
-			dput(ecryptfs_dentry_to_lower(dentry));
-			mntput(ecryptfs_dentry_to_lower_mnt(dentry));
-		}
-		kmem_cache_free(ecryptfs_dentry_info_cache,
-				ecryptfs_dentry_to_private(dentry));
+	struct ecryptfs_dentry_info *p = dentry->d_fsdata;
+	if (p) {
+		path_put(&p->lower_path);
+		call_rcu(&p->rcu, ecryptfs_dentry_free_rcu);
 	}
-	return;
 }
 
 const struct dentry_operations ecryptfs_dops = {

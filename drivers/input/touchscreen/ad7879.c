@@ -22,7 +22,6 @@
  */
 
 #include <linux/device.h>
-#include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
@@ -118,6 +117,7 @@ struct ad7879 {
 	unsigned int		irq;
 	bool			disabled;	/* P: input->mutex */
 	bool			suspended;	/* P: input->mutex */
+	bool			swap_xy;
 	u16			conversion_data[AD7879_NR_SENSE];
 	char			phys[32];
 	u8			first_conversion_delay;
@@ -160,6 +160,9 @@ static int ad7879_report(struct ad7879 *ts)
 	y = ts->conversion_data[AD7879_SEQ_YPOS] & MAX_12BIT;
 	z1 = ts->conversion_data[AD7879_SEQ_Z1] & MAX_12BIT;
 	z2 = ts->conversion_data[AD7879_SEQ_Z2] & MAX_12BIT;
+
+	if (ts->swap_xy)
+		swap(x, y);
 
 	/*
 	 * The samples processed here are already preprocessed by the AD7879.
@@ -281,8 +284,7 @@ static void ad7879_close(struct input_dev* input)
 		__ad7879_disable(ts);
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int ad7879_suspend(struct device *dev)
+static int __maybe_unused ad7879_suspend(struct device *dev)
 {
 	struct ad7879 *ts = dev_get_drvdata(dev);
 
@@ -298,7 +300,7 @@ static int ad7879_suspend(struct device *dev)
 	return 0;
 }
 
-static int ad7879_resume(struct device *dev)
+static int __maybe_unused ad7879_resume(struct device *dev)
 {
 	struct ad7879 *ts = dev_get_drvdata(dev);
 
@@ -313,7 +315,6 @@ static int ad7879_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 SIMPLE_DEV_PM_OPS(ad7879_pm_ops, ad7879_suspend, ad7879_resume);
 EXPORT_SYMBOL(ad7879_pm_ops);
@@ -453,7 +454,7 @@ static int ad7879_gpio_add(struct ad7879 *ts,
 		ts->gc.ngpio = 1;
 		ts->gc.label = "AD7879-GPIO";
 		ts->gc.owner = THIS_MODULE;
-		ts->gc.dev = ts->dev;
+		ts->gc.parent = ts->dev;
 
 		ret = gpiochip_add(&ts->gc);
 		if (ret)
@@ -466,15 +467,11 @@ static int ad7879_gpio_add(struct ad7879 *ts,
 
 static void ad7879_gpio_remove(struct ad7879 *ts)
 {
-	const struct ad7879_platform_data *pdata = ts->dev->platform_data;
-	int ret;
+	const struct ad7879_platform_data *pdata = dev_get_platdata(ts->dev);
 
-	if (pdata->gpio_export) {
-		ret = gpiochip_remove(&ts->gc);
-		if (ret)
-			dev_err(ts->dev, "failed to remove gpio %d\n",
-				ts->gc.base);
-	}
+	if (pdata->gpio_export)
+		gpiochip_remove(&ts->gc);
+
 }
 #else
 static inline int ad7879_gpio_add(struct ad7879 *ts,
@@ -491,7 +488,7 @@ static inline void ad7879_gpio_remove(struct ad7879 *ts)
 struct ad7879 *ad7879_probe(struct device *dev, u8 devid, unsigned int irq,
 			    const struct ad7879_bus_ops *bops)
 {
-	struct ad7879_platform_data *pdata = dev->platform_data;
+	struct ad7879_platform_data *pdata = dev_get_platdata(dev);
 	struct ad7879 *ts;
 	struct input_dev *input_dev;
 	int err;
@@ -520,6 +517,7 @@ struct ad7879 *ad7879_probe(struct device *dev, u8 devid, unsigned int irq,
 	ts->dev = dev;
 	ts->input = input_dev;
 	ts->irq = irq;
+	ts->swap_xy = pdata->swap_xy;
 
 	setup_timer(&ts->timer, ad7879_timer, (unsigned long) ts);
 
@@ -597,7 +595,7 @@ struct ad7879 *ad7879_probe(struct device *dev, u8 devid, unsigned int irq,
 			AD7879_TMR(ts->pen_down_acc_interval);
 
 	err = request_threaded_irq(ts->irq, NULL, ad7879_irq,
-				   IRQF_TRIGGER_FALLING,
+				   IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 				   dev_name(dev), ts);
 	if (err) {
 		dev_err(dev, "irq %d busy?\n", ts->irq);

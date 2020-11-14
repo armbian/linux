@@ -58,8 +58,6 @@ struct v4l2_device {
 	struct v4l2_ctrl_handler *ctrl_handler;
 	/* Device's priority state */
 	struct v4l2_prio_state prio;
-	/* BKL replacement mutex. Temporary solution only. */
-	struct mutex ioctl_lock;
 	/* Keep track of the references to this struct. */
 	struct kref ref;
 	/* Release function that is called when the ref count goes to 0. */
@@ -119,6 +117,14 @@ void v4l2_device_unregister_subdev(struct v4l2_subdev *sd);
  */
 int __must_check
 v4l2_device_register_subdev_nodes(struct v4l2_device *v4l2_dev);
+
+/* Send a notification to v4l2_device. */
+static inline void v4l2_subdev_notify(struct v4l2_subdev *sd,
+				      unsigned int notification, void *arg)
+{
+	if (sd && sd->v4l2_dev && sd->v4l2_dev->notify)
+		sd->v4l2_dev->notify(sd, notification, arg);
+}
 
 /* Iterate over all subdevs. */
 #define v4l2_device_for_each_subdev(sd, v4l2_dev)			\
@@ -188,6 +194,19 @@ v4l2_device_register_subdev_nodes(struct v4l2_device *v4l2_dev);
 	__v4l2_device_call_subdevs_until_err_p(v4l2_dev, __sd,		\
 			!(grpid) || __sd->grp_id == (grpid), o, f ,	\
 			##args);					\
+})
+
+#define v4l2_device_has_op(v4l2_dev, o, f)				\
+({									\
+	struct v4l2_subdev *__sd;					\
+	bool __result = false;						\
+	list_for_each_entry(__sd, &(v4l2_dev)->subdevs, list) {		\
+		if (v4l2_subdev_has_op(__sd, o, f)) {			\
+			__result = true;				\
+			break;						\
+		}							\
+	}								\
+	__result;							\
 })
 
 #endif

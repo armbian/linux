@@ -1,7 +1,11 @@
-config SND_SUNXI_SOC_SUPPORT_AUDIO_RAW
-	bool "Support Audio Raw Data"
-	depends on (SND_SUNXI_SOC_HDMIAUDIO || SND_SUNXI_SOC_SPDIF) && (ARCH_SUN8IW6 || ARCH_SUN8IW7 ||ARCH_SUN9IW1)
-	default n
-	help
-	  Say Y support Audio raw date. It's suitable for Homlet product.
+menu "Allwinner SoC Audio support"
 
+config SND_SUN4I_CODEC
+	tristate "Allwinner A10 Codec Support"
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	select REGMAP_MMIO
+	help
+	  Select Y or M to add support for the Codec embedded in the Allwinner
+	  A10 and affiliated SoCs.
+
+endmenu

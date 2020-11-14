@@ -27,16 +27,17 @@
 #include <linux/amba/mmci.h>
 #include <linux/amba/pl022.h>
 #include <linux/io.h>
+#include <linux/irqchip/arm-gic.h>
+#include <linux/platform_data/clk-realview.h>
+#include <linux/reboot.h>
 
 #include <mach/hardware.h>
 #include <asm/irq.h>
-#include <asm/leds.h>
 #include <asm/mach-types.h>
-#include <asm/pmu.h>
 #include <asm/pgtable.h>
-#include <asm/hardware/gic.h>
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/smp_twd.h>
+#include <asm/system_info.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
@@ -233,7 +234,7 @@ static struct resource realview_eb_eth_resources[] = {
 	[1] = {
 		.start		= IRQ_EB_ETH,
 		.end		= IRQ_EB_ETH,
-		.flags		= IORESOURCE_IRQ,
+		.flags		= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE,
 	},
 };
 
@@ -296,8 +297,7 @@ static struct resource pmu_resources[] = {
 };
 
 static struct platform_device pmu_device = {
-	.name			= "arm-pmu",
-	.id			= ARM_PMU_DEVICE_CPU,
+	.id			= -1,
 	.num_resources		= ARRAY_SIZE(pmu_resources),
 	.resource		= pmu_resources,
 };
@@ -414,15 +414,12 @@ static void __init realview_eb_timer_init(void)
 	else
 		timer_irq = IRQ_EB_TIMER0_1;
 
+	realview_clk_init(__io_address(REALVIEW_SYS_BASE), false);
 	realview_timer_init(timer_irq);
 	realview_eb_twd_init();
 }
 
-static struct sys_timer realview_eb_timer = {
-	.init		= realview_eb_timer_init,
-};
-
-static void realview_eb_restart(char mode, const char *cmd)
+static void realview_eb_restart(enum reboot_mode mode, const char *cmd)
 {
 	void __iomem *reset_ctrl = __io_address(REALVIEW_SYS_RESETCTL);
 	void __iomem *lock_ctrl = __io_address(REALVIEW_SYS_LOCK);
@@ -436,20 +433,6 @@ static void realview_eb_restart(char mode, const char *cmd)
 		__raw_writel(0x0008, reset_ctrl);
 	dsb();
 }
-#ifdef CONFIG_CACHE_L2X0
-static int __init realview_eb_l2x0_init(void)
-{
-	if (machine_is_realview_eb_mp())
-		/*
-		 * 1MB (128KB/way), 8-way associativity, evmon/parity/share
-		 * Bits:  .... ...0 0111 1001 0000 .... .... ....
-		 */
-		l2x0_init(__io_address(REALVIEW_EB11MP_L220_BASE),
-			  0x00790000, 0xfe000fff);
-	return 0;
-}
-early_initcall(realview_eb_l2x0_init);
-#endif
 
 static void __init realview_eb_init(void)
 {
@@ -458,12 +441,24 @@ static void __init realview_eb_init(void)
 	if (core_tile_eb11mp() || core_tile_a9mp()) {
 		realview_eb11mp_fixup();
 
+#ifdef CONFIG_CACHE_L2X0
+		/*
+		 * The PL220 needs to be manually configured as the hardware
+		 * doesn't report the correct sizes.
+		 * 1MB (128KB/way), 8-way associativity, event monitor and
+		 * parity enabled, ignore share bit, no force write allocate
+		 * Bits:  .... ...0 0111 1001 0000 .... .... ....
+		 */
+		l2x0_init(__io_address(REALVIEW_EB11MP_L220_BASE), 0x00790000, 0xfe000fff);
+#endif
+		pmu_device.name = core_tile_a9mp() ? "armv7-pmu" : "armv6-pmu";
 		platform_device_register(&pmu_device);
 	}
 
 	realview_flash_register(&realview_eb_flash_resource, 1);
 	platform_device_register(&realview_i2c_device);
 	platform_device_register(&char_lcd_device);
+	platform_device_register(&realview_leds_device);
 	eth_device_register();
 	realview_usb_register(realview_eb_isp1761_resources);
 
@@ -471,21 +466,17 @@ static void __init realview_eb_init(void)
 		struct amba_device *d = amba_devs[i];
 		amba_device_register(d, &iomem_resource);
 	}
-
-#ifdef CONFIG_LEDS
-	leds_event = realview_leds_event;
-#endif
 }
 
 MACHINE_START(REALVIEW_EB, "ARM-RealView EB")
 	/* Maintainer: ARM Ltd/Deep Blue Solutions Ltd */
 	.atag_offset	= 0x100,
+	.smp		= smp_ops(realview_smp_ops),
 	.fixup		= realview_fixup,
 	.map_io		= realview_eb_map_io,
 	.init_early	= realview_init_early,
 	.init_irq	= gic_init_irq,
-	.timer		= &realview_eb_timer,
-	.handle_irq	= gic_handle_irq,
+	.init_time	= realview_eb_timer_init,
 	.init_machine	= realview_eb_init,
 #ifdef CONFIG_ZONE_DMA
 	.dma_zone_size	= SZ_256M,

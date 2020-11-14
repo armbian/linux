@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 menuconfig SWITCH
 	tristate "Switch class support"
 	help
@@ -8,7 +9,7 @@ if SWITCH
 
 config SWITCH_GPIO
 	tristate "GPIO Swith support"
-	depends on GENERIC_GPIO
+	depends on GPIOLIB
 	help
 	  Say Y here to enable GPIO based switch support.
 

@@ -203,6 +203,8 @@ int get_rock_ridge_filename(struct iso_directory_record *de,
 	int retnamlen = 0;
 	int truncate = 0;
 	int ret = 0;
+	char *p;
+	int len;
 
 	if (!ISOFS_SB(inode->i_sb)->s_rock)
 		return 0;
@@ -267,12 +269,17 @@ repeat:
 					rr->u.NM.flags);
 				break;
 			}
-			if ((strlen(retname) + rr->len - 5) >= 254) {
+			len = rr->len - 5;
+			if (retnamlen + len >= 254) {
 				truncate = 1;
 				break;
 			}
-			strncat(retname, rr->u.NM.name, rr->len - 5);
-			retnamlen += rr->len - 5;
+			p = memchr(rr->u.NM.name, '\0', len);
+			if (unlikely(p))
+				len = p - rr->u.NM.name;
+			memcpy(retname + retnamlen, rr->u.NM.name, len);
+			retnamlen += len;
+			retname[retnamlen] = '\0';
 			break;
 		case SIG('R', 'E'):
 			kfree(rs.buffer);
@@ -377,8 +384,8 @@ repeat:
 		case SIG('P', 'X'):
 			inode->i_mode = isonum_733(rr->u.PX.mode);
 			set_nlink(inode, isonum_733(rr->u.PX.n_links));
-			inode->i_uid = isonum_733(rr->u.PX.uid);
-			inode->i_gid = isonum_733(rr->u.PX.gid);
+			i_uid_write(inode, isonum_733(rr->u.PX.uid));
+			i_gid_write(inode, isonum_733(rr->u.PX.gid));
 			break;
 		case SIG('P', 'N'):
 			{

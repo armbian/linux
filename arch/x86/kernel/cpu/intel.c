@@ -1,4 +1,3 @@
-#include <linux/init.h>
 #include <linux/kernel.h>
 
 #include <linux/string.h>
@@ -9,15 +8,15 @@
 #include <linux/module.h>
 #include <linux/uaccess.h>
 
-#include <asm/processor.h>
+#include <asm/cpufeature.h>
 #include <asm/pgtable.h>
 #include <asm/msr.h>
 #include <asm/bugs.h>
 #include <asm/cpu.h>
+#include <asm/intel-family.h>
 
 #ifdef CONFIG_X86_64
 #include <linux/topology.h>
-#include <asm/numa_64.h>
 #endif
 
 #include "cpu.h"
@@ -27,17 +26,73 @@
 #include <asm/apic.h>
 #endif
 
-static void __cpuinit early_init_intel(struct cpuinfo_x86 *c)
+/*
+ * Early microcode releases for the Spectre v2 mitigation were broken.
+ * Information taken from;
+ * - https://newsroom.intel.com/wp-content/uploads/sites/11/2018/03/microcode-update-guidance.pdf
+ * - https://kb.vmware.com/s/article/52345
+ * - Microcode revisions observed in the wild
+ * - Release note from 20180108 microcode release
+ */
+struct sku_microcode {
+	u8 model;
+	u8 stepping;
+	u32 microcode;
+};
+static const struct sku_microcode spectre_bad_microcodes[] = {
+	{ INTEL_FAM6_KABYLAKE_DESKTOP,	0x0B,	0x80 },
+	{ INTEL_FAM6_KABYLAKE_DESKTOP,	0x0A,	0x80 },
+	{ INTEL_FAM6_KABYLAKE_DESKTOP,	0x09,	0x80 },
+	{ INTEL_FAM6_KABYLAKE_MOBILE,	0x0A,	0x80 },
+	{ INTEL_FAM6_KABYLAKE_MOBILE,	0x09,	0x80 },
+	{ INTEL_FAM6_SKYLAKE_X,		0x03,	0x0100013e },
+	{ INTEL_FAM6_SKYLAKE_X,		0x04,	0x0200003c },
+	{ INTEL_FAM6_BROADWELL_CORE,	0x04,	0x28 },
+	{ INTEL_FAM6_BROADWELL_GT3E,	0x01,	0x1b },
+	{ INTEL_FAM6_BROADWELL_XEON_D,	0x02,	0x14 },
+	{ INTEL_FAM6_BROADWELL_XEON_D,	0x03,	0x07000011 },
+	{ INTEL_FAM6_BROADWELL_X,	0x01,	0x0b000025 },
+	{ INTEL_FAM6_HASWELL_ULT,	0x01,	0x21 },
+	{ INTEL_FAM6_HASWELL_GT3E,	0x01,	0x18 },
+	{ INTEL_FAM6_HASWELL_CORE,	0x03,	0x23 },
+	{ INTEL_FAM6_HASWELL_X,		0x02,	0x3b },
+	{ INTEL_FAM6_HASWELL_X,		0x04,	0x10 },
+	{ INTEL_FAM6_IVYBRIDGE_X,	0x04,	0x42a },
+	/* Observed in the wild */
+	{ INTEL_FAM6_SANDYBRIDGE_X,	0x06,	0x61b },
+	{ INTEL_FAM6_SANDYBRIDGE_X,	0x07,	0x712 },
+};
+
+static bool bad_spectre_microcode(struct cpuinfo_x86 *c)
+{
+	int i;
+
+	/*
+	 * We know that the hypervisor lie to us on the microcode version so
+	 * we may as well hope that it is running the correct version.
+	 */
+	if (cpu_has(c, X86_FEATURE_HYPERVISOR))
+		return false;
+
+	if (c->x86 != 6)
+		return false;
+
+	for (i = 0; i < ARRAY_SIZE(spectre_bad_microcodes); i++) {
+		if (c->x86_model == spectre_bad_microcodes[i].model &&
+		    c->x86_mask == spectre_bad_microcodes[i].stepping)
+			return (c->microcode <= spectre_bad_microcodes[i].microcode);
+	}
+	return false;
+}
+
+static void early_init_intel(struct cpuinfo_x86 *c)
 {
 	u64 misc_enable;
 
 	/* Unmask CPUID levels if masked: */
 	if (c->x86 > 6 || (c->x86 == 6 && c->x86_model >= 0xd)) {
-		rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
-
-		if (misc_enable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID) {
-			misc_enable &= ~MSR_IA32_MISC_ENABLE_LIMIT_CPUID;
-			wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+		if (msr_clear_bit(MSR_IA32_MISC_ENABLE,
+				  MSR_IA32_MISC_ENABLE_LIMIT_CPUID_BIT) > 0) {
 			c->cpuid_level = cpuid_eax(0);
 			get_cpu_cap(c);
 		}
@@ -54,6 +109,22 @@ static void __cpuinit early_init_intel(struct cpuinfo_x86 *c)
 		/* Required by the SDM */
 		sync_core();
 		rdmsr(MSR_IA32_UCODE_REV, lower_word, c->microcode);
+	}
+
+	/* Now if any of them are set, check the blacklist and clear the lot */
+	if ((cpu_has(c, X86_FEATURE_SPEC_CTRL) ||
+	     cpu_has(c, X86_FEATURE_INTEL_STIBP) ||
+	     cpu_has(c, X86_FEATURE_IBRS) || cpu_has(c, X86_FEATURE_IBPB) ||
+	     cpu_has(c, X86_FEATURE_STIBP)) && bad_spectre_microcode(c)) {
+		pr_warn("Intel Spectre v2 broken microcode detected; disabling Speculation Control\n");
+		setup_clear_cpu_cap(X86_FEATURE_IBRS);
+		setup_clear_cpu_cap(X86_FEATURE_IBPB);
+		setup_clear_cpu_cap(X86_FEATURE_STIBP);
+		setup_clear_cpu_cap(X86_FEATURE_SPEC_CTRL);
+		setup_clear_cpu_cap(X86_FEATURE_MSR_SPEC_CTRL);
+		setup_clear_cpu_cap(X86_FEATURE_INTEL_STIBP);
+		setup_clear_cpu_cap(X86_FEATURE_SSBD);
+		setup_clear_cpu_cap(X86_FEATURE_SPEC_CTRL_SSBD);
 	}
 
 	/*
@@ -94,7 +165,20 @@ static void __cpuinit early_init_intel(struct cpuinfo_x86 *c)
 		set_cpu_cap(c, X86_FEATURE_CONSTANT_TSC);
 		set_cpu_cap(c, X86_FEATURE_NONSTOP_TSC);
 		if (!check_tsc_unstable())
-			sched_clock_stable = 1;
+			set_sched_clock_stable();
+	}
+
+	/* Penwell and Cloverview have the TSC which doesn't sleep on S3 */
+	if (c->x86 == 6) {
+		switch (c->x86_model) {
+		case 0x27:	/* Penwell */
+		case 0x35:	/* Cloverview */
+		case 0x4a:	/* Merrifield */
+			set_cpu_cap(c, X86_FEATURE_NONSTOP_TSC_S3);
+			break;
+		default:
+			break;
+		}
 	}
 
 	/*
@@ -119,16 +203,10 @@ static void __cpuinit early_init_intel(struct cpuinfo_x86 *c)
 	 * Ingo Molnar reported a Pentium D (model 6) and a Xeon
 	 * (model 2) with the same problem.
 	 */
-	if (c->x86 == 15) {
-		rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
-
-		if (misc_enable & MSR_IA32_MISC_ENABLE_FAST_STRING) {
-			printk(KERN_INFO "kmemcheck: Disabling fast string operations\n");
-
-			misc_enable &= ~MSR_IA32_MISC_ENABLE_FAST_STRING;
-			wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
-		}
-	}
+	if (c->x86 == 15)
+		if (msr_clear_bit(MSR_IA32_MISC_ENABLE,
+				  MSR_IA32_MISC_ENABLE_FAST_STRING_BIT) > 0)
+			pr_info("kmemcheck: Disabling fast string operations\n");
 #endif
 
 	/*
@@ -167,7 +245,7 @@ static void __cpuinit early_init_intel(struct cpuinfo_x86 *c)
  *	This is called before we do cpu ident work
  */
 
-int __cpuinit ppro_with_ram_bug(void)
+int ppro_with_ram_bug(void)
 {
 	/* Uses data from early_cpu_detect now */
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
@@ -180,21 +258,7 @@ int __cpuinit ppro_with_ram_bug(void)
 	return 0;
 }
 
-#ifdef CONFIG_X86_F00F_BUG
-static void __cpuinit trap_init_f00f_bug(void)
-{
-	__set_fixmap(FIX_F00F_IDT, __pa(&idt_table), PAGE_KERNEL_RO);
-
-	/*
-	 * Update the IDT descriptor and reload the IDT so that
-	 * it uses the read-only mapped virtual address.
-	 */
-	idt_descr.address = fix_to_virt(FIX_F00F_IDT);
-	load_idt(&idt_descr);
-}
-#endif
-
-static void __cpuinit intel_smp_check(struct cpuinfo_x86 *c)
+static void intel_smp_check(struct cpuinfo_x86 *c)
 {
 	/* calling is from identify_secondary_cpu() ? */
 	if (!c->cpu_index)
@@ -214,24 +278,29 @@ static void __cpuinit intel_smp_check(struct cpuinfo_x86 *c)
 	}
 }
 
-static void __cpuinit intel_workarounds(struct cpuinfo_x86 *c)
+static int forcepae;
+static int __init forcepae_setup(char *__unused)
 {
-	unsigned long lo, hi;
+	forcepae = 1;
+	return 1;
+}
+__setup("forcepae", forcepae_setup);
 
+static void intel_workarounds(struct cpuinfo_x86 *c)
+{
 #ifdef CONFIG_X86_F00F_BUG
 	/*
-	 * All current models of Pentium and Pentium with MMX technology CPUs
+	 * All models of Pentium and Pentium with MMX technology CPUs
 	 * have the F0 0F bug, which lets nonprivileged users lock up the
-	 * system.
-	 * Note that the workaround only should be initialized once...
+	 * system. Announce that the fault handler will be checking for it.
+	 * The Quark is also family 5, but does not have the same bug.
 	 */
-	c->f00f_bug = 0;
-	if (!paravirt_enabled() && c->x86 == 5) {
+	clear_cpu_bug(c, X86_BUG_F00F);
+	if (!paravirt_enabled() && c->x86 == 5 && c->x86_model < 9) {
 		static int f00f_workaround_enabled;
 
-		c->f00f_bug = 1;
+		set_cpu_bug(c, X86_BUG_F00F);
 		if (!f00f_workaround_enabled) {
-			trap_init_f00f_bug();
 			printk(KERN_NOTICE "Intel Pentium with F0 0F bug - workaround enabled.\n");
 			f00f_workaround_enabled = 1;
 		}
@@ -246,16 +315,26 @@ static void __cpuinit intel_workarounds(struct cpuinfo_x86 *c)
 		clear_cpu_cap(c, X86_FEATURE_SEP);
 
 	/*
+	 * PAE CPUID issue: many Pentium M report no PAE but may have a
+	 * functionally usable PAE implementation.
+	 * Forcefully enable PAE if kernel parameter "forcepae" is present.
+	 */
+	if (forcepae) {
+		printk(KERN_WARNING "PAE forced!\n");
+		set_cpu_cap(c, X86_FEATURE_PAE);
+		add_taint(TAINT_CPU_OUT_OF_SPEC, LOCKDEP_NOW_UNRELIABLE);
+	}
+
+	/*
 	 * P4 Xeon errata 037 workaround.
 	 * Hardware prefetcher may cause stale data to be loaded into the cache.
 	 */
 	if ((c->x86 == 15) && (c->x86_model == 1) && (c->x86_mask == 1)) {
-		rdmsr(MSR_IA32_MISC_ENABLE, lo, hi);
-		if ((lo & MSR_IA32_MISC_ENABLE_PREFETCH_DISABLE) == 0) {
-			printk (KERN_INFO "CPU: C0 stepping P4 Xeon detected.\n");
-			printk (KERN_INFO "CPU: Disabling hardware prefetching (Errata 037)\n");
-			lo |= MSR_IA32_MISC_ENABLE_PREFETCH_DISABLE;
-			wrmsr(MSR_IA32_MISC_ENABLE, lo, hi);
+		if (msr_set_bit(MSR_IA32_MISC_ENABLE,
+				MSR_IA32_MISC_ENABLE_PREFETCH_DISABLE_BIT)
+		    > 0) {
+			pr_info("CPU: C0 stepping P4 Xeon detected.\n");
+			pr_info("CPU: Disabling hardware prefetching (Errata 037)\n");
 		}
 	}
 
@@ -267,7 +346,7 @@ static void __cpuinit intel_workarounds(struct cpuinfo_x86 *c)
 	 */
 	if (cpu_has_apic && (c->x86<<8 | c->x86_model<<4) == 0x520 &&
 	    (c->x86_mask < 0x6 || c->x86_mask == 0xb))
-		set_cpu_cap(c, X86_FEATURE_11AP);
+		set_cpu_bug(c, X86_BUG_11AP);
 
 
 #ifdef CONFIG_X86_INTEL_USERCOPY
@@ -288,19 +367,15 @@ static void __cpuinit intel_workarounds(struct cpuinfo_x86 *c)
 	}
 #endif
 
-#ifdef CONFIG_X86_NUMAQ
-	numaq_tsc_disable();
-#endif
-
 	intel_smp_check(c);
 }
 #else
-static void __cpuinit intel_workarounds(struct cpuinfo_x86 *c)
+static void intel_workarounds(struct cpuinfo_x86 *c)
 {
 }
 #endif
 
-static void __cpuinit srat_detect_node(struct cpuinfo_x86 *c)
+static void srat_detect_node(struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_NUMA
 	unsigned node;
@@ -320,7 +395,7 @@ static void __cpuinit srat_detect_node(struct cpuinfo_x86 *c)
 /*
  * find out the number of processor cores on the die
  */
-static int __cpuinit intel_num_cpu_cores(struct cpuinfo_x86 *c)
+static int intel_num_cpu_cores(struct cpuinfo_x86 *c)
 {
 	unsigned int eax, ebx, ecx, edx;
 
@@ -335,7 +410,7 @@ static int __cpuinit intel_num_cpu_cores(struct cpuinfo_x86 *c)
 		return 1;
 }
 
-static void __cpuinit detect_vmx_virtcap(struct cpuinfo_x86 *c)
+static void detect_vmx_virtcap(struct cpuinfo_x86 *c)
 {
 	/* Intel VMX MSR indicated features */
 #define X86_VMX_FEATURE_PROC_CTLS_TPR_SHADOW	0x00200000
@@ -373,7 +448,37 @@ static void __cpuinit detect_vmx_virtcap(struct cpuinfo_x86 *c)
 	}
 }
 
-static void __cpuinit init_intel(struct cpuinfo_x86 *c)
+static void init_intel_energy_perf(struct cpuinfo_x86 *c)
+{
+	u64 epb;
+
+	/*
+	 * Initialize MSR_IA32_ENERGY_PERF_BIAS if not already initialized.
+	 * (x86_energy_perf_policy(8) is available to change it at run-time.)
+	 */
+	if (!cpu_has(c, X86_FEATURE_EPB))
+		return;
+
+	rdmsrl(MSR_IA32_ENERGY_PERF_BIAS, epb);
+	if ((epb & 0xF) != ENERGY_PERF_BIAS_PERFORMANCE)
+		return;
+
+	pr_warn_once("ENERGY_PERF_BIAS: Set to 'normal', was 'performance'\n");
+	pr_warn_once("ENERGY_PERF_BIAS: View and update with x86_energy_perf_policy(8)\n");
+	epb = (epb & ~0xF) | ENERGY_PERF_BIAS_NORMAL;
+	wrmsrl(MSR_IA32_ENERGY_PERF_BIAS, epb);
+}
+
+static void intel_bsp_resume(struct cpuinfo_x86 *c)
+{
+	/*
+	 * MSR_IA32_ENERGY_PERF_BIAS is lost across suspend/resume,
+	 * so reinitialize it properly like during bootup:
+	 */
+	init_intel_energy_perf(c);
+}
+
+static void init_intel(struct cpuinfo_x86 *c)
 {
 	unsigned int l2 = 0;
 
@@ -388,7 +493,25 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 	 */
 	detect_extended_topology(c);
 
+	if (!cpu_has(c, X86_FEATURE_XTOPOLOGY)) {
+		/*
+		 * let's use the legacy cpuid vector 0x1 and 0x4 for topology
+		 * detection.
+		 */
+		c->x86_max_cores = intel_num_cpu_cores(c);
+#ifdef CONFIG_X86_32
+		detect_ht(c);
+#endif
+	}
+
 	l2 = init_intel_cacheinfo(c);
+
+	/* Detect legacy cache sizes if init_intel_cacheinfo did not */
+	if (l2 == 0) {
+		cpu_detect_cache_sizes(c);
+		l2 = c->x86_cache_size;
+	}
+
 	if (c->cpuid_level > 9) {
 		unsigned eax = cpuid_eax(10);
 		/* Check for version and the number of counters */
@@ -398,7 +521,8 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 
 	if (cpu_has_xmm2)
 		set_cpu_cap(c, X86_FEATURE_LFENCE_RDTSC);
-	if (cpu_has_ds) {
+
+	if (boot_cpu_has(X86_FEATURE_DS)) {
 		unsigned int l1;
 		rdmsr(MSR_IA32_MISC_ENABLE, l1, l2);
 		if (!(l1 & (1<<11)))
@@ -407,8 +531,9 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 			set_cpu_cap(c, X86_FEATURE_PEBS);
 	}
 
-	if (c->x86 == 6 && c->x86_model == 29 && cpu_has_clflush)
-		set_cpu_cap(c, X86_FEATURE_CLFLUSH_MONITOR);
+	if (c->x86 == 6 && cpu_has_clflush &&
+	    (c->x86_model == 29 || c->x86_model == 46 || c->x86_model == 47))
+		set_cpu_bug(c, X86_BUG_CLFLUSH_MONITOR);
 
 #ifdef CONFIG_X86_64
 	if (c->x86 == 15)
@@ -455,44 +580,17 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 		set_cpu_cap(c, X86_FEATURE_P3);
 #endif
 
-	if (!cpu_has(c, X86_FEATURE_XTOPOLOGY)) {
-		/*
-		 * let's use the legacy cpuid vector 0x1 and 0x4 for topology
-		 * detection.
-		 */
-		c->x86_max_cores = intel_num_cpu_cores(c);
-#ifdef CONFIG_X86_32
-		detect_ht(c);
-#endif
-	}
-
 	/* Work around errata */
 	srat_detect_node(c);
 
 	if (cpu_has(c, X86_FEATURE_VMX))
 		detect_vmx_virtcap(c);
 
-	/*
-	 * Initialize MSR_IA32_ENERGY_PERF_BIAS if BIOS did not.
-	 * x86_energy_perf_policy(8) is available to change it at run-time
-	 */
-	if (cpu_has(c, X86_FEATURE_EPB)) {
-		u64 epb;
-
-		rdmsrl(MSR_IA32_ENERGY_PERF_BIAS, epb);
-		if ((epb & 0xF) == ENERGY_PERF_BIAS_PERFORMANCE) {
-			printk_once(KERN_WARNING "ENERGY_PERF_BIAS:"
-				" Set to 'normal', was 'performance'\n"
-				"ENERGY_PERF_BIAS: View and update with"
-				" x86_energy_perf_policy(8)\n");
-			epb = (epb & ~0xF) | ENERGY_PERF_BIAS_NORMAL;
-			wrmsrl(MSR_IA32_ENERGY_PERF_BIAS, epb);
-		}
-	}
+	init_intel_energy_perf(c);
 }
 
 #ifdef CONFIG_X86_32
-static unsigned int __cpuinit intel_size_cache(struct cpuinfo_x86 *c, unsigned int size)
+static unsigned int intel_size_cache(struct cpuinfo_x86 *c, unsigned int size)
 {
 	/*
 	 * Intel PIII Tualatin. This comes in two flavours.
@@ -502,16 +600,194 @@ static unsigned int __cpuinit intel_size_cache(struct cpuinfo_x86 *c, unsigned i
 	 */
 	if ((c->x86 == 6) && (c->x86_model == 11) && (size == 0))
 		size = 256;
+
+	/*
+	 * Intel Quark SoC X1000 contains a 4-way set associative
+	 * 16K cache with a 16 byte cache line and 256 lines per tag
+	 */
+	if ((c->x86 == 5) && (c->x86_model == 9))
+		size = 16;
 	return size;
 }
 #endif
 
-static const struct cpu_dev __cpuinitconst intel_cpu_dev = {
+#define TLB_INST_4K	0x01
+#define TLB_INST_4M	0x02
+#define TLB_INST_2M_4M	0x03
+
+#define TLB_INST_ALL	0x05
+#define TLB_INST_1G	0x06
+
+#define TLB_DATA_4K	0x11
+#define TLB_DATA_4M	0x12
+#define TLB_DATA_2M_4M	0x13
+#define TLB_DATA_4K_4M	0x14
+
+#define TLB_DATA_1G	0x16
+
+#define TLB_DATA0_4K	0x21
+#define TLB_DATA0_4M	0x22
+#define TLB_DATA0_2M_4M	0x23
+
+#define STLB_4K		0x41
+#define STLB_4K_2M	0x42
+
+static const struct _tlb_table intel_tlb_table[] = {
+	{ 0x01, TLB_INST_4K,		32,	" TLB_INST 4 KByte pages, 4-way set associative" },
+	{ 0x02, TLB_INST_4M,		2,	" TLB_INST 4 MByte pages, full associative" },
+	{ 0x03, TLB_DATA_4K,		64,	" TLB_DATA 4 KByte pages, 4-way set associative" },
+	{ 0x04, TLB_DATA_4M,		8,	" TLB_DATA 4 MByte pages, 4-way set associative" },
+	{ 0x05, TLB_DATA_4M,		32,	" TLB_DATA 4 MByte pages, 4-way set associative" },
+	{ 0x0b, TLB_INST_4M,		4,	" TLB_INST 4 MByte pages, 4-way set associative" },
+	{ 0x4f, TLB_INST_4K,		32,	" TLB_INST 4 KByte pages */" },
+	{ 0x50, TLB_INST_ALL,		64,	" TLB_INST 4 KByte and 2-MByte or 4-MByte pages" },
+	{ 0x51, TLB_INST_ALL,		128,	" TLB_INST 4 KByte and 2-MByte or 4-MByte pages" },
+	{ 0x52, TLB_INST_ALL,		256,	" TLB_INST 4 KByte and 2-MByte or 4-MByte pages" },
+	{ 0x55, TLB_INST_2M_4M,		7,	" TLB_INST 2-MByte or 4-MByte pages, fully associative" },
+	{ 0x56, TLB_DATA0_4M,		16,	" TLB_DATA0 4 MByte pages, 4-way set associative" },
+	{ 0x57, TLB_DATA0_4K,		16,	" TLB_DATA0 4 KByte pages, 4-way associative" },
+	{ 0x59, TLB_DATA0_4K,		16,	" TLB_DATA0 4 KByte pages, fully associative" },
+	{ 0x5a, TLB_DATA0_2M_4M,	32,	" TLB_DATA0 2-MByte or 4 MByte pages, 4-way set associative" },
+	{ 0x5b, TLB_DATA_4K_4M,		64,	" TLB_DATA 4 KByte and 4 MByte pages" },
+	{ 0x5c, TLB_DATA_4K_4M,		128,	" TLB_DATA 4 KByte and 4 MByte pages" },
+	{ 0x5d, TLB_DATA_4K_4M,		256,	" TLB_DATA 4 KByte and 4 MByte pages" },
+	{ 0x61, TLB_INST_4K,		48,	" TLB_INST 4 KByte pages, full associative" },
+	{ 0x63, TLB_DATA_1G,		4,	" TLB_DATA 1 GByte pages, 4-way set associative" },
+	{ 0x76, TLB_INST_2M_4M,		8,	" TLB_INST 2-MByte or 4-MByte pages, fully associative" },
+	{ 0xb0, TLB_INST_4K,		128,	" TLB_INST 4 KByte pages, 4-way set associative" },
+	{ 0xb1, TLB_INST_2M_4M,		4,	" TLB_INST 2M pages, 4-way, 8 entries or 4M pages, 4-way entries" },
+	{ 0xb2, TLB_INST_4K,		64,	" TLB_INST 4KByte pages, 4-way set associative" },
+	{ 0xb3, TLB_DATA_4K,		128,	" TLB_DATA 4 KByte pages, 4-way set associative" },
+	{ 0xb4, TLB_DATA_4K,		256,	" TLB_DATA 4 KByte pages, 4-way associative" },
+	{ 0xb5, TLB_INST_4K,		64,	" TLB_INST 4 KByte pages, 8-way set associative" },
+	{ 0xb6, TLB_INST_4K,		128,	" TLB_INST 4 KByte pages, 8-way set associative" },
+	{ 0xba, TLB_DATA_4K,		64,	" TLB_DATA 4 KByte pages, 4-way associative" },
+	{ 0xc0, TLB_DATA_4K_4M,		8,	" TLB_DATA 4 KByte and 4 MByte pages, 4-way associative" },
+	{ 0xc1, STLB_4K_2M,		1024,	" STLB 4 KByte and 2 MByte pages, 8-way associative" },
+	{ 0xc2, TLB_DATA_2M_4M,		16,	" DTLB 2 MByte/4MByte pages, 4-way associative" },
+	{ 0xca, STLB_4K,		512,	" STLB 4 KByte pages, 4-way associative" },
+	{ 0x00, 0, 0 }
+};
+
+static void intel_tlb_lookup(const unsigned char desc)
+{
+	unsigned char k;
+	if (desc == 0)
+		return;
+
+	/* look up this descriptor in the table */
+	for (k = 0; intel_tlb_table[k].descriptor != desc && \
+			intel_tlb_table[k].descriptor != 0; k++)
+		;
+
+	if (intel_tlb_table[k].tlb_type == 0)
+		return;
+
+	switch (intel_tlb_table[k].tlb_type) {
+	case STLB_4K:
+		if (tlb_lli_4k[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_4k[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lld_4k[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_4k[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case STLB_4K_2M:
+		if (tlb_lli_4k[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_4k[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lld_4k[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_4k[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lli_2m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_2m[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lld_2m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_2m[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lli_4m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_4m[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lld_4m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_4m[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_INST_ALL:
+		if (tlb_lli_4k[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_4k[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lli_2m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_2m[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lli_4m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_4m[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_INST_4K:
+		if (tlb_lli_4k[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_4k[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_INST_4M:
+		if (tlb_lli_4m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_4m[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_INST_2M_4M:
+		if (tlb_lli_2m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_2m[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lli_4m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lli_4m[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_DATA_4K:
+	case TLB_DATA0_4K:
+		if (tlb_lld_4k[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_4k[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_DATA_4M:
+	case TLB_DATA0_4M:
+		if (tlb_lld_4m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_4m[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_DATA_2M_4M:
+	case TLB_DATA0_2M_4M:
+		if (tlb_lld_2m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_2m[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lld_4m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_4m[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_DATA_4K_4M:
+		if (tlb_lld_4k[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_4k[ENTRIES] = intel_tlb_table[k].entries;
+		if (tlb_lld_4m[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_4m[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	case TLB_DATA_1G:
+		if (tlb_lld_1g[ENTRIES] < intel_tlb_table[k].entries)
+			tlb_lld_1g[ENTRIES] = intel_tlb_table[k].entries;
+		break;
+	}
+}
+
+static void intel_detect_tlb(struct cpuinfo_x86 *c)
+{
+	int i, j, n;
+	unsigned int regs[4];
+	unsigned char *desc = (unsigned char *)regs;
+
+	if (c->cpuid_level < 2)
+		return;
+
+	/* Number of times to iterate */
+	n = cpuid_eax(2) & 0xFF;
+
+	for (i = 0 ; i < n ; i++) {
+		cpuid(2, &regs[0], &regs[1], &regs[2], &regs[3]);
+
+		/* If bit 31 is set, this is an unknown format */
+		for (j = 0 ; j < 3 ; j++)
+			if (regs[j] & (1 << 31))
+				regs[j] = 0;
+
+		/* Byte 0 is level count, not a descriptor */
+		for (j = 1 ; j < 16 ; j++)
+			intel_tlb_lookup(desc[j]);
+	}
+}
+
+static const struct cpu_dev intel_cpu_dev = {
 	.c_vendor	= "Intel",
 	.c_ident	= { "GenuineIntel" },
 #ifdef CONFIG_X86_32
-	.c_models = {
-		{ .vendor = X86_VENDOR_INTEL, .family = 4, .model_names =
+	.legacy_models = {
+		{ .family = 4, .model_names =
 		  {
 			  [0] = "486 DX-25/33",
 			  [1] = "486 DX-50",
@@ -524,7 +800,7 @@ static const struct cpu_dev __cpuinitconst intel_cpu_dev = {
 			  [9] = "486 DX/4-WB"
 		  }
 		},
-		{ .vendor = X86_VENDOR_INTEL, .family = 5, .model_names =
+		{ .family = 5, .model_names =
 		  {
 			  [0] = "Pentium 60/66 A-step",
 			  [1] = "Pentium 60/66",
@@ -532,10 +808,11 @@ static const struct cpu_dev __cpuinitconst intel_cpu_dev = {
 			  [3] = "OverDrive PODP5V83",
 			  [4] = "Pentium MMX",
 			  [7] = "Mobile Pentium 75 - 200",
-			  [8] = "Mobile Pentium MMX"
+			  [8] = "Mobile Pentium MMX",
+			  [9] = "Quark SoC X1000",
 		  }
 		},
-		{ .vendor = X86_VENDOR_INTEL, .family = 6, .model_names =
+		{ .family = 6, .model_names =
 		  {
 			  [0] = "Pentium Pro A-step",
 			  [1] = "Pentium Pro",
@@ -549,7 +826,7 @@ static const struct cpu_dev __cpuinitconst intel_cpu_dev = {
 			  [11] = "Pentium III (Tualatin)",
 		  }
 		},
-		{ .vendor = X86_VENDOR_INTEL, .family = 15, .model_names =
+		{ .family = 15, .model_names =
 		  {
 			  [0] = "Pentium 4 (Unknown)",
 			  [1] = "Pentium 4 (Willamette)",
@@ -559,10 +836,12 @@ static const struct cpu_dev __cpuinitconst intel_cpu_dev = {
 		  }
 		},
 	},
-	.c_size_cache	= intel_size_cache,
+	.legacy_cache_size = intel_size_cache,
 #endif
+	.c_detect_tlb	= intel_detect_tlb,
 	.c_early_init   = early_init_intel,
 	.c_init		= init_intel,
+	.c_bsp_resume	= intel_bsp_resume,
 	.c_x86_vendor	= X86_VENDOR_INTEL,
 };
 

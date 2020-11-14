@@ -86,7 +86,7 @@ MODULE_PARM_DESC(fwpostfix, "Postfix for the firmware files to load.");
 static const struct ssb_device_id b43legacy_ssb_tbl[] = {
 	SSB_DEVICE(SSB_VENDOR_BROADCOM, SSB_DEV_80211, 2),
 	SSB_DEVICE(SSB_VENDOR_BROADCOM, SSB_DEV_80211, 4),
-	SSB_DEVTABLE_END
+	{},
 };
 MODULE_DEVICE_TABLE(ssb, b43legacy_ssb_tbl);
 
@@ -978,7 +978,7 @@ static void b43legacy_write_beacon_template(struct b43legacy_wldev *dev,
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(dev->wl->current_beacon);
 
 	bcn = (const struct ieee80211_mgmt *)(dev->wl->current_beacon->data);
-	len = min((size_t)dev->wl->current_beacon->len,
+	len = min_t(size_t, dev->wl->current_beacon->len,
 		  0x200 - sizeof(struct b43legacy_plcp_hdr6));
 	rate = ieee80211_get_tx_rate(dev->wl->hw, info)->hw_value;
 
@@ -1056,6 +1056,7 @@ static void b43legacy_write_probe_resp_plcp(struct b43legacy_wldev *dev,
 	b43legacy_generate_plcp_hdr(&plcp, size + FCS_LEN, rate->hw_value);
 	dur = ieee80211_generic_frame_duration(dev->wl->hw,
 					       dev->wl->vif,
+					       IEEE80211_BAND_2GHZ,
 					       size,
 					       rate);
 	/* Write PLCP in two parts and timing for packet transfer */
@@ -1121,6 +1122,7 @@ static const u8 *b43legacy_generate_probe_resp(struct b43legacy_wldev *dev,
 					 IEEE80211_STYPE_PROBE_RESP);
 	dur = ieee80211_generic_frame_duration(dev->wl->hw,
 					       dev->wl->vif,
+					       IEEE80211_BAND_2GHZ,
 					       *dest_size,
 					       rate);
 	hdr->duration_id = dur;
@@ -1153,7 +1155,7 @@ static void b43legacy_write_probe_resp_template(struct b43legacy_wldev *dev,
 	b43legacy_write_probe_resp_plcp(dev, 0x350, size,
 					&b43legacy_b_ratetable[3]);
 
-	size = min((size_t)size,
+	size = min_t(size_t, size,
 		   0x200 - sizeof(struct b43legacy_plcp_hdr6));
 	b43legacy_write_template_common(dev, probe_resp_data,
 					size, ram_offset,
@@ -1506,7 +1508,7 @@ static void b43legacy_release_firmware(struct b43legacy_wldev *dev)
 
 static void b43legacy_print_fw_helptext(struct b43legacy_wl *wl)
 {
-	b43legacyerr(wl, "You must go to http://linuxwireless.org/en/users/"
+	b43legacyerr(wl, "You must go to http://wireless.kernel.org/en/users/"
 		     "Drivers/b43#devicefirmware "
 		     "and download the correct firmware (version 3).\n");
 }
@@ -1943,7 +1945,7 @@ static int b43legacy_gpio_init(struct b43legacy_wldev *dev)
 		return 0;
 	ssb_write32(gpiodev, B43legacy_GPIO_CONTROL,
 		    (ssb_read32(gpiodev, B43legacy_GPIO_CONTROL)
-		     & mask) | set);
+		     & ~mask) | set);
 
 	return 0;
 }
@@ -2053,8 +2055,6 @@ static void b43legacy_adjust_opmode(struct b43legacy_wldev *dev)
 		ctl |= B43legacy_MACCTL_KEEP_BAD;
 	if (wl->filter_flags & FIF_PLCPFAIL)
 		ctl |= B43legacy_MACCTL_KEEP_BADPLCP;
-	if (wl->filter_flags & FIF_PROMISC_IN_BSS)
-		ctl |= B43legacy_MACCTL_PROMISC;
 	if (wl->filter_flags & FIF_BCN_PRBRESP_PROMISC)
 		ctl |= B43legacy_MACCTL_BEACPROMISC;
 
@@ -2515,6 +2515,7 @@ static void b43legacy_tx_work(struct work_struct *work)
 }
 
 static void b43legacy_op_tx(struct ieee80211_hw *hw,
+			    struct ieee80211_tx_control *control,
 			    struct sk_buff *skb)
 {
 	struct b43legacy_wl *wl = hw_to_b43legacy_wl(hw);
@@ -2656,7 +2657,7 @@ static int b43legacy_switch_phymode(struct b43legacy_wl *wl,
 	if (prev_status >= B43legacy_STAT_STARTED) {
 		err = b43legacy_wireless_core_start(up_dev);
 		if (err) {
-			b43legacyerr(wl, "Fatal: Coult not start device for "
+			b43legacyerr(wl, "Fatal: Could not start device for "
 			       "newly selected %s-PHY mode\n",
 			       phymode_to_string(new_mode));
 			b43legacy_wireless_core_exit(up_dev);
@@ -2717,7 +2718,7 @@ static int b43legacy_op_dev_config(struct ieee80211_hw *hw,
 		goto out_unlock_mutex;
 
 	/* Switch the PHY mode (if necessary). */
-	switch (conf->channel->band) {
+	switch (conf->chandef.chan->band) {
 	case IEEE80211_BAND_2GHZ:
 		if (phy->type == B43legacy_PHYTYPE_B)
 			new_phymode = B43legacy_PHYMODE_B;
@@ -2745,8 +2746,9 @@ static int b43legacy_op_dev_config(struct ieee80211_hw *hw,
 
 	/* Switch to the requested channel.
 	 * The firmware takes care of races with the TX handler. */
-	if (conf->channel->hw_value != phy->channel)
-		b43legacy_radio_selectchannel(dev, conf->channel->hw_value, 0);
+	if (conf->chandef.chan->hw_value != phy->channel)
+		b43legacy_radio_selectchannel(dev, conf->chandef.chan->hw_value,
+					      0);
 
 	dev->wl->radiotap_enabled = !!(conf->flags & IEEE80211_CONF_MONITOR);
 
@@ -2862,7 +2864,7 @@ static void b43legacy_op_bss_info_changed(struct ieee80211_hw *hw,
 		if (conf->bssid)
 			memcpy(wl->bssid, conf->bssid, ETH_ALEN);
 		else
-			memset(wl->bssid, 0, ETH_ALEN);
+			eth_zero_addr(wl->bssid);
 	}
 
 	if (b43legacy_status(dev) >= B43legacy_STAT_INITIALIZED) {
@@ -2918,16 +2920,14 @@ static void b43legacy_op_configure_filter(struct ieee80211_hw *hw,
 	}
 
 	spin_lock_irqsave(&wl->irq_lock, flags);
-	*fflags &= FIF_PROMISC_IN_BSS |
-		  FIF_ALLMULTI |
+	*fflags &= FIF_ALLMULTI |
 		  FIF_FCSFAIL |
 		  FIF_PLCPFAIL |
 		  FIF_CONTROL |
 		  FIF_OTHER_BSS |
 		  FIF_BCN_PRBRESP_PROMISC;
 
-	changed &= FIF_PROMISC_IN_BSS |
-		   FIF_ALLMULTI |
+	changed &= FIF_ALLMULTI |
 		   FIF_FCSFAIL |
 		   FIF_PLCPFAIL |
 		   FIF_CONTROL |
@@ -3466,7 +3466,7 @@ static void b43legacy_op_remove_interface(struct ieee80211_hw *hw,
 
 	spin_lock_irqsave(&wl->irq_lock, flags);
 	b43legacy_adjust_opmode(dev);
-	memset(wl->mac_addr, 0, ETH_ALEN);
+	eth_zero_addr(wl->mac_addr);
 	b43legacy_upload_card_macaddress(dev);
 	spin_unlock_irqrestore(&wl->irq_lock, flags);
 
@@ -3483,8 +3483,8 @@ static int b43legacy_op_start(struct ieee80211_hw *hw)
 	/* Kill all old instance specific information to make sure
 	 * the card won't use it in the short timeframe between start
 	 * and mac80211 reconfiguring it. */
-	memset(wl->bssid, 0, ETH_ALEN);
-	memset(wl->mac_addr, 0, ETH_ALEN);
+	eth_zero_addr(wl->bssid);
+	eth_zero_addr(wl->mac_addr);
 	wl->filter_flags = 0;
 	wl->beacon0_uploaded = false;
 	wl->beacon1_uploaded = false;
@@ -3555,7 +3555,7 @@ static int b43legacy_op_get_survey(struct ieee80211_hw *hw, int idx,
 	if (idx != 0)
 		return -ENOENT;
 
-	survey->channel = conf->channel;
+	survey->channel = conf->chandef.chan;
 	survey->filled = SURVEY_INFO_NOISE_DBM;
 	survey->noise = dev->stats.link_noise;
 
@@ -3802,7 +3802,7 @@ static void b43legacy_sprom_fixup(struct ssb_bus *bus)
 	/* boardflags workarounds */
 	if (bus->boardinfo.vendor == PCI_VENDOR_ID_APPLE &&
 	    bus->boardinfo.type == 0x4E &&
-	    bus->boardinfo.rev > 0x40)
+	    bus->sprom.board_rev > 0x40)
 		bus->sprom.boardflags_lo |= B43legacy_BFL_PACTRL;
 }
 
@@ -3832,8 +3832,9 @@ static int b43legacy_wireless_init(struct ssb_device *dev)
 	}
 
 	/* fill hw info */
-	hw->flags = IEEE80211_HW_RX_INCLUDES_FCS |
-		    IEEE80211_HW_SIGNAL_DBM;
+	ieee80211_hw_set(hw, RX_INCLUDES_FCS);
+	ieee80211_hw_set(hw, SIGNAL_DBM);
+
 	hw->wiphy->interface_modes =
 		BIT(NL80211_IFTYPE_AP) |
 		BIT(NL80211_IFTYPE_STATION) |

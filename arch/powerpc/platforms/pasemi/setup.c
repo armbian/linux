@@ -76,7 +76,7 @@ static void pas_restart(char *cmd)
 static arch_spinlock_t timebase_lock;
 static unsigned long timebase;
 
-static void __devinit pas_give_timebase(void)
+static void pas_give_timebase(void)
 {
 	unsigned long flags;
 
@@ -94,7 +94,7 @@ static void __devinit pas_give_timebase(void)
 	local_irq_restore(flags);
 }
 
-static void __devinit pas_take_timebase(void)
+static void pas_take_timebase(void)
 {
 	while (!timebase)
 		smp_rmb();
@@ -393,7 +393,7 @@ static inline void pasemi_pcmcia_init(void)
 #endif
 
 
-static struct of_device_id pasemi_bus_ids[] = {
+static const struct of_device_id pasemi_bus_ids[] = {
 	/* Unfortunately needed for legacy firmwares */
 	{ .type = "localbus", },
 	{ .type = "sdc", },

@@ -10,7 +10,7 @@
  *
  * Hairy, the userspace application uses a different argument passing
  * convention than the kernel, so we have to translate things from o32
- * to ABI64 calling convention.  64-bit syscalls are also processed
+ * to ABI64 calling convention.	 64-bit syscalls are also processed
  * here for now.
  */
 #include <linux/errno.h>
@@ -24,7 +24,7 @@
 #include <asm/unistd.h>
 #include <asm/sysmips.h>
 
-	.align  5
+	.align	5
 NESTED(handle_sys, PT_SIZE, sp)
 	.set	noat
 	SAVE_SOME
@@ -53,7 +53,7 @@ NESTED(handle_sys, PT_SIZE, sp)
 	sll	a3, a3, 0
 
 	dsll	t0, v0, 3		# offset into table
-	ld	t2, (sys_call_table - (__NR_O32_Linux * 8))(t0)
+	ld	t2, (sys32_call_table - (__NR_O32_Linux * 8))(t0)
 
 	sd	a3, PT_R26(sp)		# save a3 for syscall restarting
 
@@ -69,23 +69,25 @@ NESTED(handle_sys, PT_SIZE, sp)
 	daddu	t1, t0, 32
 	bltz	t1, bad_stack
 
-1:	lw	a4, 16(t0)		# argument #5 from usp
-2:	lw	a5, 20(t0)		# argument #6 from usp
-3:	lw	a6, 24(t0)		# argument #7 from usp
-4:	lw	a7, 28(t0)		# argument #8 from usp (for indirect syscalls)
+load_a4: lw	a4, 16(t0)		# argument #5 from usp
+load_a5: lw	a5, 20(t0)		# argument #6 from usp
+load_a6: lw	a6, 24(t0)		# argument #7 from usp
+load_a7: lw	a7, 28(t0)		# argument #8 from usp
+loads_done:
 
 	.section __ex_table,"a"
-	PTR	1b, bad_stack
-	PTR	2b, bad_stack
-	PTR	3b, bad_stack
-	PTR	4b, bad_stack
+	PTR	load_a4, bad_stack_a4
+	PTR	load_a5, bad_stack_a5
+	PTR	load_a6, bad_stack_a6
+	PTR	load_a7, bad_stack_a7
 	.previous
 
-	li	t1, _TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT
+	li	t1, _TIF_WORK_SYSCALL_ENTRY
 	LONG_L	t0, TI_FLAGS($28)	# syscall tracing enabled?
 	and	t0, t1, t0
 	bnez	t0, trace_a_syscall
 
+syscall_common:
 	jalr	t2			# Do The Real Thing (TM)
 
 	li	t0, -EMAXERRNO - 1	# error?
@@ -99,18 +101,7 @@ NESTED(handle_sys, PT_SIZE, sp)
 1:	sd	v0, PT_R2(sp)		# result
 
 o32_syscall_exit:
-	local_irq_disable		# make need_resched and
-					# signals dont change between
-					# sampling and return
-	LONG_L	a2, TI_FLAGS($28)
-	li	t0, _TIF_ALLWORK_MASK
-	and	t0, a2, t0
-	bnez	t0, o32_syscall_exit_work
-
-	j	restore_partial
-
-o32_syscall_exit_work:
-	j	syscall_exit_work_partial
+	j	syscall_exit_partial
 
 /* ------------------------------------------------------------------------ */
 
@@ -123,9 +114,26 @@ trace_a_syscall:
 
 	move	s0, t2			# Save syscall pointer
 	move	a0, sp
-	jal	syscall_trace_enter
+	/*
+	 * absolute syscall number is in v0 unless we called syscall(__NR_###)
+	 * where the real syscall number is in a0
+	 * note: NR_syscall is the first O32 syscall but the macro is
+	 * only defined when compiling with -mabi=32 (CONFIG_32BIT)
+	 * therefore __NR_O32_Linux is used (4000)
+	 */
+	.set	push
+	.set	reorder
+	subu	t1, v0,  __NR_O32_Linux
+	move	a1, v0
+	bnez	t1, 1f /* __NR_syscall at offset 0 */
+	lw	a1, PT_R4(sp) /* Arg1 for __NR_syscall case */
+	.set	pop
 
-	move	t0, s0
+1:	jal	syscall_trace_enter
+
+	bltz	v0, 1f			# seccomp failed? Skip syscall
+
+	move	t2, s0
 	RESTORE_STATIC
 	ld	a0, PT_R4(sp)		# Restore argument registers
 	ld	a1, PT_R5(sp)
@@ -135,19 +143,9 @@ trace_a_syscall:
 	ld	a5, PT_R9(sp)
 	ld	a6, PT_R10(sp)
 	ld	a7, PT_R11(sp)		# For indirect syscalls
-	jalr	t0
+	j	syscall_common
 
-	li	t0, -EMAXERRNO - 1	# error?
-	sltu	t0, t0, v0
-	sd	t0, PT_R7(sp)		# set error flag
-	beqz	t0, 1f
-
-	ld	t1, PT_R2(sp)		# syscall number
-	dnegu	v0			# error
-	sd	t1, PT_R0(sp)		# save it for syscall restarting
-1:	sd	v0, PT_R2(sp)		# result
-
-	j	syscall_exit
+1:	j	syscall_exit
 
 /* ------------------------------------------------------------------------ */
 
@@ -160,6 +158,22 @@ bad_stack:
 	li	t0, 1			# set error flag
 	sd	t0, PT_R7(sp)
 	j	o32_syscall_exit
+
+bad_stack_a4:
+	li	a4, 0
+	b	load_a5
+
+bad_stack_a5:
+	li	a5, 0
+	b	load_a6
+
+bad_stack_a6:
+	li	a6, 0
+	b	load_a7
+
+bad_stack_a7:
+	li	a7, 0
+	b	loads_done
 
 not_o32_scall:
 	/*
@@ -179,7 +193,8 @@ LEAF(sys32_syscall)
 	beqz	t0, einval		# do not recurse
 	dsll	t1, t0, 3
 	beqz	v0, einval
-	ld	t2, sys_call_table(t1)		# syscall routine
+	ld	t2, sys32_call_table(t1)		# syscall routine
+	sd	a0, PT_R2(sp)		# call routine directly on restart
 
 	move	a0, a1			# shift argument registers
 	move	a1, a2
@@ -196,16 +211,16 @@ LEAF(sys32_syscall)
 	jr	t2
 	/* Unreached */
 
-einval:	li	v0, -ENOSYS
+einval: li	v0, -ENOSYS
 	jr	ra
 	END(sys32_syscall)
 
 	.align	3
-	.type	sys_call_table,@object
-sys_call_table:
+	.type	sys32_call_table,@object
+EXPORT(sys32_call_table)
 	PTR	sys32_syscall			/* 4000 */
 	PTR	sys_exit
-	PTR	sys_fork
+	PTR	__sys_fork
 	PTR	sys_read
 	PTR	sys_write
 	PTR	compat_sys_open			/* 4005 */
@@ -214,7 +229,7 @@ sys_call_table:
 	PTR	sys_creat
 	PTR	sys_link
 	PTR	sys_unlink			/* 4010 */
-	PTR	sys32_execve
+	PTR	compat_sys_execve
 	PTR	sys_chdir
 	PTR	compat_sys_time
 	PTR	sys_mknod
@@ -295,8 +310,8 @@ sys_call_table:
 	PTR	compat_sys_old_readdir
 	PTR	sys_mips_mmap			/* 4090 */
 	PTR	sys_munmap
-	PTR	sys_truncate
-	PTR	sys_ftruncate
+	PTR	compat_sys_truncate
+	PTR	compat_sys_ftruncate
 	PTR	sys_fchmod
 	PTR	sys_fchown			/* 4095 */
 	PTR	sys_getpriority
@@ -320,10 +335,10 @@ sys_call_table:
 	PTR	compat_sys_wait4
 	PTR	sys_swapoff			/* 4115 */
 	PTR	compat_sys_sysinfo
-	PTR	sys_32_ipc
+	PTR	compat_sys_ipc
 	PTR	sys_fsync
 	PTR	sys32_sigreturn
-	PTR	sys32_clone			/* 4120 */
+	PTR	__sys_clone			/* 4120 */
 	PTR	sys_setdomainname
 	PTR	sys_newuname
 	PTR	sys_ni_syscall			/* sys_modify_ldt */
@@ -340,7 +355,7 @@ sys_call_table:
 	PTR	sys_bdflush
 	PTR	sys_sysfs			/* 4135 */
 	PTR	sys_32_personality
-	PTR	sys_ni_syscall	 		/* for afs_syscall */
+	PTR	sys_ni_syscall			/* for afs_syscall */
 	PTR	sys_setfsuid
 	PTR	sys_setfsgid
 	PTR	sys_32_llseek			/* 4140 */
@@ -352,7 +367,7 @@ sys_call_table:
 	PTR	compat_sys_writev
 	PTR	sys_cacheflush
 	PTR	sys_cachectl
-	PTR	sys_sysmips
+	PTR	__sys_sysmips
 	PTR	sys_ni_syscall			/* 4150 */
 	PTR	sys_getsid
 	PTR	sys_fdatasync
@@ -363,12 +378,12 @@ sys_call_table:
 	PTR	sys_munlockall
 	PTR	sys_sched_setparam
 	PTR	sys_sched_getparam
-	PTR	sys_sched_setscheduler 		/* 4160 */
+	PTR	sys_sched_setscheduler		/* 4160 */
 	PTR	sys_sched_getscheduler
 	PTR	sys_sched_yield
 	PTR	sys_sched_get_priority_max
 	PTR	sys_sched_get_priority_min
-	PTR	sys_32_sched_rr_get_interval 	/* 4165 */
+	PTR	compat_sys_sched_rr_get_interval	/* 4165 */
 	PTR	compat_sys_nanosleep
 	PTR	sys_mremap
 	PTR	sys_accept
@@ -376,7 +391,7 @@ sys_call_table:
 	PTR	sys_connect			/* 4170 */
 	PTR	sys_getpeername
 	PTR	sys_getsockname
-	PTR	sys_getsockopt
+	PTR	compat_sys_getsockopt
 	PTR	sys_listen
 	PTR	compat_sys_recv			/* 4175 */
 	PTR	compat_sys_recvfrom
@@ -397,20 +412,20 @@ sys_call_table:
 	PTR	sys_getresgid
 	PTR	sys_prctl
 	PTR	sys32_rt_sigreturn
-	PTR	sys_32_rt_sigaction
-	PTR	sys_32_rt_sigprocmask 		/* 4195 */
-	PTR	sys_32_rt_sigpending
+	PTR	compat_sys_rt_sigaction
+	PTR	compat_sys_rt_sigprocmask	/* 4195 */
+	PTR	compat_sys_rt_sigpending
 	PTR	compat_sys_rt_sigtimedwait
-	PTR	sys_32_rt_sigqueueinfo
-	PTR	sys32_rt_sigsuspend
+	PTR	compat_sys_rt_sigqueueinfo
+	PTR	compat_sys_rt_sigsuspend
 	PTR	sys_32_pread			/* 4200 */
 	PTR	sys_32_pwrite
 	PTR	sys_chown
 	PTR	sys_getcwd
 	PTR	sys_capget
 	PTR	sys_capset			/* 4205 */
-	PTR	sys32_sigaltstack
-	PTR	sys_32_sendfile
+	PTR	compat_sys_sigaltstack
+	PTR	compat_sys_sendfile
 	PTR	sys_ni_syscall
 	PTR	sys_ni_syscall
 	PTR	sys_mips_mmap2			/* 4210 */
@@ -441,7 +456,7 @@ sys_call_table:
 	PTR	sys_fremovexattr		/* 4235 */
 	PTR	sys_tkill
 	PTR	sys_sendfile64
-	PTR	sys_32_futex
+	PTR	compat_sys_futex
 	PTR	compat_sys_sched_setaffinity
 	PTR	compat_sys_sched_getaffinity	/* 4240 */
 	PTR	compat_sys_io_setup
@@ -450,7 +465,7 @@ sys_call_table:
 	PTR	compat_sys_io_submit
 	PTR	sys_io_cancel			/* 4245 */
 	PTR	sys_exit_group
-	PTR	sys32_lookup_dcookie
+	PTR	compat_sys_lookup_dcookie
 	PTR	sys_epoll_create
 	PTR	sys_epoll_ctl
 	PTR	sys_epoll_wait			/* 4250 */
@@ -471,9 +486,9 @@ sys_call_table:
 	PTR	compat_sys_clock_nanosleep	/* 4265 */
 	PTR	sys_tgkill
 	PTR	compat_sys_utimes
-	PTR	sys_ni_syscall			/* sys_mbind */
-	PTR	sys_ni_syscall			/* sys_get_mempolicy */
-	PTR	sys_ni_syscall			/* 4270 sys_set_mempolicy */
+	PTR	compat_sys_mbind
+	PTR	compat_sys_get_mempolicy
+	PTR	compat_sys_set_mempolicy	/* 4270 */
 	PTR	compat_sys_mq_open
 	PTR	sys_mq_unlink
 	PTR	compat_sys_mq_timedsend
@@ -481,16 +496,16 @@ sys_call_table:
 	PTR	compat_sys_mq_notify		/* 4275 */
 	PTR	compat_sys_mq_getsetattr
 	PTR	sys_ni_syscall			/* sys_vserver */
-	PTR	sys_32_waitid
+	PTR	compat_sys_waitid
 	PTR	sys_ni_syscall			/* available, was setaltroot */
 	PTR	sys_add_key			/* 4280 */
 	PTR	sys_request_key
-	PTR	sys_keyctl
+	PTR	compat_sys_keyctl
 	PTR	sys_set_thread_area
 	PTR	sys_inotify_init
 	PTR	sys_inotify_add_watch		/* 4285 */
 	PTR	sys_inotify_rm_watch
-	PTR	sys_migrate_pages
+	PTR	compat_sys_migrate_pages
 	PTR	compat_sys_openat
 	PTR	sys_mkdirat
 	PTR	sys_mknodat			/* 4290 */
@@ -540,7 +555,7 @@ sys_call_table:
 	PTR	sys_accept4
 	PTR	compat_sys_recvmmsg		/* 4335 */
 	PTR	sys_fanotify_init
-	PTR	sys_32_fanotify_mark
+	PTR	compat_sys_fanotify_mark
 	PTR	sys_prlimit64
 	PTR	sys_name_to_handle_at
 	PTR	compat_sys_open_by_handle_at	/* 4340 */
@@ -550,4 +565,17 @@ sys_call_table:
 	PTR	sys_setns
 	PTR	compat_sys_process_vm_readv	/* 4345 */
 	PTR	compat_sys_process_vm_writev
-	.size	sys_call_table,.-sys_call_table
+	PTR	sys_kcmp
+	PTR	sys_finit_module
+	PTR	sys_sched_setattr
+	PTR	sys_sched_getattr		/* 4350 */
+	PTR	sys_renameat2
+	PTR	sys_seccomp
+	PTR	sys_getrandom
+	PTR	sys_memfd_create
+	PTR	sys_bpf				/* 4355 */
+	PTR	compat_sys_execveat
+	PTR	sys_userfaultfd
+	PTR	sys_membarrier
+	PTR	sys_mlock2
+	.size	sys32_call_table,.-sys32_call_table

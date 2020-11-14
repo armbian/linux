@@ -1,10 +1,8 @@
 # x86 Opcode Maps
 #
 # This is (mostly) based on following documentations.
-# - Intel(R) 64 and IA-32 Architectures Software Developer's Manual Vol.2
-#   (#325383-040US, October 2011)
-# - Intel(R) Advanced Vector Extensions Programming Reference
-#   (#319433-011,JUNE 2011).
+# - Intel(R) 64 and IA-32 Architectures Software Developer's Manual Vol.2C
+#   (#326018-047US, June 2013)
 #
 #<Opcode maps>
 # Table: table-name
@@ -28,7 +26,8 @@
 #  - (66): the last prefix is 0x66
 #  - (F3): the last prefix is 0xF3
 #  - (F2): the last prefix is 0xF2
-#
+#  - (!F3) : the last prefix is not 0xF3 (including non-last prefix case)
+#  - (66&F2): Both 0x66 and 0xF2 prefixes are specified.
 
 Table: one byte opcode
 Referrer:
@@ -246,8 +245,8 @@ c2: RETN Iw (f64)
 c3: RETN
 c4: LES Gz,Mp (i64) | VEX+2byte (Prefix)
 c5: LDS Gz,Mp (i64) | VEX+1byte (Prefix)
-c6: Grp11 Eb,Ib (1A)
-c7: Grp11 Ev,Iz (1A)
+c6: Grp11A Eb,Ib (1A)
+c7: Grp11B Ev,Iz (1A)
 c8: ENTER Iw,Ib
 c9: LEAVE (d64)
 ca: RETF Iw
@@ -274,6 +273,9 @@ dd: ESC
 de: ESC
 df: ESC
 # 0xe0 - 0xef
+# Note: "forced64" is Intel CPU behavior: they ignore 0x66 prefix
+# in 64-bit mode. AMD CPUs accept 0x66 prefix, it causes RIP truncation
+# to 16 bits. In 32-bit mode, 0x66 is accepted by both Intel and AMD.
 e0: LOOPNE/LOOPNZ Jb (f64)
 e1: LOOPE/LOOPZ Jb (f64)
 e2: LOOP Jb (f64)
@@ -282,6 +284,10 @@ e4: IN AL,Ib
 e5: IN eAX,Ib
 e6: OUT Ib,AL
 e7: OUT Ib,eAX
+# With 0x66 prefix in 64-bit mode, for AMD CPUs immediate offset
+# in "near" jumps and calls is 16-bit. For CALL,
+# push of return address is 16-bit wide, RSP is decremented by 2
+# but is not truncated to 16 bits, unlike RIP.
 e8: CALL Jz (f64)
 e9: JMP-near Jz (f64)
 ea: JMP-far Ap (i64)
@@ -293,8 +299,8 @@ ef: OUT DX,eAX
 # 0xf0 - 0xff
 f0: LOCK (Prefix)
 f1:
-f2: REPNE (Prefix)
-f3: REP/REPE (Prefix)
+f2: REPNE (Prefix) | XACQUIRE (Prefix)
+f3: REP/REPE (Prefix) | XRELEASE (Prefix)
 f4: HLT
 f5: CMC
 f6: Grp3_1 Eb (1A)
@@ -326,7 +332,8 @@ AVXcode: 1
 0a:
 0b: UD2 (1B)
 0c:
-0d: NOP Ev | GrpP
+# AMD's prefetch group. Intel supports prefetchw(/1) only.
+0d: GrpP
 0e: FEMMS
 # 3DNow! uses the last imm byte as opcode extension.
 0f: 3DNow! Pq,Qq,Ib
@@ -346,8 +353,12 @@ AVXcode: 1
 17: vmovhps Mq,Vq (v1) | vmovhpd Mq,Vq (66),(v1)
 18: Grp16 (1A)
 19:
-1a:
-1b:
+# Intel SDM opcode map does not list MPX instructions. For now using Gv for
+# bnd registers and Ev for everything else is OK because the instruction
+# decoder does not use the information except as an indication that there is
+# a ModR/M byte.
+1a: BNDCL Gv,Ev (F3) | BNDCU Gv,Ev (F2) | BNDMOV Gv,Ev (66) | BNDLDX Gv,Ev
+1b: BNDCN Gv,Ev (F2) | BNDMOV Ev,Gv (66) | BNDMK Gv,Ev (F3) | BNDSTX Ev,Gv
 1c:
 1d:
 1e:
@@ -456,6 +467,7 @@ AVXcode: 1
 7e: movd/q Ey,Pd | vmovd/q Ey,Vy (66),(v1) | vmovq Vq,Wq (F3),(v1)
 7f: movq Qq,Pq | vmovdqa Wx,Vx (66) | vmovdqu Wx,Vx (F3)
 # 0x0f 0x80-0x8f
+# Note: "forced64" is Intel CPU behavior (see comment about CALL insn).
 80: JO Jz (f64)
 81: JNO Jz (f64)
 82: JB/JC/JNAE Jz (f64)
@@ -515,12 +527,12 @@ b4: LFS Gv,Mp
 b5: LGS Gv,Mp
 b6: MOVZX Gv,Eb
 b7: MOVZX Gv,Ew
-b8: JMPE | POPCNT Gv,Ev (F3)
+b8: JMPE (!F3) | POPCNT Gv,Ev (F3)
 b9: Grp10 (1A)
 ba: Grp8 Ev,Ib (1A)
 bb: BTC Ev,Gv
-bc: BSF Gv,Ev | TZCNT Gv,Ev (F3)
-bd: BSR Gv,Ev | LZCNT Gv,Ev (F3)
+bc: BSF Gv,Ev (!F3) | TZCNT Gv,Ev (F3)
+bd: BSR Gv,Ev (!F3) | LZCNT Gv,Ev (F3)
 be: MOVSX Gv,Eb
 bf: MOVSX Gv,Ew
 # 0x0f 0xc0-0xcf
@@ -724,17 +736,23 @@ bd: vfnmadd231ss/d Vx,Hx,Wx (66),(v),(v1)
 be: vfnmsub231ps/d Vx,Hx,Wx (66),(v)
 bf: vfnmsub231ss/d Vx,Hx,Wx (66),(v),(v1)
 # 0x0f 0x38 0xc0-0xff
+c8: sha1nexte Vdq,Wdq
+c9: sha1msg1 Vdq,Wdq
+ca: sha1msg2 Vdq,Wdq
+cb: sha256rnds2 Vdq,Wdq
+cc: sha256msg1 Vdq,Wdq
+cd: sha256msg2 Vdq,Wdq
 db: VAESIMC Vdq,Wdq (66),(v1)
 dc: VAESENC Vdq,Hdq,Wdq (66),(v1)
 dd: VAESENCLAST Vdq,Hdq,Wdq (66),(v1)
 de: VAESDEC Vdq,Hdq,Wdq (66),(v1)
 df: VAESDECLAST Vdq,Hdq,Wdq (66),(v1)
-f0: MOVBE Gy,My | MOVBE Gw,Mw (66) | CRC32 Gd,Eb (F2)
-f1: MOVBE My,Gy | MOVBE Mw,Gw (66) | CRC32 Gd,Ey (F2)
+f0: MOVBE Gy,My | MOVBE Gw,Mw (66) | CRC32 Gd,Eb (F2) | CRC32 Gd,Eb (66&F2)
+f1: MOVBE My,Gy | MOVBE Mw,Gw (66) | CRC32 Gd,Ey (F2) | CRC32 Gd,Ew (66&F2)
 f2: ANDN Gy,By,Ey (v)
 f3: Grp17 (1A)
 f5: BZHI Gy,Ey,By (v) | PEXT Gy,By,Ey (F3),(v) | PDEP Gy,By,Ey (F2),(v)
-f6: MULX By,Gy,rDX,Ey (F2),(v)
+f6: ADCX Gy,Ey (66) | ADOX Gy,Ey (F3) | MULX By,Gy,rDX,Ey (F2),(v)
 f7: BEXTR Gy,Ey,By (v) | SHLX Gy,Ey,By (66),(v) | SARX Gy,Ey,By (F3),(v) | SHRX Gy,Ey,By (F2),(v)
 EndTable
 
@@ -782,6 +800,7 @@ AVXcode: 3
 61: vpcmpestri Vdq,Wdq,Ib (66),(v1)
 62: vpcmpistrm Vdq,Wdq,Ib (66),(v1)
 63: vpcmpistri Vdq,Wdq,Ib (66),(v1)
+cc: sha1rnds4 Vdq,Wdq,Ib
 df: VAESKEYGEN Vdq,Wdq,Ib (66),(v1)
 f0: RORX Gy,Ey,Ib (F2),(v)
 EndTable
@@ -814,7 +833,7 @@ EndTable
 
 GrpTable: Grp3_1
 0: TEST Eb,Ib
-1:
+1: TEST Eb,Ib
 2: NOT Eb
 3: NEG Eb
 4: MUL AL,Eb
@@ -842,6 +861,7 @@ EndTable
 GrpTable: Grp5
 0: INC Ev
 1: DEC Ev
+# Note: "forced64" is Intel CPU behavior (see comment about CALL insn).
 2: CALLN Ev (f64)
 3: CALLF Ep
 4: JMPN Ev (f64)
@@ -861,11 +881,11 @@ EndTable
 
 GrpTable: Grp7
 0: SGDT Ms | VMCALL (001),(11B) | VMLAUNCH (010),(11B) | VMRESUME (011),(11B) | VMXOFF (100),(11B)
-1: SIDT Ms | MONITOR (000),(11B) | MWAIT (001)
-2: LGDT Ms | XGETBV (000),(11B) | XSETBV (001),(11B) | VMFUNC (100),(11B)
+1: SIDT Ms | MONITOR (000),(11B) | MWAIT (001),(11B) | CLAC (010),(11B) | STAC (011),(11B)
+2: LGDT Ms | XGETBV (000),(11B) | XSETBV (001),(11B) | VMFUNC (100),(11B) | XEND (101)(11B) | XTEST (110)(11B)
 3: LIDT Ms
 4: SMSW Mw/Rv
-5:
+5: rdpkru (110),(11B) | wrpkru (111),(11B)
 6: LMSW Ew
 7: INVLPG Mb | SWAPGS (o64),(000),(11B) | RDTSCP (001),(11B)
 EndTable
@@ -879,16 +899,25 @@ EndTable
 
 GrpTable: Grp9
 1: CMPXCHG8B/16B Mq/Mdq
+3: xrstors
+4: xsavec
+5: xsaves
 6: VMPTRLD Mq | VMCLEAR Mq (66) | VMXON Mq (F3) | RDRAND Rv (11B)
-7: VMPTRST Mq | VMPTRST Mq (F3)
+7: VMPTRST Mq | VMPTRST Mq (F3) | RDSEED Rv (11B)
 EndTable
 
 GrpTable: Grp10
 EndTable
 
-GrpTable: Grp11
-# Note: the operands are given by group opcode
-0: MOV
+# Grp11A and Grp11B are expressed as Grp11 in Intel SDM
+GrpTable: Grp11A
+0: MOV Eb,Ib
+7: XABORT Ib (000),(11B)
+EndTable
+
+GrpTable: Grp11B
+0: MOV Eb,Iz
+7: XBEGIN Jz (000),(11B)
 EndTable
 
 GrpTable: Grp12
@@ -917,8 +946,8 @@ GrpTable: Grp15
 3: vstmxcsr Md (v1) | WRGSBASE Ry (F3),(11B)
 4: XSAVE
 5: XRSTOR | lfence (11B)
-6: XSAVEOPT | mfence (11B)
-7: clflush | sfence (11B)
+6: XSAVEOPT | clwb (66) | mfence (11B)
+7: clflush | clflushopt (66) | sfence (11B) | pcommit (66),(11B)
 EndTable
 
 GrpTable: Grp16

@@ -14,6 +14,7 @@
 #include <linux/kernel_stat.h>
 #include <linux/radix-tree.h>
 #include <linux/bitmap.h>
+#include <linux/irqdomain.h>
 
 #include "internals.h"
 
@@ -23,40 +24,10 @@
 static struct lock_class_key irq_desc_lock_class;
 
 #if defined(CONFIG_SMP)
-static int __init irq_affinity_setup(char *str)
-{
-	zalloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
-	cpulist_parse(str, irq_default_affinity);
-	/*
-	 * Set at least the boot cpu. We don't want to end up with
-	 * bugreports caused by random comandline masks
-	 */
-	cpumask_set_cpu(smp_processor_id(), irq_default_affinity);
-	return 1;
-}
-__setup("irqaffinity=", irq_affinity_setup);
-
-extern struct cpumask hmp_slow_cpu_mask;
-extern struct cpumask hmp_fast_cpu_mask;
 static void __init init_irq_default_affinity(void)
 {
-#ifdef CONFIG_CPUMASK_OFFSTACK
-	if (!irq_default_affinity)
-		zalloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
-#endif
-#ifdef CONFIG_SCHED_HMP
-	if (!cpumask_empty(&hmp_slow_cpu_mask)) {
-#if defined(CONFIG_ARCH_SUN9I) || defined(CONFIG_ARCH_SUN8IW6)
-	if(cpumask_test_cpu(0,&hmp_fast_cpu_mask))
-		cpumask_copy(irq_default_affinity, &hmp_fast_cpu_mask);
-#else
-	        cpumask_copy(irq_default_affinity, &hmp_slow_cpu_mask);
-#endif
-		return;
-	}
-#endif
-	if (cpumask_empty(irq_default_affinity))
-		cpumask_setall(irq_default_affinity);
+	alloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
+	cpumask_setall(irq_default_affinity);
 }
 #else
 static void __init init_irq_default_affinity(void)
@@ -67,12 +38,13 @@ static void __init init_irq_default_affinity(void)
 #ifdef CONFIG_SMP
 static int alloc_masks(struct irq_desc *desc, gfp_t gfp, int node)
 {
-	if (!zalloc_cpumask_var_node(&desc->irq_data.affinity, gfp, node))
+	if (!zalloc_cpumask_var_node(&desc->irq_common_data.affinity,
+				     gfp, node))
 		return -ENOMEM;
 
 #ifdef CONFIG_GENERIC_PENDING_IRQ
 	if (!zalloc_cpumask_var_node(&desc->pending_mask, gfp, node)) {
-		free_cpumask_var(desc->irq_data.affinity);
+		free_cpumask_var(desc->irq_common_data.affinity);
 		return -ENOMEM;
 	}
 #endif
@@ -81,23 +53,19 @@ static int alloc_masks(struct irq_desc *desc, gfp_t gfp, int node)
 
 static void desc_smp_init(struct irq_desc *desc, int node)
 {
-	desc->irq_data.node = node;
-	cpumask_copy(desc->irq_data.affinity, irq_default_affinity);
+	cpumask_copy(desc->irq_common_data.affinity, irq_default_affinity);
 #ifdef CONFIG_GENERIC_PENDING_IRQ
 	cpumask_clear(desc->pending_mask);
 #endif
-}
-
-static inline int desc_node(struct irq_desc *desc)
-{
-	return desc->irq_data.node;
+#ifdef CONFIG_NUMA
+	desc->irq_common_data.node = node;
+#endif
 }
 
 #else
 static inline int
 alloc_masks(struct irq_desc *desc, gfp_t gfp, int node) { return 0; }
 static inline void desc_smp_init(struct irq_desc *desc, int node) { }
-static inline int desc_node(struct irq_desc *desc) { return 0; }
 #endif
 
 static void desc_set_defaults(unsigned int irq, struct irq_desc *desc, int node,
@@ -105,13 +73,16 @@ static void desc_set_defaults(unsigned int irq, struct irq_desc *desc, int node,
 {
 	int cpu;
 
+	desc->irq_common_data.handler_data = NULL;
+	desc->irq_common_data.msi_desc = NULL;
+
+	desc->irq_data.common = &desc->irq_common_data;
 	desc->irq_data.irq = irq;
 	desc->irq_data.chip = &no_irq_chip;
 	desc->irq_data.chip_data = NULL;
-	desc->irq_data.handler_data = NULL;
-	desc->irq_data.msi_desc = NULL;
 	irq_settings_clr_and_set(desc, ~0, _IRQ_DEFAULT_INIT_FLAGS);
 	irqd_set(&desc->irq_data, IRQD_IRQ_DISABLED);
+	irqd_set(&desc->irq_data, IRQD_IRQ_MASKED);
 	desc->handle_irq = handle_bad_irq;
 	desc->depth = 1;
 	desc->irq_count = 0;
@@ -155,7 +126,7 @@ static void free_masks(struct irq_desc *desc)
 #ifdef CONFIG_GENERIC_PENDING_IRQ
 	free_cpumask_var(desc->pending_mask);
 #endif
-	free_cpumask_var(desc->irq_data.affinity);
+	free_cpumask_var(desc->irq_common_data.affinity);
 }
 #else
 static inline void free_masks(struct irq_desc *desc) { }
@@ -324,7 +295,12 @@ EXPORT_SYMBOL(irq_to_desc);
 
 static void free_desc(unsigned int irq)
 {
-	dynamic_irq_cleanup(irq);
+	struct irq_desc *desc = irq_to_desc(irq);
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&desc->lock, flags);
+	desc_set_defaults(irq, desc, irq_desc_get_node(desc), NULL);
+	raw_spin_unlock_irqrestore(&desc->lock, flags);
 }
 
 static inline int alloc_descs(unsigned int start, unsigned int cnt, int node,
@@ -345,6 +321,20 @@ static int irq_expand_nr_irqs(unsigned int nr)
 	return -ENOMEM;
 }
 
+void irq_mark_irq(unsigned int irq)
+{
+	mutex_lock(&sparse_irq_lock);
+	bitmap_set(allocated_irqs, irq, 1);
+	mutex_unlock(&sparse_irq_lock);
+}
+
+#ifdef CONFIG_GENERIC_IRQ_LEGACY
+void irq_init_desc(unsigned int irq)
+{
+	free_desc(irq);
+}
+#endif
+
 #endif /* !CONFIG_SPARSE_IRQ */
 
 /**
@@ -358,10 +348,51 @@ int generic_handle_irq(unsigned int irq)
 
 	if (!desc)
 		return -EINVAL;
-	generic_handle_irq_desc(irq, desc);
+	generic_handle_irq_desc(desc);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(generic_handle_irq);
+
+#ifdef CONFIG_HANDLE_DOMAIN_IRQ
+/**
+ * __handle_domain_irq - Invoke the handler for a HW irq belonging to a domain
+ * @domain:	The domain where to perform the lookup
+ * @hwirq:	The HW irq number to convert to a logical one
+ * @lookup:	Whether to perform the domain lookup or not
+ * @regs:	Register file coming from the low-level handling code
+ *
+ * Returns:	0 on success, or -EINVAL if conversion has failed
+ */
+int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
+			bool lookup, struct pt_regs *regs)
+{
+	struct pt_regs *old_regs = set_irq_regs(regs);
+	unsigned int irq = hwirq;
+	int ret = 0;
+
+	irq_enter();
+
+#ifdef CONFIG_IRQ_DOMAIN
+	if (lookup)
+		irq = irq_find_mapping(domain, hwirq);
+#endif
+
+	/*
+	 * Some hardware gives randomly wrong interrupts.  Rather
+	 * than crashing, do something sensible.
+	 */
+	if (unlikely(!irq || irq >= nr_irqs)) {
+		ack_bad_irq(irq);
+		ret = -EINVAL;
+	} else {
+		generic_handle_irq(irq);
+	}
+
+	irq_exit();
+	set_irq_regs(old_regs);
+	return ret;
+}
+#endif
 
 /* Dynamic interrupt handling */
 
@@ -409,6 +440,13 @@ __irq_alloc_descs(int irq, unsigned int from, unsigned int cnt, int node,
 		if (from > irq)
 			return -EINVAL;
 		from = irq;
+	} else {
+		/*
+		 * For interrupts which are freely allocated the
+		 * architecture can force a lower bound to the @from
+		 * argument. x86 uses this to exclude the GSI space.
+		 */
+		from = arch_dynirq_lower_bound(from);
 	}
 
 	mutex_lock(&sparse_irq_lock);
@@ -435,30 +473,56 @@ err:
 }
 EXPORT_SYMBOL_GPL(__irq_alloc_descs);
 
+#ifdef CONFIG_GENERIC_IRQ_LEGACY_ALLOC_HWIRQ
 /**
- * irq_reserve_irqs - mark irqs allocated
- * @from:	mark from irq number
- * @cnt:	number of irqs to mark
+ * irq_alloc_hwirqs - Allocate an irq descriptor and initialize the hardware
+ * @cnt:	number of interrupts to allocate
+ * @node:	node on which to allocate
  *
- * Returns 0 on success or an appropriate error code
+ * Returns an interrupt number > 0 or 0, if the allocation fails.
  */
-int irq_reserve_irqs(unsigned int from, unsigned int cnt)
+unsigned int irq_alloc_hwirqs(int cnt, int node)
 {
-	unsigned int start;
-	int ret = 0;
+	int i, irq = __irq_alloc_descs(-1, 0, cnt, node, NULL);
 
-	if (!cnt || (from + cnt) > nr_irqs)
-		return -EINVAL;
+	if (irq < 0)
+		return 0;
 
-	mutex_lock(&sparse_irq_lock);
-	start = bitmap_find_next_zero_area(allocated_irqs, nr_irqs, from, cnt, 0);
-	if (start == from)
-		bitmap_set(allocated_irqs, start, cnt);
-	else
-		ret = -EEXIST;
-	mutex_unlock(&sparse_irq_lock);
-	return ret;
+	for (i = irq; cnt > 0; i++, cnt--) {
+		if (arch_setup_hwirq(i, node))
+			goto err;
+		irq_clear_status_flags(i, _IRQ_NOREQUEST);
+	}
+	return irq;
+
+err:
+	for (i--; i >= irq; i--) {
+		irq_set_status_flags(i, _IRQ_NOREQUEST | _IRQ_NOPROBE);
+		arch_teardown_hwirq(i);
+	}
+	irq_free_descs(irq, cnt);
+	return 0;
 }
+EXPORT_SYMBOL_GPL(irq_alloc_hwirqs);
+
+/**
+ * irq_free_hwirqs - Free irq descriptor and cleanup the hardware
+ * @from:	Free from irq number
+ * @cnt:	number of interrupts to free
+ *
+ */
+void irq_free_hwirqs(unsigned int from, int cnt)
+{
+	int i, j;
+
+	for (i = from, j = cnt; j > 0; i++, j--) {
+		irq_set_status_flags(i, _IRQ_NOREQUEST | _IRQ_NOPROBE);
+		arch_teardown_hwirq(i);
+	}
+	irq_free_descs(from, cnt);
+}
+EXPORT_SYMBOL_GPL(irq_free_hwirqs);
+#endif
 
 /**
  * irq_get_next_irq - get next allocated irq number
@@ -502,7 +566,8 @@ void __irq_put_desc_unlock(struct irq_desc *desc, unsigned long flags, bool bus)
 		chip_bus_sync_unlock(desc);
 }
 
-int irq_set_percpu_devid(unsigned int irq)
+int irq_set_percpu_devid_partition(unsigned int irq,
+				   const struct cpumask *affinity)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
 
@@ -517,22 +582,36 @@ int irq_set_percpu_devid(unsigned int irq)
 	if (!desc->percpu_enabled)
 		return -ENOMEM;
 
+	if (affinity)
+		desc->percpu_affinity = affinity;
+	else
+		desc->percpu_affinity = cpu_possible_mask;
+
 	irq_set_percpu_devid_flags(irq);
 	return 0;
 }
 
-/**
- * dynamic_irq_cleanup - cleanup a dynamically allocated irq
- * @irq:	irq number to initialize
- */
-void dynamic_irq_cleanup(unsigned int irq)
+int irq_set_percpu_devid(unsigned int irq)
+{
+	return irq_set_percpu_devid_partition(irq, NULL);
+}
+
+int irq_get_percpu_devid_partition(unsigned int irq, struct cpumask *affinity)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
-	unsigned long flags;
 
-	raw_spin_lock_irqsave(&desc->lock, flags);
-	desc_set_defaults(irq, desc, desc_node(desc), NULL);
-	raw_spin_unlock_irqrestore(&desc->lock, flags);
+	if (!desc || !desc->percpu_enabled)
+		return -EINVAL;
+
+	if (affinity)
+		cpumask_copy(affinity, desc->percpu_affinity);
+
+	return 0;
+}
+
+void kstat_incr_irq_this_cpu(unsigned int irq)
+{
+	kstat_incr_irqs_this_cpu(irq_to_desc(irq));
 }
 
 /**
@@ -564,7 +643,7 @@ unsigned int kstat_irqs(unsigned int irq)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
 	int cpu;
-	int sum = 0;
+	unsigned int sum = 0;
 
 	if (!desc || !desc->kstat_irqs)
 		return 0;
@@ -584,7 +663,7 @@ unsigned int kstat_irqs(unsigned int irq)
  */
 unsigned int kstat_irqs_usr(unsigned int irq)
 {
-	int sum;
+	unsigned int sum;
 
 	irq_lock_sparse();
 	sum = kstat_irqs(irq);

@@ -19,7 +19,6 @@
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <generated/utsrelease.h>
 #include <linux/utsname.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -33,16 +32,10 @@
 #include <linux/rculist.h>
 #include <linux/kref.h>
 #include <asm/unaligned.h>
-#include <scsi/scsi.h>
-#include <scsi/scsi_host.h>
-#include <scsi/scsi_device.h>
-#include <scsi/scsi_cmnd.h>
 #include <scsi/libfc.h>
 
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
-#include <target/target_core_configfs.h>
-#include <target/configfs_macros.h>
 
 #include "tcm_fc.h"
 
@@ -52,7 +45,7 @@ static void ft_sess_delete_all(struct ft_tport *);
  * Lookup or allocate target local port.
  * Caller holds ft_lport_lock.
  */
-static struct ft_tport *ft_tport_create(struct fc_lport *lport)
+static struct ft_tport *ft_tport_get(struct fc_lport *lport)
 {
 	struct ft_tpg *tpg;
 	struct ft_tport *tport;
@@ -99,7 +92,7 @@ static void ft_tport_delete(struct ft_tport *tport)
 	ft_sess_delete_all(tport);
 	lport = tport->lport;
 	BUG_ON(tport != lport->prov[FC_TYPE_FCP]);
-	rcu_assign_pointer(lport->prov[FC_TYPE_FCP], NULL);
+	RCU_INIT_POINTER(lport->prov[FC_TYPE_FCP], NULL);
 
 	tpg = tport->tpg;
 	if (tpg) {
@@ -116,7 +109,7 @@ static void ft_tport_delete(struct ft_tport *tport)
 void ft_lport_add(struct fc_lport *lport, void *arg)
 {
 	mutex_lock(&ft_lport_lock);
-	ft_tport_create(lport);
+	ft_tport_get(lport);
 	mutex_unlock(&ft_lport_lock);
 }
 
@@ -171,7 +164,6 @@ static struct ft_sess *ft_sess_get(struct fc_lport *lport, u32 port_id)
 {
 	struct ft_tport *tport;
 	struct hlist_head *head;
-	struct hlist_node *pos;
 	struct ft_sess *sess;
 
 	rcu_read_lock();
@@ -180,7 +172,7 @@ static struct ft_sess *ft_sess_get(struct fc_lport *lport, u32 port_id)
 		goto out;
 
 	head = &tport->hash[ft_sess_hash(port_id)];
-	hlist_for_each_entry_rcu(sess, pos, head, hash) {
+	hlist_for_each_entry_rcu(sess, head, hash) {
 		if (sess->port_id == port_id) {
 			kref_get(&sess->kref);
 			rcu_read_unlock();
@@ -203,10 +195,9 @@ static struct ft_sess *ft_sess_create(struct ft_tport *tport, u32 port_id,
 {
 	struct ft_sess *sess;
 	struct hlist_head *head;
-	struct hlist_node *pos;
 
 	head = &tport->hash[ft_sess_hash(port_id)];
-	hlist_for_each_entry_rcu(sess, pos, head, hash)
+	hlist_for_each_entry_rcu(sess, head, hash)
 		if (sess->port_id == port_id)
 			return sess;
 
@@ -214,7 +205,9 @@ static struct ft_sess *ft_sess_create(struct ft_tport *tport, u32 port_id,
 	if (!sess)
 		return NULL;
 
-	sess->se_sess = transport_init_session();
+	sess->se_sess = transport_init_session_tags(TCM_FC_DEFAULT_TAGS,
+						    sizeof(struct ft_cmd),
+						    TARGET_PROT_NORMAL);
 	if (IS_ERR(sess->se_sess)) {
 		kfree(sess);
 		return NULL;
@@ -255,11 +248,10 @@ static void ft_sess_unhash(struct ft_sess *sess)
 static struct ft_sess *ft_sess_delete(struct ft_tport *tport, u32 port_id)
 {
 	struct hlist_head *head;
-	struct hlist_node *pos;
 	struct ft_sess *sess;
 
 	head = &tport->hash[ft_sess_hash(port_id)];
-	hlist_for_each_entry_rcu(sess, pos, head, hash) {
+	hlist_for_each_entry_rcu(sess, head, hash) {
 		if (sess->port_id == port_id) {
 			ft_sess_unhash(sess);
 			return sess;
@@ -275,12 +267,11 @@ static struct ft_sess *ft_sess_delete(struct ft_tport *tport, u32 port_id)
 static void ft_sess_delete_all(struct ft_tport *tport)
 {
 	struct hlist_head *head;
-	struct hlist_node *pos;
 	struct ft_sess *sess;
 
 	for (head = tport->hash;
 	     head < &tport->hash[FT_SESS_HASH_SIZE]; head++) {
-		hlist_for_each_entry_rcu(sess, pos, head, hash) {
+		hlist_for_each_entry_rcu(sess, head, hash) {
 			ft_sess_unhash(sess);
 			transport_deregister_session_configfs(sess->se_sess);
 			ft_sess_put(sess);	/* release from table */
@@ -355,7 +346,7 @@ static int ft_prli_locked(struct fc_rport_priv *rdata, u32 spp_len,
 	struct ft_node_acl *acl;
 	u32 fcp_parm;
 
-	tport = ft_tport_create(rdata->local_port);
+	tport = ft_tport_get(rdata->local_port);
 	if (!tport)
 		goto not_target;	/* not a target for this local port */
 
@@ -434,19 +425,12 @@ static int ft_prli(struct fc_rport_priv *rdata, u32 spp_len,
 	return ret;
 }
 
-static void ft_sess_rcu_free(struct rcu_head *rcu)
-{
-	struct ft_sess *sess = container_of(rcu, struct ft_sess, rcu);
-
-	kfree(sess);
-}
-
 static void ft_sess_free(struct kref *kref)
 {
 	struct ft_sess *sess = container_of(kref, struct ft_sess, kref);
 
 	transport_deregister_session(sess->se_sess);
-	call_rcu(&sess->rcu, ft_sess_rcu_free);
+	kfree_rcu(sess, rcu);
 }
 
 void ft_sess_put(struct ft_sess *sess)
@@ -463,7 +447,9 @@ static void ft_prlo(struct fc_rport_priv *rdata)
 	struct ft_tport *tport;
 
 	mutex_lock(&ft_lport_lock);
-	tport = rcu_dereference(rdata->local_port->prov[FC_TYPE_FCP]);
+	tport = rcu_dereference_protected(rdata->local_port->prov[FC_TYPE_FCP],
+					  lockdep_is_held(&ft_lport_lock));
+
 	if (!tport) {
 		mutex_unlock(&ft_lport_lock);
 		return;

@@ -85,7 +85,6 @@ pcbit_l2_write(struct pcbit_dev *dev, ulong msg, ushort refnum,
 	}
 	if ((frame = kmalloc(sizeof(struct frame_buf),
 			     GFP_ATOMIC)) == NULL) {
-		printk(KERN_WARNING "pcbit_2_write: kmalloc failed\n");
 		dev_kfree_skb(skb);
 		return -1;
 	}
@@ -508,7 +507,7 @@ pcbit_irq_handler(int interrupt, void *devptr)
 		return IRQ_NONE;
 	}
 	if (dev->interrupt) {
-		printk(KERN_DEBUG "pcbit: reentering interrupt hander\n");
+		printk(KERN_DEBUG "pcbit: reentering interrupt handler\n");
 		return IRQ_HANDLED;
 	}
 	dev->interrupt = 1;

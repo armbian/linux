@@ -28,6 +28,13 @@
 #include "nilfs.h"
 #include "page.h"
 
+/**
+ * struct nilfs_shadow_map - shadow mapping of meta data file
+ * @bmap_store: shadow copy of bmap state
+ * @frozen_data: shadowed dirty data pages
+ * @frozen_btnodes: shadowed dirty b-tree nodes' pages
+ * @frozen_buffers: list of frozen buffers
+ */
 struct nilfs_shadow_map {
 	struct nilfs_bmap_store bmap_store;
 	struct address_space frozen_data;
@@ -65,12 +72,15 @@ static inline struct nilfs_mdt_info *NILFS_MDT(const struct inode *inode)
 }
 
 /* Default GFP flags using highmem */
-#define NILFS_MDT_GFP      (__GFP_WAIT | __GFP_IO | __GFP_HIGHMEM)
+#define NILFS_MDT_GFP      (__GFP_RECLAIM | __GFP_IO | __GFP_HIGHMEM)
 
 int nilfs_mdt_get_block(struct inode *, unsigned long, int,
 			void (*init_block)(struct inode *,
 					   struct buffer_head *, void *),
 			struct buffer_head **);
+int nilfs_mdt_find_block(struct inode *inode, unsigned long start,
+			 unsigned long end, unsigned long *blkoff,
+			 struct buffer_head **out_bh);
 int nilfs_mdt_delete_block(struct inode *, unsigned long);
 int nilfs_mdt_forget_block(struct inode *, unsigned long);
 int nilfs_mdt_mark_block_dirty(struct inode *, unsigned long);
@@ -104,7 +114,10 @@ static inline __u64 nilfs_mdt_cno(struct inode *inode)
 	return ((struct the_nilfs *)inode->i_sb->s_fs_info)->ns_cno;
 }
 
-#define nilfs_mdt_bgl_lock(inode, bg) \
-	(&NILFS_MDT(inode)->mi_bgl->locks[(bg) & (NR_BG_LOCKS-1)].lock)
+static inline spinlock_t *
+nilfs_mdt_bgl_lock(struct inode *inode, unsigned int block_group)
+{
+	return bgl_lock_ptr(NILFS_MDT(inode)->mi_bgl, block_group);
+}
 
 #endif /* _NILFS_MDT_H */

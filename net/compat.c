@@ -22,6 +22,7 @@
 #include <linux/filter.h>
 #include <linux/compat.h>
 #include <linux/security.h>
+#include <linux/audit.h>
 #include <linux/export.h>
 
 #include <net/scm.h>
@@ -31,48 +32,26 @@
 #include <asm/uaccess.h>
 #include <net/compat.h>
 
-static inline int iov_from_user_compat_to_kern(struct iovec *kiov,
-					  struct compat_iovec __user *uiov32,
-					  int niov)
+int get_compat_msghdr(struct msghdr *kmsg,
+		      struct compat_msghdr __user *umsg,
+		      struct sockaddr __user **save_addr,
+		      struct iovec **iov)
 {
-	int tot_len = 0;
-
-	while (niov > 0) {
-		compat_uptr_t buf;
-		compat_size_t len;
-
-		if (get_user(len, &uiov32->iov_len) ||
-		    get_user(buf, &uiov32->iov_base))
-			return -EFAULT;
-
-		if (len > INT_MAX - tot_len)
-			len = INT_MAX - tot_len;
-
-		tot_len += len;
-		kiov->iov_base = compat_ptr(buf);
-		kiov->iov_len = (__kernel_size_t) len;
-		uiov32++;
-		kiov++;
-		niov--;
-	}
-	return tot_len;
-}
-
-int get_compat_msghdr(struct msghdr *kmsg, struct compat_msghdr __user *umsg)
-{
-	compat_uptr_t tmp1, tmp2, tmp3;
+	compat_uptr_t uaddr, uiov, tmp3;
+	compat_size_t nr_segs;
+	ssize_t err;
 
 	if (!access_ok(VERIFY_READ, umsg, sizeof(*umsg)) ||
-	    __get_user(tmp1, &umsg->msg_name) ||
+	    __get_user(uaddr, &umsg->msg_name) ||
 	    __get_user(kmsg->msg_namelen, &umsg->msg_namelen) ||
-	    __get_user(tmp2, &umsg->msg_iov) ||
-	    __get_user(kmsg->msg_iovlen, &umsg->msg_iovlen) ||
+	    __get_user(uiov, &umsg->msg_iov) ||
+	    __get_user(nr_segs, &umsg->msg_iovlen) ||
 	    __get_user(tmp3, &umsg->msg_control) ||
 	    __get_user(kmsg->msg_controllen, &umsg->msg_controllen) ||
 	    __get_user(kmsg->msg_flags, &umsg->msg_flags))
 		return -EFAULT;
 
-	if (!tmp1)
+	if (!uaddr)
 		kmsg->msg_namelen = 0;
 
 	if (kmsg->msg_namelen < 0)
@@ -80,39 +59,32 @@ int get_compat_msghdr(struct msghdr *kmsg, struct compat_msghdr __user *umsg)
 
 	if (kmsg->msg_namelen > sizeof(struct sockaddr_storage))
 		kmsg->msg_namelen = sizeof(struct sockaddr_storage);
-	kmsg->msg_name = compat_ptr(tmp1);
-	kmsg->msg_iov = compat_ptr(tmp2);
 	kmsg->msg_control = compat_ptr(tmp3);
-	return 0;
-}
 
-/* I've named the args so it is easy to tell whose space the pointers are in. */
-int verify_compat_iovec(struct msghdr *kern_msg, struct iovec *kern_iov,
-		   struct sockaddr_storage *kern_address, int mode)
-{
-	int tot_len;
+	if (save_addr)
+		*save_addr = compat_ptr(uaddr);
 
-	if (kern_msg->msg_name && kern_msg->msg_namelen) {
-		if (mode == VERIFY_READ) {
-			int err = move_addr_to_kernel(kern_msg->msg_name,
-						      kern_msg->msg_namelen,
-						      kern_address);
+	if (uaddr && kmsg->msg_namelen) {
+		if (!save_addr) {
+			err = move_addr_to_kernel(compat_ptr(uaddr),
+						  kmsg->msg_namelen,
+						  kmsg->msg_name);
 			if (err < 0)
 				return err;
 		}
-		kern_msg->msg_name = kern_address;
 	} else {
-		kern_msg->msg_name = NULL;
-		kern_msg->msg_namelen = 0;
+		kmsg->msg_name = NULL;
+		kmsg->msg_namelen = 0;
 	}
 
-	tot_len = iov_from_user_compat_to_kern(kern_iov,
-					  (struct compat_iovec __user *)kern_msg->msg_iov,
-					  kern_msg->msg_iovlen);
-	if (tot_len >= 0)
-		kern_msg->msg_iov = kern_iov;
+	if (nr_segs > UIO_MAXIOV)
+		return -EMSGSIZE;
 
-	return tot_len;
+	kmsg->msg_iocb = NULL;
+
+	return compat_import_iovec(save_addr ? READ : WRITE,
+				   compat_ptr(uiov), nr_segs,
+				   UIO_FASTIOV, iov, &kmsg->msg_iter);
 }
 
 /* Bleech... */
@@ -312,8 +284,7 @@ void scm_detach_fds_compat(struct msghdr *kmsg, struct scm_cookie *scm)
 			break;
 		}
 		/* Bump the usage count and install the file. */
-		get_file(fp[i]);
-		fd_install(new_fd, fp[i]);
+		fd_install(new_fd, get_file(fp[i]));
 	}
 
 	if (i > 0) {
@@ -338,14 +309,6 @@ void scm_detach_fds_compat(struct msghdr *kmsg, struct scm_cookie *scm)
 	 */
 	__scm_destroy(scm);
 }
-
-/*
- * A struct sock_filter is architecture independent.
- */
-struct compat_sock_fprog {
-	u16		len;
-	compat_uptr_t	filter;		/* struct sock_filter * */
-};
 
 static int do_set_attach_filter(struct socket *sock, int level, int optname,
 				char __user *optval, unsigned int optlen)
@@ -395,14 +358,15 @@ static int compat_sock_setsockopt(struct socket *sock, int level, int optname,
 	if (optname == SO_ATTACH_FILTER)
 		return do_set_attach_filter(sock, level, optname,
 					    optval, optlen);
-	if (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO)
+	if (!COMPAT_USE_64BIT_TIME &&
+	    (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO))
 		return do_set_sock_timeout(sock, level, optname, optval, optlen);
 
 	return sock_setsockopt(sock, level, optname, optval, optlen);
 }
 
-asmlinkage long compat_sys_setsockopt(int fd, int level, int optname,
-				char __user *optval, unsigned int optlen)
+COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+		       char __user *, optval, unsigned int, optlen)
 {
 	int err;
 	struct socket *sock = sockfd_lookup(fd, &err);
@@ -460,7 +424,8 @@ static int do_get_sock_timeout(struct socket *sock, int level, int optname,
 static int compat_sock_getsockopt(struct socket *sock, int level, int optname,
 				char __user *optval, int __user *optlen)
 {
-	if (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO)
+	if (!COMPAT_USE_64BIT_TIME &&
+	    (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO))
 		return do_get_sock_timeout(sock, level, optname, optval, optlen);
 	return sock_getsockopt(sock, level, optname, optval, optlen);
 }
@@ -521,8 +486,8 @@ int compat_sock_get_timestampns(struct sock *sk, struct timespec __user *usersta
 }
 EXPORT_SYMBOL(compat_sock_get_timestampns);
 
-asmlinkage long compat_sys_getsockopt(int fd, int level, int optname,
-				char __user *optval, int __user *optlen)
+COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+		       char __user *, optval, int __user *, optlen)
 {
 	int err;
 	struct socket *sock = sockfd_lookup(fd, &err);
@@ -551,25 +516,25 @@ asmlinkage long compat_sys_getsockopt(int fd, int level, int optname,
 struct compat_group_req {
 	__u32				 gr_interface;
 	struct __kernel_sockaddr_storage gr_group
-		__attribute__ ((aligned(4)));
+		__aligned(4);
 } __packed;
 
 struct compat_group_source_req {
 	__u32				 gsr_interface;
 	struct __kernel_sockaddr_storage gsr_group
-		__attribute__ ((aligned(4)));
+		__aligned(4);
 	struct __kernel_sockaddr_storage gsr_source
-		__attribute__ ((aligned(4)));
+		__aligned(4);
 } __packed;
 
 struct compat_group_filter {
 	__u32				 gf_interface;
 	struct __kernel_sockaddr_storage gf_group
-		__attribute__ ((aligned(4)));
+		__aligned(4);
 	__u32				 gf_fmode;
 	__u32				 gf_numsrc;
 	struct __kernel_sockaddr_storage gf_slist[1]
-		__attribute__ ((aligned(4)));
+		__aligned(4);
 } __packed;
 
 #define __COMPAT_GF0_SIZE (sizeof(struct compat_group_filter) - \
@@ -752,50 +717,41 @@ static unsigned char nas[21] = {
 };
 #undef AL
 
-asmlinkage long compat_sys_sendmsg(int fd, struct compat_msghdr __user *msg, unsigned flags)
+COMPAT_SYSCALL_DEFINE3(sendmsg, int, fd, struct compat_msghdr __user *, msg, unsigned int, flags)
 {
-	if (flags & MSG_CMSG_COMPAT)
-		return -EINVAL;
-	return __sys_sendmsg(fd, (struct msghdr __user *)msg, flags | MSG_CMSG_COMPAT);
+	return __sys_sendmsg(fd, (struct user_msghdr __user *)msg, flags | MSG_CMSG_COMPAT);
 }
 
-asmlinkage long compat_sys_sendmmsg(int fd, struct compat_mmsghdr __user *mmsg,
-				    unsigned vlen, unsigned int flags)
+COMPAT_SYSCALL_DEFINE4(sendmmsg, int, fd, struct compat_mmsghdr __user *, mmsg,
+		       unsigned int, vlen, unsigned int, flags)
 {
-	if (flags & MSG_CMSG_COMPAT)
-		return -EINVAL;
 	return __sys_sendmmsg(fd, (struct mmsghdr __user *)mmsg, vlen,
 			      flags | MSG_CMSG_COMPAT);
 }
 
-asmlinkage long compat_sys_recvmsg(int fd, struct compat_msghdr __user *msg, unsigned int flags)
+COMPAT_SYSCALL_DEFINE3(recvmsg, int, fd, struct compat_msghdr __user *, msg, unsigned int, flags)
 {
-	if (flags & MSG_CMSG_COMPAT)
-		return -EINVAL;
-	return __sys_recvmsg(fd, (struct msghdr __user *)msg, flags | MSG_CMSG_COMPAT);
+	return __sys_recvmsg(fd, (struct user_msghdr __user *)msg, flags | MSG_CMSG_COMPAT);
 }
 
-asmlinkage long compat_sys_recv(int fd, void __user *buf, size_t len, unsigned flags)
+COMPAT_SYSCALL_DEFINE4(recv, int, fd, void __user *, buf, compat_size_t, len, unsigned int, flags)
 {
 	return sys_recv(fd, buf, len, flags | MSG_CMSG_COMPAT);
 }
 
-asmlinkage long compat_sys_recvfrom(int fd, void __user *buf, size_t len,
-				    unsigned flags, struct sockaddr __user *addr,
-				    int __user *addrlen)
+COMPAT_SYSCALL_DEFINE6(recvfrom, int, fd, void __user *, buf, compat_size_t, len,
+		       unsigned int, flags, struct sockaddr __user *, addr,
+		       int __user *, addrlen)
 {
 	return sys_recvfrom(fd, buf, len, flags | MSG_CMSG_COMPAT, addr, addrlen);
 }
 
-asmlinkage long compat_sys_recvmmsg(int fd, struct compat_mmsghdr __user *mmsg,
-				    unsigned vlen, unsigned int flags,
-				    struct compat_timespec __user *timeout)
+COMPAT_SYSCALL_DEFINE5(recvmmsg, int, fd, struct compat_mmsghdr __user *, mmsg,
+		       unsigned int, vlen, unsigned int, flags,
+		       struct compat_timespec __user *, timeout)
 {
 	int datagrams;
 	struct timespec ktspec;
-
-	if (flags & MSG_CMSG_COMPAT)
-		return -EINVAL;
 
 	if (timeout == NULL)
 		return __sys_recvmmsg(fd, (struct mmsghdr __user *)mmsg, vlen,
@@ -812,16 +768,26 @@ asmlinkage long compat_sys_recvmmsg(int fd, struct compat_mmsghdr __user *mmsg,
 	return datagrams;
 }
 
-asmlinkage long compat_sys_socketcall(int call, u32 __user *args)
+COMPAT_SYSCALL_DEFINE2(socketcall, int, call, u32 __user *, args)
 {
-	int ret;
-	u32 a[6];
+	u32 a[AUDITSC_ARGS];
+	unsigned int len;
 	u32 a0, a1;
+	int ret;
 
 	if (call < SYS_SOCKET || call > SYS_SENDMMSG)
 		return -EINVAL;
-	if (copy_from_user(a, args, nas[call]))
+	len = nas[call];
+	if (len > sizeof(a))
+		return -EINVAL;
+
+	if (copy_from_user(a, args, len))
 		return -EFAULT;
+
+	ret = audit_socketcall_compat(len / sizeof(a[0]), a);
+	if (ret)
+		return ret;
+
 	a0 = a[0];
 	a1 = a[1];
 

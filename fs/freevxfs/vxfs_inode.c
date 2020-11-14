@@ -35,6 +35,7 @@
 #include <linux/pagemap.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/namei.h>
 
 #include "vxfs.h"
 #include "vxfs_inode.h"
@@ -224,8 +225,8 @@ vxfs_iinit(struct inode *ip, struct vxfs_inode_info *vip)
 {
 
 	ip->i_mode = vxfs_transmod(vip);
-	ip->i_uid = (uid_t)vip->vii_uid;
-	ip->i_gid = (gid_t)vip->vii_gid;
+	i_uid_write(ip, (uid_t)vip->vii_uid);
+	i_gid_write(ip, (gid_t)vip->vii_gid);
 
 	set_nlink(ip, vip->vii_nlink);
 	ip->i_size = vip->vii_size;
@@ -327,8 +328,10 @@ vxfs_iget(struct super_block *sbp, ino_t ino)
 			ip->i_op = &page_symlink_inode_operations;
 			ip->i_mapping->a_ops = &vxfs_aops;
 		} else {
-			ip->i_op = &vxfs_immed_symlink_iops;
-			vip->vii_immed.vi_immed[ip->i_size] = '\0';
+			ip->i_op = &simple_symlink_inode_operations;
+			ip->i_link = vip->vii_immed.vi_immed;
+			nd_terminate_link(ip->i_link, ip->i_size,
+					  sizeof(vip->vii_immed.vi_immed) - 1);
 		}
 	} else
 		init_special_inode(ip, ip->i_mode, old_decode_dev(vip->vii_rdev));
@@ -354,7 +357,7 @@ static void vxfs_i_callback(struct rcu_head *head)
 void
 vxfs_evict_inode(struct inode *ip)
 {
-	truncate_inode_pages(&ip->i_data, 0);
-	end_writeback(ip);
+	truncate_inode_pages_final(&ip->i_data);
+	clear_inode(ip);
 	call_rcu(&ip->i_rcu, vxfs_i_callback);
 }

@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2015, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -70,6 +70,9 @@
  *
  *****************************************************************************/
 
+extern const u8 acpi_gbl_short_op_index[];
+extern const u8 acpi_gbl_long_op_index[];
+
 /*
  * psxface - Parser external interfaces
  */
@@ -105,7 +108,28 @@ union acpi_parse_object *acpi_ps_find_name(union acpi_parse_object *scope,
 union acpi_parse_object *acpi_ps_get_parent(union acpi_parse_object *op);
 
 /*
- * psopcode - AML Opcode information
+ * psobject - support for parse object processing
+ */
+acpi_status
+acpi_ps_build_named_op(struct acpi_walk_state *walk_state,
+		       u8 *aml_op_start,
+		       union acpi_parse_object *unnamed_op,
+		       union acpi_parse_object **op);
+
+acpi_status
+acpi_ps_create_op(struct acpi_walk_state *walk_state,
+		  u8 *aml_op_start, union acpi_parse_object **new_op);
+
+acpi_status
+acpi_ps_complete_op(struct acpi_walk_state *walk_state,
+		    union acpi_parse_object **op, acpi_status status);
+
+acpi_status
+acpi_ps_complete_final_op(struct acpi_walk_state *walk_state,
+			  union acpi_parse_object *op, acpi_status status);
+
+/*
+ * psopinfo - AML Opcode information
  */
 const struct acpi_opcode_info *acpi_ps_get_opcode_info(u16 opcode);
 
@@ -150,8 +174,7 @@ u8 acpi_ps_has_completed_scope(struct acpi_parse_state *parser_state);
 
 void
 acpi_ps_pop_scope(struct acpi_parse_state *parser_state,
-		  union acpi_parse_object **op,
-		  u32 * arg_list, u32 * arg_count);
+		  union acpi_parse_object **op, u32 *arg_list, u32 *arg_count);
 
 acpi_status
 acpi_ps_push_scope(struct acpi_parse_state *parser_state,
@@ -171,10 +194,8 @@ union acpi_parse_object *acpi_ps_find(union acpi_parse_object *scope,
 
 union acpi_parse_object *acpi_ps_get_arg(union acpi_parse_object *op, u32 argn);
 
-#ifdef	ACPI_FUTURE_USAGE
 union acpi_parse_object *acpi_ps_get_depth_next(union acpi_parse_object *origin,
 						union acpi_parse_object *op);
-#endif				/* ACPI_FUTURE_USAGE */
 
 /*
  * pswalk - parse tree walk routines
@@ -202,21 +223,17 @@ void acpi_ps_delete_parse_tree(union acpi_parse_object *root);
 /*
  * psutils - parser utilities
  */
-union acpi_parse_object *acpi_ps_create_scope_op(void);
+union acpi_parse_object *acpi_ps_create_scope_op(u8 *aml);
 
 void acpi_ps_init_op(union acpi_parse_object *op, u16 opcode);
 
-union acpi_parse_object *acpi_ps_alloc_op(u16 opcode);
+union acpi_parse_object *acpi_ps_alloc_op(u16 opcode, u8 *aml);
 
 void acpi_ps_free_op(union acpi_parse_object *op);
 
 u8 acpi_ps_is_leading_char(u32 c);
 
-u8 acpi_ps_is_prefix_char(u32 c);
-
-#ifdef	ACPI_FUTURE_USAGE
 u32 acpi_ps_get_name(union acpi_parse_object *op);
-#endif				/* ACPI_FUTURE_USAGE */
 
 void acpi_ps_set_name(union acpi_parse_object *op, u32 name);
 

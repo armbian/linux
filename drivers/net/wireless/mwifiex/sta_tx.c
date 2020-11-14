@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: station TX data handling
  *
- * Copyright (C) 2011, Marvell International Ltd.
+ * Copyright (C) 2011-2014, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -47,19 +47,24 @@ void *mwifiex_process_sta_txpd(struct mwifiex_private *priv,
 	struct mwifiex_adapter *adapter = priv->adapter;
 	struct txpd *local_tx_pd;
 	struct mwifiex_txinfo *tx_info = MWIFIEX_SKB_TXCB(skb);
-	u8 pad;
+	unsigned int pad;
+	u16 pkt_type, pkt_offset;
+	int hroom = (priv->adapter->iface_type == MWIFIEX_USB) ? 0 :
+		       INTF_HEADER_LEN;
 
 	if (!skb->len) {
-		dev_err(adapter->dev, "Tx: bad packet length: %d\n", skb->len);
+		mwifiex_dbg(adapter, ERROR,
+			    "Tx: bad packet length: %d\n", skb->len);
 		tx_info->status_code = -1;
 		return skb->data;
 	}
 
-	/* If skb->data is not aligned; add padding */
-	pad = (4 - (((void *)skb->data - NULL) & 0x3)) % 4;
+	BUG_ON(skb_headroom(skb) < MWIFIEX_MIN_DATA_HEADER_LEN);
 
-	BUG_ON(skb_headroom(skb) < (sizeof(*local_tx_pd) + INTF_HEADER_LEN
-				    + pad));
+	pkt_type = mwifiex_is_skb_mgmt_frame(skb) ? PKT_TYPE_MGMT : 0;
+
+	pad = ((void *)skb->data - (sizeof(*local_tx_pd) + hroom)-
+			 NULL) & (MWIFIEX_DMA_ALIGN_SZ - 1);
 	skb_push(skb, sizeof(*local_tx_pd) + pad);
 
 	local_tx_pd = (struct txpd *) skb->data;
@@ -67,12 +72,18 @@ void *mwifiex_process_sta_txpd(struct mwifiex_private *priv,
 	local_tx_pd->bss_num = priv->bss_num;
 	local_tx_pd->bss_type = priv->bss_type;
 	local_tx_pd->tx_pkt_length = cpu_to_le16((u16)(skb->len -
-						       (sizeof(struct txpd)
-							+ pad)));
+						       (sizeof(struct txpd) +
+							pad)));
 
 	local_tx_pd->priority = (u8) skb->priority;
 	local_tx_pd->pkt_delay_2ms =
 				mwifiex_wmm_compute_drv_pkt_delay(priv, skb);
+
+	if (tx_info->flags & MWIFIEX_BUF_FLAG_EAPOL_TX_STATUS ||
+	    tx_info->flags & MWIFIEX_BUF_FLAG_ACTION_TX_STATUS) {
+		local_tx_pd->tx_token_id = tx_info->ack_frame_id;
+		local_tx_pd->flags |= MWIFIEX_TXPD_FLAGS_REQ_TX_STATUS;
+	}
 
 	if (local_tx_pd->priority <
 	    ARRAY_SIZE(priv->wmm.user_pri_pkt_tx_ctrl))
@@ -92,11 +103,21 @@ void *mwifiex_process_sta_txpd(struct mwifiex_private *priv,
 		}
 	}
 
+	if (tx_info->flags & MWIFIEX_BUF_FLAG_TDLS_PKT)
+		local_tx_pd->flags |= MWIFIEX_TXPD_FLAGS_TDLS_PACKET;
+
 	/* Offset of actual data */
-	local_tx_pd->tx_pkt_offset = cpu_to_le16(sizeof(struct txpd) + pad);
+	pkt_offset = sizeof(struct txpd) + pad;
+	if (pkt_type == PKT_TYPE_MGMT) {
+		/* Set the packet type and add header for management frame */
+		local_tx_pd->tx_pkt_type = cpu_to_le16(pkt_type);
+		pkt_offset += MWIFIEX_MGMT_FRAME_HEADER_SIZE;
+	}
+
+	local_tx_pd->tx_pkt_offset = cpu_to_le16(pkt_offset);
 
 	/* make space for INTF_HEADER_LEN */
-	skb_push(skb, INTF_HEADER_LEN);
+	skb_push(skb, hroom);
 
 	if (!local_tx_pd->tx_control)
 		/* TxCtrl set by user or default */
@@ -115,6 +136,7 @@ int mwifiex_send_null_packet(struct mwifiex_private *priv, u8 flags)
 {
 	struct mwifiex_adapter *adapter = priv->adapter;
 	struct txpd *local_tx_pd;
+	struct mwifiex_tx_param tx_param;
 /* sizeof(struct txpd) + Interface specific header */
 #define NULL_PACKET_HDR 64
 	u32 data_len = NULL_PACKET_HDR;
@@ -131,13 +153,19 @@ int mwifiex_send_null_packet(struct mwifiex_private *priv, u8 flags)
 	if (adapter->data_sent)
 		return -1;
 
+	if (adapter->if_ops.is_port_ready &&
+	    !adapter->if_ops.is_port_ready(priv))
+		return -1;
+
 	skb = dev_alloc_skb(data_len);
 	if (!skb)
 		return -1;
 
 	tx_info = MWIFIEX_SKB_TXCB(skb);
+	memset(tx_info, 0, sizeof(*tx_info));
 	tx_info->bss_num = priv->bss_num;
 	tx_info->bss_type = priv->bss_type;
+	tx_info->pkt_len = data_len - (sizeof(struct txpd) + INTF_HEADER_LEN);
 	skb_reserve(skb, sizeof(struct txpd) + INTF_HEADER_LEN);
 	skb_push(skb, sizeof(struct txpd));
 
@@ -149,27 +177,39 @@ int mwifiex_send_null_packet(struct mwifiex_private *priv, u8 flags)
 	local_tx_pd->bss_num = priv->bss_num;
 	local_tx_pd->bss_type = priv->bss_type;
 
-	skb_push(skb, INTF_HEADER_LEN);
-
-	ret = adapter->if_ops.host_to_card(adapter, MWIFIEX_TYPE_DATA,
-					   skb, NULL);
+	if (adapter->iface_type == MWIFIEX_USB) {
+		ret = adapter->if_ops.host_to_card(adapter, priv->usb_port,
+						   skb, NULL);
+	} else {
+		skb_push(skb, INTF_HEADER_LEN);
+		tx_param.next_pkt_len = 0;
+		ret = adapter->if_ops.host_to_card(adapter, MWIFIEX_TYPE_DATA,
+						   skb, &tx_param);
+	}
 	switch (ret) {
 	case -EBUSY:
-		adapter->data_sent = true;
-		/* Fall through FAILURE handling */
+		dev_kfree_skb_any(skb);
+		mwifiex_dbg(adapter, ERROR,
+			    "%s: host_to_card failed: ret=%d\n",
+			    __func__, ret);
+		adapter->dbg.num_tx_host_to_card_failure++;
+		break;
 	case -1:
 		dev_kfree_skb_any(skb);
-		dev_err(adapter->dev, "%s: host_to_card failed: ret=%d\n",
-			__func__, ret);
+		mwifiex_dbg(adapter, ERROR,
+			    "%s: host_to_card failed: ret=%d\n",
+			    __func__, ret);
 		adapter->dbg.num_tx_host_to_card_failure++;
 		break;
 	case 0:
 		dev_kfree_skb_any(skb);
-		dev_dbg(adapter->dev, "data: %s: host_to_card succeeded\n",
-			__func__);
+		mwifiex_dbg(adapter, DATA,
+			    "data: %s: host_to_card succeeded\n",
+			    __func__);
 		adapter->tx_lock_flag = true;
 		break;
 	case -EINPROGRESS:
+		adapter->tx_lock_flag = true;
 		break;
 	default:
 		break;

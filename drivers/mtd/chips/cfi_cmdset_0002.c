@@ -24,7 +24,6 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/init.h>
 #include <asm/io.h>
 #include <asm/byteorder.h>
 
@@ -33,6 +32,8 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/reboot.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/mtd/map.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/cfi.h>
@@ -41,7 +42,7 @@
 #define AMD_BOOTLOC_BUG
 #define FORCE_WORD_WRITE 0
 
-#define MAX_WORD_RETRIES 3
+#define MAX_RETRIES 3
 
 #define SST49LF004B	        0x0060
 #define SST49LF040B	        0x0050
@@ -57,7 +58,18 @@ static void cfi_amdstd_sync (struct mtd_info *);
 static int cfi_amdstd_suspend (struct mtd_info *);
 static void cfi_amdstd_resume (struct mtd_info *);
 static int cfi_amdstd_reboot(struct notifier_block *, unsigned long, void *);
+static int cfi_amdstd_get_fact_prot_info(struct mtd_info *, size_t,
+					 size_t *, struct otp_info *);
+static int cfi_amdstd_get_user_prot_info(struct mtd_info *, size_t,
+					 size_t *, struct otp_info *);
 static int cfi_amdstd_secsi_read (struct mtd_info *, loff_t, size_t, size_t *, u_char *);
+static int cfi_amdstd_read_fact_prot_reg(struct mtd_info *, loff_t, size_t,
+					 size_t *, u_char *);
+static int cfi_amdstd_read_user_prot_reg(struct mtd_info *, loff_t, size_t,
+					 size_t *, u_char *);
+static int cfi_amdstd_write_user_prot_reg(struct mtd_info *, loff_t, size_t,
+					  size_t *, u_char *);
+static int cfi_amdstd_lock_user_prot_reg(struct mtd_info *, loff_t, size_t);
 
 static int cfi_amdstd_panic_write(struct mtd_info *mtd, loff_t to, size_t len,
 				  size_t *retlen, const u_char *buf);
@@ -73,6 +85,10 @@ static void put_chip(struct map_info *map, struct flchip *chip, unsigned long ad
 
 static int cfi_atmel_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
 static int cfi_atmel_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
+
+static int cfi_ppb_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
+static int cfi_ppb_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
+static int cfi_ppb_is_locked(struct mtd_info *mtd, loff_t ofs, uint64_t len);
 
 static struct mtd_chip_driver cfi_amdstd_chipdrv = {
 	.probe		= NULL, /* Not usable directly */
@@ -317,7 +333,7 @@ static void fixup_s29gl064n_sectors(struct mtd_info *mtd)
 
 	if ((cfi->cfiq->EraseRegionInfo[0] & 0xffff) == 0x003f) {
 		cfi->cfiq->EraseRegionInfo[0] |= 0x0040;
-		pr_warning("%s: Bad S29GL064N CFI data, adjust from 64 to 128 sectors\n", mtd->name);
+		pr_warning("%s: Bad S29GL064N CFI data; adjust from 64 to 128 sectors\n", mtd->name);
 	}
 }
 
@@ -328,8 +344,21 @@ static void fixup_s29gl032n_sectors(struct mtd_info *mtd)
 
 	if ((cfi->cfiq->EraseRegionInfo[1] & 0xffff) == 0x007e) {
 		cfi->cfiq->EraseRegionInfo[1] &= ~0x0040;
-		pr_warning("%s: Bad S29GL032N CFI data, adjust from 127 to 63 sectors\n", mtd->name);
+		pr_warning("%s: Bad S29GL032N CFI data; adjust from 127 to 63 sectors\n", mtd->name);
 	}
+}
+
+static void fixup_s29ns512p_sectors(struct mtd_info *mtd)
+{
+	struct map_info *map = mtd->priv;
+	struct cfi_private *cfi = map->fldrv_priv;
+
+	/*
+	 *  S29NS512P flash uses more than 8bits to report number of sectors,
+	 * which is not permitted by CFI.
+	 */
+	cfi->cfiq->EraseRegionInfo[0] = 0x020001ff;
+	pr_warning("%s: Bad S29NS512P CFI data; adjust to 512 sectors\n", mtd->name);
 }
 
 /* Used to fix CFI-Tables of chips without Extended Query Tables */
@@ -362,6 +391,7 @@ static struct cfi_fixup cfi_fixup_table[] = {
 	{ CFI_MFR_AMD, 0x1301, fixup_s29gl064n_sectors },
 	{ CFI_MFR_AMD, 0x1a00, fixup_s29gl032n_sectors },
 	{ CFI_MFR_AMD, 0x1a01, fixup_s29gl032n_sectors },
+	{ CFI_MFR_AMD, 0x3f00, fixup_s29ns512p_sectors },
 	{ CFI_MFR_SST, 0x536a, fixup_sst38vf640x_sectorsize }, /* SST38VF6402 */
 	{ CFI_MFR_SST, 0x536b, fixup_sst38vf640x_sectorsize }, /* SST38VF6401 */
 	{ CFI_MFR_SST, 0x536c, fixup_sst38vf640x_sectorsize }, /* SST38VF6404 */
@@ -417,17 +447,78 @@ static void cfi_fixup_major_minor(struct cfi_private *cfi,
 	}
 }
 
+static int is_m29ew(struct cfi_private *cfi)
+{
+	if (cfi->mfr == CFI_MFR_INTEL &&
+	    ((cfi->device_type == CFI_DEVICETYPE_X8 && (cfi->id & 0xff) == 0x7e) ||
+	     (cfi->device_type == CFI_DEVICETYPE_X16 && cfi->id == 0x227e)))
+		return 1;
+	return 0;
+}
+
+/*
+ * From TN-13-07: Patching the Linux Kernel and U-Boot for M29 Flash, page 20:
+ * Some revisions of the M29EW suffer from erase suspend hang ups. In
+ * particular, it can occur when the sequence
+ * Erase Confirm -> Suspend -> Program -> Resume
+ * causes a lockup due to internal timing issues. The consequence is that the
+ * erase cannot be resumed without inserting a dummy command after programming
+ * and prior to resuming. [...] The work-around is to issue a dummy write cycle
+ * that writes an F0 command code before the RESUME command.
+ */
+static void cfi_fixup_m29ew_erase_suspend(struct map_info *map,
+					  unsigned long adr)
+{
+	struct cfi_private *cfi = map->fldrv_priv;
+	/* before resume, insert a dummy 0xF0 cycle for Micron M29EW devices */
+	if (is_m29ew(cfi))
+		map_write(map, CMD(0xF0), adr);
+}
+
+/*
+ * From TN-13-07: Patching the Linux Kernel and U-Boot for M29 Flash, page 22:
+ *
+ * Some revisions of the M29EW (for example, A1 and A2 step revisions)
+ * are affected by a problem that could cause a hang up when an ERASE SUSPEND
+ * command is issued after an ERASE RESUME operation without waiting for a
+ * minimum delay.  The result is that once the ERASE seems to be completed
+ * (no bits are toggling), the contents of the Flash memory block on which
+ * the erase was ongoing could be inconsistent with the expected values
+ * (typically, the array value is stuck to the 0xC0, 0xC4, 0x80, or 0x84
+ * values), causing a consequent failure of the ERASE operation.
+ * The occurrence of this issue could be high, especially when file system
+ * operations on the Flash are intensive.  As a result, it is recommended
+ * that a patch be applied.  Intensive file system operations can cause many
+ * calls to the garbage routine to free Flash space (also by erasing physical
+ * Flash blocks) and as a result, many consecutive SUSPEND and RESUME
+ * commands can occur.  The problem disappears when a delay is inserted after
+ * the RESUME command by using the udelay() function available in Linux.
+ * The DELAY value must be tuned based on the customer's platform.
+ * The maximum value that fixes the problem in all cases is 500us.
+ * But, in our experience, a delay of 30 µs to 50 µs is sufficient
+ * in most cases.
+ * We have chosen 500µs because this latency is acceptable.
+ */
+static void cfi_fixup_m29ew_delay_after_resume(struct cfi_private *cfi)
+{
+	/*
+	 * Resolving the Delay After Resume Issue see Micron TN-13-07
+	 * Worst case delay must be 500µs but 30-50µs should be ok as well
+	 */
+	if (is_m29ew(cfi))
+		cfi_udelay(500);
+}
+
 struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 {
 	struct cfi_private *cfi = map->fldrv_priv;
+	struct device_node __maybe_unused *np = map->device_node;
 	struct mtd_info *mtd;
 	int i;
 
 	mtd = kzalloc(sizeof(*mtd), GFP_KERNEL);
-	if (!mtd) {
-		printk(KERN_WARNING "Failed to allocate memory for MTD device\n");
+	if (!mtd)
 		return NULL;
-	}
 	mtd->priv = map;
 	mtd->type = MTD_NORFLASH;
 
@@ -438,6 +529,12 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 	mtd->_sync    = cfi_amdstd_sync;
 	mtd->_suspend = cfi_amdstd_suspend;
 	mtd->_resume  = cfi_amdstd_resume;
+	mtd->_read_user_prot_reg = cfi_amdstd_read_user_prot_reg;
+	mtd->_read_fact_prot_reg = cfi_amdstd_read_fact_prot_reg;
+	mtd->_get_fact_prot_info = cfi_amdstd_get_fact_prot_info;
+	mtd->_get_user_prot_info = cfi_amdstd_get_user_prot_info;
+	mtd->_write_user_prot_reg = cfi_amdstd_write_user_prot_reg;
+	mtd->_lock_user_prot_reg = cfi_amdstd_lock_user_prot_reg;
 	mtd->flags   = MTD_CAP_NORFLASH;
 	mtd->name    = map->name;
 	mtd->writesize = 1;
@@ -494,6 +591,17 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 			cfi_tell_features(extp);
 #endif
 
+#ifdef CONFIG_OF
+			if (np && of_property_read_bool(
+				    np, "use-advanced-sector-protection")
+			    && extp->BlkProtUnprot == 8) {
+				printk(KERN_INFO "  Advanced Sector Protection (PPB Locking) supported\n");
+				mtd->_lock = cfi_ppb_lock;
+				mtd->_unlock = cfi_ppb_unlock;
+				mtd->_is_locked = cfi_ppb_is_locked;
+			}
+#endif
+
 			bootloc = extp->TopBottom;
 			if ((bootloc < 2) || (bootloc > 5)) {
 				printk(KERN_WARNING "%s: CFI contains unrecognised boot "
@@ -537,6 +645,23 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 		cfi->chips[i].word_write_time = 1<<cfi->cfiq->WordWriteTimeoutTyp;
 		cfi->chips[i].buffer_write_time = 1<<cfi->cfiq->BufWriteTimeoutTyp;
 		cfi->chips[i].erase_time = 1<<cfi->cfiq->BlockEraseTimeoutTyp;
+		/*
+		 * First calculate the timeout max according to timeout field
+		 * of struct cfi_ident that probed from chip's CFI aera, if
+		 * available. Specify a minimum of 2000us, in case the CFI data
+		 * is wrong.
+		 */
+		if (cfi->cfiq->BufWriteTimeoutTyp &&
+		    cfi->cfiq->BufWriteTimeoutMax)
+			cfi->chips[i].buffer_write_time_max =
+				1 << (cfi->cfiq->BufWriteTimeoutTyp +
+				      cfi->cfiq->BufWriteTimeoutMax);
+		else
+			cfi->chips[i].buffer_write_time_max = 0;
+
+		cfi->chips[i].buffer_write_time_max =
+			max(cfi->chips[i].buffer_write_time_max, 2000);
+
 		cfi->chips[i].ref_point_counter = 0;
 		init_waitqueue_head(&(cfi->chips[i].wq));
 	}
@@ -567,10 +692,8 @@ static struct mtd_info *cfi_amdstd_setup(struct mtd_info *mtd)
 	mtd->numeraseregions = cfi->cfiq->NumEraseRegions * cfi->numchips;
 	mtd->eraseregions = kmalloc(sizeof(struct mtd_erase_region_info)
 				    * mtd->numeraseregions, GFP_KERNEL);
-	if (!mtd->eraseregions) {
-		printk(KERN_WARNING "Failed to allocate memory for MTD erase region info\n");
+	if (!mtd->eraseregions)
 		goto setup_err;
-	}
 
 	for (i=0; i<cfi->cfiq->NumEraseRegions; i++) {
 		unsigned long ernum, ersize;
@@ -691,9 +814,10 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 		    (mode == FL_WRITING && (cfip->EraseSuspend & 0x2))))
 			goto sleep;
 
-		/* We could check to see if we're trying to access the sector
-		 * that is currently being erased. However, no user will try
-		 * anything like that so we just wait for the timeout. */
+		/* Do not allow suspend iff read/write to EB address */
+		if ((adr & chip->in_progress_block_mask) ==
+		    chip->in_progress_block_addr)
+			goto sleep;
 
 		/* Erase suspend */
 		/* It's harmless to issue the Erase-Suspend and Erase-Resume
@@ -762,7 +886,10 @@ static void put_chip(struct map_info *map, struct flchip *chip, unsigned long ad
 
 	switch(chip->oldstate) {
 	case FL_ERASING:
+		cfi_fixup_m29ew_erase_suspend(map,
+			chip->in_progress_block_addr);
 		map_write(map, cfi->sector_erase_cmd, chip->in_progress_block_addr);
+		cfi_fixup_m29ew_delay_after_resume(cfi);
 		chip->oldstate = FL_READY;
 		chip->state = FL_ERASING;
 		break;
@@ -902,6 +1029,8 @@ static void __xipram xip_udelay(struct map_info *map, struct flchip *chip,
 			/* Disallow XIP again */
 			local_irq_disable();
 
+			/* Correct Erase Suspend Hangups for M29EW */
+			cfi_fixup_m29ew_erase_suspend(map, adr);
 			/* Resume the write or erase operation */
 			map_write(map, cfi->sector_erase_cmd, adr);
 			chip->state = oldstate;
@@ -1043,12 +1172,48 @@ static int cfi_amdstd_read (struct mtd_info *mtd, loff_t from, size_t len, size_
 	return ret;
 }
 
+typedef int (*otp_op_t)(struct map_info *map, struct flchip *chip,
+			loff_t adr, size_t len, u_char *buf, size_t grouplen);
 
-static inline int do_read_secsi_onechip(struct map_info *map, struct flchip *chip, loff_t adr, size_t len, u_char *buf)
+static inline void otp_enter(struct map_info *map, struct flchip *chip,
+			     loff_t adr, size_t len)
+{
+	struct cfi_private *cfi = map->fldrv_priv;
+
+	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x88, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+
+	INVALIDATE_CACHED_RANGE(map, chip->start + adr, len);
+}
+
+static inline void otp_exit(struct map_info *map, struct flchip *chip,
+			    loff_t adr, size_t len)
+{
+	struct cfi_private *cfi = map->fldrv_priv;
+
+	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x90, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x00, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+
+	INVALIDATE_CACHED_RANGE(map, chip->start + adr, len);
+}
+
+static inline int do_read_secsi_onechip(struct map_info *map,
+					struct flchip *chip, loff_t adr,
+					size_t len, u_char *buf,
+					size_t grouplen)
 {
 	DECLARE_WAITQUEUE(wait, current);
 	unsigned long timeo = jiffies + HZ;
-	struct cfi_private *cfi = map->fldrv_priv;
 
  retry:
 	mutex_lock(&chip->mutex);
@@ -1070,16 +1235,9 @@ static inline int do_read_secsi_onechip(struct map_info *map, struct flchip *chi
 
 	chip->state = FL_READY;
 
-	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
-	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi, cfi->device_type, NULL);
-	cfi_send_gen_cmd(0x88, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
-
+	otp_enter(map, chip, adr, len);
 	map_copy_from(map, buf, adr, len);
-
-	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
-	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi, cfi->device_type, NULL);
-	cfi_send_gen_cmd(0x90, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
-	cfi_send_gen_cmd(0x00, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
+	otp_exit(map, chip, adr, len);
 
 	wake_up(&chip->wq);
 	mutex_unlock(&chip->mutex);
@@ -1111,7 +1269,8 @@ static int cfi_amdstd_secsi_read (struct mtd_info *mtd, loff_t from, size_t len,
 		else
 			thislen = len;
 
-		ret = do_read_secsi_onechip(map, &cfi->chips[chipnum], ofs, thislen, buf);
+		ret = do_read_secsi_onechip(map, &cfi->chips[chipnum], ofs,
+					    thislen, buf, 0);
 		if (ret)
 			break;
 
@@ -1125,8 +1284,271 @@ static int cfi_amdstd_secsi_read (struct mtd_info *mtd, loff_t from, size_t len,
 	return ret;
 }
 
+static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip,
+				     unsigned long adr, map_word datum,
+				     int mode);
 
-static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, unsigned long adr, map_word datum)
+static int do_otp_write(struct map_info *map, struct flchip *chip, loff_t adr,
+			size_t len, u_char *buf, size_t grouplen)
+{
+	int ret;
+	while (len) {
+		unsigned long bus_ofs = adr & ~(map_bankwidth(map)-1);
+		int gap = adr - bus_ofs;
+		int n = min_t(int, len, map_bankwidth(map) - gap);
+		map_word datum = map_word_ff(map);
+
+		if (n != map_bankwidth(map)) {
+			/* partial write of a word, load old contents */
+			otp_enter(map, chip, bus_ofs, map_bankwidth(map));
+			datum = map_read(map, bus_ofs);
+			otp_exit(map, chip, bus_ofs, map_bankwidth(map));
+		}
+
+		datum = map_word_load_partial(map, datum, buf, gap, n);
+		ret = do_write_oneword(map, chip, bus_ofs, datum, FL_OTP_WRITE);
+		if (ret)
+			return ret;
+
+		adr += n;
+		buf += n;
+		len -= n;
+	}
+
+	return 0;
+}
+
+static int do_otp_lock(struct map_info *map, struct flchip *chip, loff_t adr,
+		       size_t len, u_char *buf, size_t grouplen)
+{
+	struct cfi_private *cfi = map->fldrv_priv;
+	uint8_t lockreg;
+	unsigned long timeo;
+	int ret;
+
+	/* make sure area matches group boundaries */
+	if ((adr != 0) || (len != grouplen))
+		return -EINVAL;
+
+	mutex_lock(&chip->mutex);
+	ret = get_chip(map, chip, chip->start, FL_LOCKING);
+	if (ret) {
+		mutex_unlock(&chip->mutex);
+		return ret;
+	}
+	chip->state = FL_LOCKING;
+
+	/* Enter lock register command */
+	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x40, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+
+	/* read lock register */
+	lockreg = cfi_read_query(map, 0);
+
+	/* set bit 0 to protect extended memory block */
+	lockreg &= ~0x01;
+
+	/* set bit 0 to protect extended memory block */
+	/* write lock register */
+	map_write(map, CMD(0xA0), chip->start);
+	map_write(map, CMD(lockreg), chip->start);
+
+	/* wait for chip to become ready */
+	timeo = jiffies + msecs_to_jiffies(2);
+	for (;;) {
+		if (chip_ready(map, adr))
+			break;
+
+		if (time_after(jiffies, timeo)) {
+			pr_err("Waiting for chip to be ready timed out.\n");
+			ret = -EIO;
+			break;
+		}
+		UDELAY(map, chip, 0, 1);
+	}
+
+	/* exit protection commands */
+	map_write(map, CMD(0x90), chip->start);
+	map_write(map, CMD(0x00), chip->start);
+
+	chip->state = FL_READY;
+	put_chip(map, chip, chip->start);
+	mutex_unlock(&chip->mutex);
+
+	return ret;
+}
+
+static int cfi_amdstd_otp_walk(struct mtd_info *mtd, loff_t from, size_t len,
+			       size_t *retlen, u_char *buf,
+			       otp_op_t action, int user_regs)
+{
+	struct map_info *map = mtd->priv;
+	struct cfi_private *cfi = map->fldrv_priv;
+	int ofs_factor = cfi->interleave * cfi->device_type;
+	unsigned long base;
+	int chipnum;
+	struct flchip *chip;
+	uint8_t otp, lockreg;
+	int ret;
+
+	size_t user_size, factory_size, otpsize;
+	loff_t user_offset, factory_offset, otpoffset;
+	int user_locked = 0, otplocked;
+
+	*retlen = 0;
+
+	for (chipnum = 0; chipnum < cfi->numchips; chipnum++) {
+		chip = &cfi->chips[chipnum];
+		factory_size = 0;
+		user_size = 0;
+
+		/* Micron M29EW family */
+		if (is_m29ew(cfi)) {
+			base = chip->start;
+
+			/* check whether secsi area is factory locked
+			   or user lockable */
+			mutex_lock(&chip->mutex);
+			ret = get_chip(map, chip, base, FL_CFI_QUERY);
+			if (ret) {
+				mutex_unlock(&chip->mutex);
+				return ret;
+			}
+			cfi_qry_mode_on(base, map, cfi);
+			otp = cfi_read_query(map, base + 0x3 * ofs_factor);
+			cfi_qry_mode_off(base, map, cfi);
+			put_chip(map, chip, base);
+			mutex_unlock(&chip->mutex);
+
+			if (otp & 0x80) {
+				/* factory locked */
+				factory_offset = 0;
+				factory_size = 0x100;
+			} else {
+				/* customer lockable */
+				user_offset = 0;
+				user_size = 0x100;
+
+				mutex_lock(&chip->mutex);
+				ret = get_chip(map, chip, base, FL_LOCKING);
+				if (ret) {
+					mutex_unlock(&chip->mutex);
+					return ret;
+				}
+
+				/* Enter lock register command */
+				cfi_send_gen_cmd(0xAA, cfi->addr_unlock1,
+						 chip->start, map, cfi,
+						 cfi->device_type, NULL);
+				cfi_send_gen_cmd(0x55, cfi->addr_unlock2,
+						 chip->start, map, cfi,
+						 cfi->device_type, NULL);
+				cfi_send_gen_cmd(0x40, cfi->addr_unlock1,
+						 chip->start, map, cfi,
+						 cfi->device_type, NULL);
+				/* read lock register */
+				lockreg = cfi_read_query(map, 0);
+				/* exit protection commands */
+				map_write(map, CMD(0x90), chip->start);
+				map_write(map, CMD(0x00), chip->start);
+				put_chip(map, chip, chip->start);
+				mutex_unlock(&chip->mutex);
+
+				user_locked = ((lockreg & 0x01) == 0x00);
+			}
+		}
+
+		otpsize = user_regs ? user_size : factory_size;
+		if (!otpsize)
+			continue;
+		otpoffset = user_regs ? user_offset : factory_offset;
+		otplocked = user_regs ? user_locked : 1;
+
+		if (!action) {
+			/* return otpinfo */
+			struct otp_info *otpinfo;
+			len -= sizeof(*otpinfo);
+			if (len <= 0)
+				return -ENOSPC;
+			otpinfo = (struct otp_info *)buf;
+			otpinfo->start = from;
+			otpinfo->length = otpsize;
+			otpinfo->locked = otplocked;
+			buf += sizeof(*otpinfo);
+			*retlen += sizeof(*otpinfo);
+			from += otpsize;
+		} else if ((from < otpsize) && (len > 0)) {
+			size_t size;
+			size = (len < otpsize - from) ? len : otpsize - from;
+			ret = action(map, chip, otpoffset + from, size, buf,
+				     otpsize);
+			if (ret < 0)
+				return ret;
+
+			buf += size;
+			len -= size;
+			*retlen += size;
+			from = 0;
+		} else {
+			from -= otpsize;
+		}
+	}
+	return 0;
+}
+
+static int cfi_amdstd_get_fact_prot_info(struct mtd_info *mtd, size_t len,
+					 size_t *retlen, struct otp_info *buf)
+{
+	return cfi_amdstd_otp_walk(mtd, 0, len, retlen, (u_char *)buf,
+				   NULL, 0);
+}
+
+static int cfi_amdstd_get_user_prot_info(struct mtd_info *mtd, size_t len,
+					 size_t *retlen, struct otp_info *buf)
+{
+	return cfi_amdstd_otp_walk(mtd, 0, len, retlen, (u_char *)buf,
+				   NULL, 1);
+}
+
+static int cfi_amdstd_read_fact_prot_reg(struct mtd_info *mtd, loff_t from,
+					 size_t len, size_t *retlen,
+					 u_char *buf)
+{
+	return cfi_amdstd_otp_walk(mtd, from, len, retlen,
+				   buf, do_read_secsi_onechip, 0);
+}
+
+static int cfi_amdstd_read_user_prot_reg(struct mtd_info *mtd, loff_t from,
+					 size_t len, size_t *retlen,
+					 u_char *buf)
+{
+	return cfi_amdstd_otp_walk(mtd, from, len, retlen,
+				   buf, do_read_secsi_onechip, 1);
+}
+
+static int cfi_amdstd_write_user_prot_reg(struct mtd_info *mtd, loff_t from,
+					  size_t len, size_t *retlen,
+					  u_char *buf)
+{
+	return cfi_amdstd_otp_walk(mtd, from, len, retlen, buf,
+				   do_otp_write, 1);
+}
+
+static int cfi_amdstd_lock_user_prot_reg(struct mtd_info *mtd, loff_t from,
+					 size_t len)
+{
+	size_t retlen;
+	return cfi_amdstd_otp_walk(mtd, from, len, &retlen, NULL,
+				   do_otp_lock, 1);
+}
+
+static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip,
+				     unsigned long adr, map_word datum,
+				     int mode)
 {
 	struct cfi_private *cfi = map->fldrv_priv;
 	unsigned long timeo = jiffies + HZ;
@@ -1147,7 +1569,7 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 	adr += chip->start;
 
 	mutex_lock(&chip->mutex);
-	ret = get_chip(map, chip, adr, FL_WRITING);
+	ret = get_chip(map, chip, adr, mode);
 	if (ret) {
 		mutex_unlock(&chip->mutex);
 		return ret;
@@ -1155,6 +1577,9 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 
 	pr_debug("MTD %s(): WRITE 0x%.8lx(0x%.8lx)\n",
 	       __func__, adr, datum.x[0] );
+
+	if (mode == FL_OTP_WRITE)
+		otp_enter(map, chip, adr, map_bankwidth(map));
 
 	/*
 	 * Check for a NOP for the case when the datum to write is already
@@ -1172,12 +1597,13 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 	XIP_INVAL_CACHED_RANGE(map, adr, map_bankwidth(map));
 	ENABLE_VPP(map);
 	xip_disable(map, chip, adr);
+
  retry:
 	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
 	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi, cfi->device_type, NULL);
 	cfi_send_gen_cmd(0xA0, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
 	map_write(map, datum, adr);
-	chip->state = FL_WRITING;
+	chip->state = mode;
 
 	INVALIDATE_CACHE_UDELAY(map, chip,
 				adr, map_bankwidth(map),
@@ -1186,7 +1612,7 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 	/* See comment above for timeout value. */
 	timeo = jiffies + uWriteTimeout;
 	for (;;) {
-		if (chip->state != FL_WRITING) {
+		if (chip->state != mode) {
 			/* Someone's suspended the write. Sleep */
 			DECLARE_WAITQUEUE(wait, current);
 
@@ -1219,13 +1645,15 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 		map_write( map, CMD(0xF0), chip->start );
 		/* FIXME - should have reset delay before continuing */
 
-		if (++retry_cnt <= MAX_WORD_RETRIES)
+		if (++retry_cnt <= MAX_RETRIES)
 			goto retry;
 
 		ret = -EIO;
 	}
 	xip_enable(map, chip, adr);
  op_done:
+	if (mode == FL_OTP_WRITE)
+		otp_exit(map, chip, adr, map_bankwidth(map));
 	chip->state = FL_READY;
 	DISABLE_VPP(map);
 	put_chip(map, chip, adr);
@@ -1281,7 +1709,7 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 		tmp_buf = map_word_load_partial(map, tmp_buf, buf, i, n);
 
 		ret = do_write_oneword(map, &cfi->chips[chipnum],
-				       bus_ofs, tmp_buf);
+				       bus_ofs, tmp_buf, FL_WRITING);
 		if (ret)
 			return ret;
 
@@ -1305,7 +1733,7 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 		datum = map_word_load(map, buf);
 
 		ret = do_write_oneword(map, &cfi->chips[chipnum],
-				       ofs, datum);
+				       ofs, datum, FL_WRITING);
 		if (ret)
 			return ret;
 
@@ -1348,7 +1776,7 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 		tmp_buf = map_word_load_partial(map, tmp_buf, buf, 0, len);
 
 		ret = do_write_oneword(map, &cfi->chips[chipnum],
-				ofs, tmp_buf);
+				       ofs, tmp_buf, FL_WRITING);
 		if (ret)
 			return ret;
 
@@ -1368,8 +1796,12 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 {
 	struct cfi_private *cfi = map->fldrv_priv;
 	unsigned long timeo = jiffies + HZ;
-	/* see comments in do_write_oneword() regarding uWriteTimeo. */
-	unsigned long uWriteTimeout = ( HZ / 1000 ) + 1;
+	/*
+	 * Timeout is calculated according to CFI data, if available.
+	 * See more comments in cfi_cmdset_0002().
+	 */
+	unsigned long uWriteTimeout =
+				usecs_to_jiffies(chip->buffer_write_time_max);
 	int ret = -EIO;
 	unsigned long cmd_adr;
 	int z, words;
@@ -1446,7 +1878,7 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 		if (time_after(jiffies, timeo) && !chip_ready(map, adr))
 			break;
 
-		if (chip_ready(map, adr)) {
+		if (chip_good(map, adr, datum)) {
 			xip_enable(map, chip, adr);
 			goto op_done;
 		}
@@ -1455,13 +1887,25 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 		UDELAY(map, chip, adr, 1);
 	}
 
-	/* reset on all failures. */
-	map_write( map, CMD(0xF0), chip->start );
+	/*
+	 * Recovery from write-buffer programming failures requires
+	 * the write-to-buffer-reset sequence.  Since the last part
+	 * of the sequence also works as a normal reset, we can run
+	 * the same commands regardless of why we are here.
+	 * See e.g.
+	 * http://www.spansion.com/Support/Application%20Notes/MirrorBit_Write_Buffer_Prog_Page_Buffer_Read_AN.pdf
+	 */
+	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0xF0, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
 	xip_enable(map, chip, adr);
 	/* FIXME - should have reset delay before continuing */
 
-	printk(KERN_WARNING "MTD %s(): software timeout\n",
-	       __func__ );
+	printk(KERN_WARNING "MTD %s(): software timeout, address:0x%.8lx.\n",
+	       __func__, adr);
 
 	ret = -EIO;
  op_done:
@@ -1590,6 +2034,8 @@ static int cfi_amdstd_panic_wait(struct map_info *map, struct flchip *chip,
 
 			udelay(1);
 		}
+
+		retries--;
 	}
 
 	/* the chip never became ready */
@@ -1658,7 +2104,7 @@ retry:
 		map_write(map, CMD(0xF0), chip->start);
 		/* FIXME - should have reset delay before continuing */
 
-		if (++retry_cnt <= MAX_WORD_RETRIES)
+		if (++retry_cnt <= MAX_RETRIES)
 			goto retry;
 
 		ret = -EIO;
@@ -1793,6 +2239,7 @@ static int __xipram do_erase_chip(struct map_info *map, struct flchip *chip)
 	unsigned long int adr;
 	DECLARE_WAITQUEUE(wait, current);
 	int ret = 0;
+	int retry_cnt = 0;
 
 	adr = cfi->addr_unlock1;
 
@@ -1810,6 +2257,7 @@ static int __xipram do_erase_chip(struct map_info *map, struct flchip *chip)
 	ENABLE_VPP(map);
 	xip_disable(map, chip, adr);
 
+ retry:
 	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
 	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi, cfi->device_type, NULL);
 	cfi_send_gen_cmd(0x80, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
@@ -1820,6 +2268,7 @@ static int __xipram do_erase_chip(struct map_info *map, struct flchip *chip)
 	chip->state = FL_ERASING;
 	chip->erase_suspended = 0;
 	chip->in_progress_block_addr = adr;
+	chip->in_progress_block_mask = ~(map->size - 1);
 
 	INVALIDATE_CACHE_UDELAY(map, chip,
 				adr, map->size,
@@ -1845,12 +2294,13 @@ static int __xipram do_erase_chip(struct map_info *map, struct flchip *chip)
 			chip->erase_suspended = 0;
 		}
 
-		if (chip_ready(map, adr))
+		if (chip_good(map, adr, map_word_ff(map)))
 			break;
 
 		if (time_after(jiffies, timeo)) {
 			printk(KERN_WARNING "MTD %s(): software timeout\n",
 				__func__ );
+			ret = -EIO;
 			break;
 		}
 
@@ -1858,12 +2308,15 @@ static int __xipram do_erase_chip(struct map_info *map, struct flchip *chip)
 		UDELAY(map, chip, adr, 1000000/HZ);
 	}
 	/* Did we succeed? */
-	if (!chip_good(map, adr, map_word_ff(map))) {
+	if (ret) {
 		/* reset on all failures. */
 		map_write( map, CMD(0xF0), chip->start );
 		/* FIXME - should have reset delay before continuing */
 
-		ret = -EIO;
+		if (++retry_cnt <= MAX_RETRIES) {
+			ret = 0;
+			goto retry;
+		}
 	}
 
 	chip->state = FL_READY;
@@ -1882,6 +2335,7 @@ static int __xipram do_erase_oneblock(struct map_info *map, struct flchip *chip,
 	unsigned long timeo = jiffies + HZ;
 	DECLARE_WAITQUEUE(wait, current);
 	int ret = 0;
+	int retry_cnt = 0;
 
 	adr += chip->start;
 
@@ -1899,6 +2353,7 @@ static int __xipram do_erase_oneblock(struct map_info *map, struct flchip *chip,
 	ENABLE_VPP(map);
 	xip_disable(map, chip, adr);
 
+ retry:
 	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
 	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi, cfi->device_type, NULL);
 	cfi_send_gen_cmd(0x80, cfi->addr_unlock1, chip->start, map, cfi, cfi->device_type, NULL);
@@ -1909,6 +2364,7 @@ static int __xipram do_erase_oneblock(struct map_info *map, struct flchip *chip,
 	chip->state = FL_ERASING;
 	chip->erase_suspended = 0;
 	chip->in_progress_block_addr = adr;
+	chip->in_progress_block_mask = ~(len - 1);
 
 	INVALIDATE_CACHE_UDELAY(map, chip,
 				adr, len,
@@ -1934,7 +2390,7 @@ static int __xipram do_erase_oneblock(struct map_info *map, struct flchip *chip,
 			chip->erase_suspended = 0;
 		}
 
-		if (chip_ready(map, adr)) {
+		if (chip_good(map, adr, map_word_ff(map))) {
 			xip_enable(map, chip, adr);
 			break;
 		}
@@ -1943,6 +2399,7 @@ static int __xipram do_erase_oneblock(struct map_info *map, struct flchip *chip,
 			xip_enable(map, chip, adr);
 			printk(KERN_WARNING "MTD %s(): software timeout\n",
 				__func__ );
+			ret = -EIO;
 			break;
 		}
 
@@ -1950,12 +2407,15 @@ static int __xipram do_erase_oneblock(struct map_info *map, struct flchip *chip,
 		UDELAY(map, chip, adr, 1000000/HZ);
 	}
 	/* Did we succeed? */
-	if (!chip_good(map, adr, map_word_ff(map))) {
+	if (ret) {
 		/* reset on all failures. */
 		map_write( map, CMD(0xF0), chip->start );
 		/* FIXME - should have reset delay before continuing */
 
-		ret = -EIO;
+		if (++retry_cnt <= MAX_RETRIES) {
+			ret = 0;
+			goto retry;
+		}
 	}
 
 	chip->state = FL_READY;
@@ -2079,6 +2539,208 @@ static int cfi_atmel_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 	return cfi_varsize_frob(mtd, do_atmel_unlock, ofs, len, NULL);
 }
 
+/*
+ * Advanced Sector Protection - PPB (Persistent Protection Bit) locking
+ */
+
+struct ppb_lock {
+	struct flchip *chip;
+	unsigned long adr;
+	int locked;
+};
+
+#define MAX_SECTORS			512
+
+#define DO_XXLOCK_ONEBLOCK_LOCK		((void *)1)
+#define DO_XXLOCK_ONEBLOCK_UNLOCK	((void *)2)
+#define DO_XXLOCK_ONEBLOCK_GETLOCK	((void *)3)
+
+static int __maybe_unused do_ppb_xxlock(struct map_info *map,
+					struct flchip *chip,
+					unsigned long adr, int len, void *thunk)
+{
+	struct cfi_private *cfi = map->fldrv_priv;
+	unsigned long timeo;
+	int ret;
+
+	adr += chip->start;
+	mutex_lock(&chip->mutex);
+	ret = get_chip(map, chip, adr, FL_LOCKING);
+	if (ret) {
+		mutex_unlock(&chip->mutex);
+		return ret;
+	}
+
+	pr_debug("MTD %s(): XXLOCK 0x%08lx len %d\n", __func__, adr, len);
+
+	cfi_send_gen_cmd(0xAA, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x55, cfi->addr_unlock2, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+	/* PPB entry command */
+	cfi_send_gen_cmd(0xC0, cfi->addr_unlock1, chip->start, map, cfi,
+			 cfi->device_type, NULL);
+
+	if (thunk == DO_XXLOCK_ONEBLOCK_LOCK) {
+		chip->state = FL_LOCKING;
+		map_write(map, CMD(0xA0), adr);
+		map_write(map, CMD(0x00), adr);
+	} else if (thunk == DO_XXLOCK_ONEBLOCK_UNLOCK) {
+		/*
+		 * Unlocking of one specific sector is not supported, so we
+		 * have to unlock all sectors of this device instead
+		 */
+		chip->state = FL_UNLOCKING;
+		map_write(map, CMD(0x80), chip->start);
+		map_write(map, CMD(0x30), chip->start);
+	} else if (thunk == DO_XXLOCK_ONEBLOCK_GETLOCK) {
+		chip->state = FL_JEDEC_QUERY;
+		/* Return locked status: 0->locked, 1->unlocked */
+		ret = !cfi_read_query(map, adr);
+	} else
+		BUG();
+
+	/*
+	 * Wait for some time as unlocking of all sectors takes quite long
+	 */
+	timeo = jiffies + msecs_to_jiffies(2000);	/* 2s max (un)locking */
+	for (;;) {
+		if (chip_ready(map, adr))
+			break;
+
+		if (time_after(jiffies, timeo)) {
+			printk(KERN_ERR "Waiting for chip to be ready timed out.\n");
+			ret = -EIO;
+			break;
+		}
+
+		UDELAY(map, chip, adr, 1);
+	}
+
+	/* Exit BC commands */
+	map_write(map, CMD(0x90), chip->start);
+	map_write(map, CMD(0x00), chip->start);
+
+	chip->state = FL_READY;
+	put_chip(map, chip, adr);
+	mutex_unlock(&chip->mutex);
+
+	return ret;
+}
+
+static int __maybe_unused cfi_ppb_lock(struct mtd_info *mtd, loff_t ofs,
+				       uint64_t len)
+{
+	return cfi_varsize_frob(mtd, do_ppb_xxlock, ofs, len,
+				DO_XXLOCK_ONEBLOCK_LOCK);
+}
+
+static int __maybe_unused cfi_ppb_unlock(struct mtd_info *mtd, loff_t ofs,
+					 uint64_t len)
+{
+	struct mtd_erase_region_info *regions = mtd->eraseregions;
+	struct map_info *map = mtd->priv;
+	struct cfi_private *cfi = map->fldrv_priv;
+	struct ppb_lock *sect;
+	unsigned long adr;
+	loff_t offset;
+	uint64_t length;
+	int chipnum;
+	int i;
+	int sectors;
+	int ret;
+
+	/*
+	 * PPB unlocking always unlocks all sectors of the flash chip.
+	 * We need to re-lock all previously locked sectors. So lets
+	 * first check the locking status of all sectors and save
+	 * it for future use.
+	 */
+	sect = kzalloc(MAX_SECTORS * sizeof(struct ppb_lock), GFP_KERNEL);
+	if (!sect)
+		return -ENOMEM;
+
+	/*
+	 * This code to walk all sectors is a slightly modified version
+	 * of the cfi_varsize_frob() code.
+	 */
+	i = 0;
+	chipnum = 0;
+	adr = 0;
+	sectors = 0;
+	offset = 0;
+	length = mtd->size;
+
+	while (length) {
+		int size = regions[i].erasesize;
+
+		/*
+		 * Only test sectors that shall not be unlocked. The other
+		 * sectors shall be unlocked, so lets keep their locking
+		 * status at "unlocked" (locked=0) for the final re-locking.
+		 */
+		if ((offset < ofs) || (offset >= (ofs + len))) {
+			sect[sectors].chip = &cfi->chips[chipnum];
+			sect[sectors].adr = adr;
+			sect[sectors].locked = do_ppb_xxlock(
+				map, &cfi->chips[chipnum], adr, 0,
+				DO_XXLOCK_ONEBLOCK_GETLOCK);
+		}
+
+		adr += size;
+		offset += size;
+		length -= size;
+
+		if (offset == regions[i].offset + size * regions[i].numblocks)
+			i++;
+
+		if (adr >> cfi->chipshift) {
+			if (offset >= (ofs + len))
+				break;
+			adr = 0;
+			chipnum++;
+
+			if (chipnum >= cfi->numchips)
+				break;
+		}
+
+		sectors++;
+		if (sectors >= MAX_SECTORS) {
+			printk(KERN_ERR "Only %d sectors for PPB locking supported!\n",
+			       MAX_SECTORS);
+			kfree(sect);
+			return -EINVAL;
+		}
+	}
+
+	/* Now unlock the whole chip */
+	ret = cfi_varsize_frob(mtd, do_ppb_xxlock, ofs, len,
+			       DO_XXLOCK_ONEBLOCK_UNLOCK);
+	if (ret) {
+		kfree(sect);
+		return ret;
+	}
+
+	/*
+	 * PPB unlocking always unlocks all sectors of the flash chip.
+	 * We need to re-lock all previously locked sectors.
+	 */
+	for (i = 0; i < sectors; i++) {
+		if (sect[i].locked)
+			do_ppb_xxlock(map, sect[i].chip, sect[i].adr, 0,
+				      DO_XXLOCK_ONEBLOCK_LOCK);
+	}
+
+	kfree(sect);
+	return ret;
+}
+
+static int __maybe_unused cfi_ppb_is_locked(struct mtd_info *mtd, loff_t ofs,
+					    uint64_t len)
+{
+	return cfi_varsize_frob(mtd, do_ppb_xxlock, ofs, len,
+				DO_XXLOCK_ONEBLOCK_GETLOCK) ? 1 : 0;
+}
 
 static void cfi_amdstd_sync (struct mtd_info *mtd)
 {

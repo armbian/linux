@@ -7,6 +7,8 @@
  * Arbitrary resource management.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/export.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
@@ -19,6 +21,8 @@
 #include <linux/seq_file.h>
 #include <linux/device.h>
 #include <linux/pfn.h>
+#include <linux/mm.h>
+#include <linux/resource_ext.h>
 #include <asm/io.h>
 
 
@@ -48,15 +52,32 @@ struct resource_constraint {
 
 static DEFINE_RWLOCK(resource_lock);
 
-static void *r_next(struct seq_file *m, void *v, loff_t *pos)
+/*
+ * For memory hotplug, there is no way to free resource entries allocated
+ * by boot mem after the system is up. So for reusing the resource entry
+ * we need to remember the resource.
+ */
+static struct resource *bootmem_resource_free;
+static DEFINE_SPINLOCK(bootmem_resource_lock);
+
+static struct resource *next_resource(struct resource *p, bool sibling_only)
 {
-	struct resource *p = v;
-	(*pos)++;
+	/* Caller wants to traverse through siblings only */
+	if (sibling_only)
+		return p->sibling;
+
 	if (p->child)
 		return p->child;
 	while (!p->sibling && p->parent)
 		p = p->parent;
 	return p->sibling;
+}
+
+static void *r_next(struct seq_file *m, void *v, loff_t *pos)
+{
+	struct resource *p = v;
+	(*pos)++;
+	return (void *)next_resource(p, false);
 }
 
 #ifdef CONFIG_PROC_FS
@@ -84,16 +105,25 @@ static int r_show(struct seq_file *m, void *v)
 {
 	struct resource *root = m->private;
 	struct resource *r = v, *p;
+	unsigned long long start, end;
 	int width = root->end < 0x10000 ? 4 : 8;
 	int depth;
 
 	for (depth = 0, p = r; depth < MAX_IORES_LEVEL; depth++, p = p->parent)
 		if (p->parent == root)
 			break;
+
+	if (file_ns_capable(m->file, &init_user_ns, CAP_SYS_ADMIN)) {
+		start = r->start;
+		end = r->end;
+	} else {
+		start = end = 0;
+	}
+
 	seq_printf(m, "%*s%0*llx-%0*llx : %s\n",
 			depth * 2, "",
-			width, (unsigned long long) r->start,
-			width, (unsigned long long) r->end,
+			width, start,
+			width, end,
 			r->name ? r->name : "<BAD>");
 	return 0;
 }
@@ -148,6 +178,40 @@ static int __init ioresources_init(void)
 __initcall(ioresources_init);
 
 #endif /* CONFIG_PROC_FS */
+
+static void free_resource(struct resource *res)
+{
+	if (!res)
+		return;
+
+	if (!PageSlab(virt_to_head_page(res))) {
+		spin_lock(&bootmem_resource_lock);
+		res->sibling = bootmem_resource_free;
+		bootmem_resource_free = res;
+		spin_unlock(&bootmem_resource_lock);
+	} else {
+		kfree(res);
+	}
+}
+
+static struct resource *alloc_resource(gfp_t flags)
+{
+	struct resource *res = NULL;
+
+	spin_lock(&bootmem_resource_lock);
+	if (bootmem_resource_free) {
+		res = bootmem_resource_free;
+		bootmem_resource_free = res->sibling;
+	}
+	spin_unlock(&bootmem_resource_lock);
+
+	if (res)
+		memset(res, 0, sizeof(struct resource));
+	else
+		res = kzalloc(sizeof(struct resource), flags);
+
+	return res;
+}
 
 /* Return the conflict entry if you can't request it */
 static struct resource * __request_resource(struct resource *root, struct resource *new)
@@ -277,16 +341,19 @@ int release_resource(struct resource *old)
 
 EXPORT_SYMBOL(release_resource);
 
-#if !defined(CONFIG_ARCH_HAS_WALK_MEMORY)
 /*
- * Finds the lowest memory reosurce exists within [res->start.res->end)
+ * Finds the lowest iomem reosurce exists with-in [res->start.res->end)
  * the caller must specify res->start, res->end, res->flags and "name".
  * If found, returns 0, res is overwritten, if not found, returns -1.
+ * This walks through whole tree and not just first level children
+ * until and unless first_level_children_only is true.
  */
-static int find_next_system_ram(struct resource *res, char *name)
+static int find_next_iomem_res(struct resource *res, char *name,
+			       bool first_level_children_only)
 {
 	resource_size_t start, end;
 	struct resource *p;
+	bool sibling_only = false;
 
 	BUG_ON(!res);
 
@@ -294,9 +361,12 @@ static int find_next_system_ram(struct resource *res, char *name)
 	end = res->end;
 	BUG_ON(start >= end);
 
+	if (first_level_children_only)
+		sibling_only = true;
+
 	read_lock(&resource_lock);
-	for (p = iomem_resource.child; p ; p = p->sibling) {
-		/* system ram is just marked as IORESOURCE_MEM */
+
+	for (p = iomem_resource.child; p; p = next_resource(p, sibling_only)) {
 		if (p->flags != res->flags)
 			continue;
 		if (name && strcmp(p->name, name))
@@ -308,6 +378,7 @@ static int find_next_system_ram(struct resource *res, char *name)
 		if ((p->end >= start) && (p->start < end))
 			break;
 	}
+
 	read_unlock(&resource_lock);
 	if (!p)
 		return -1;
@@ -318,6 +389,70 @@ static int find_next_system_ram(struct resource *res, char *name)
 		res->end = p->end;
 	return 0;
 }
+
+/*
+ * Walks through iomem resources and calls func() with matching resource
+ * ranges. This walks through whole tree and not just first level children.
+ * All the memory ranges which overlap start,end and also match flags and
+ * name are valid candidates.
+ *
+ * @name: name of resource
+ * @flags: resource flags
+ * @start: start addr
+ * @end: end addr
+ */
+int walk_iomem_res(char *name, unsigned long flags, u64 start, u64 end,
+		void *arg, int (*func)(u64, u64, void *))
+{
+	struct resource res;
+	u64 orig_end;
+	int ret = -1;
+
+	res.start = start;
+	res.end = end;
+	res.flags = flags;
+	orig_end = res.end;
+	while ((res.start < res.end) &&
+		(!find_next_iomem_res(&res, name, false))) {
+		ret = (*func)(res.start, res.end, arg);
+		if (ret)
+			break;
+		res.start = res.end + 1;
+		res.end = orig_end;
+	}
+	return ret;
+}
+
+/*
+ * This function calls callback against all memory range of "System RAM"
+ * which are marked as IORESOURCE_MEM and IORESOUCE_BUSY.
+ * Now, this function is only for "System RAM". This function deals with
+ * full ranges and not pfn. If resources are not pfn aligned, dealing
+ * with pfn can truncate ranges.
+ */
+int walk_system_ram_res(u64 start, u64 end, void *arg,
+				int (*func)(u64, u64, void *))
+{
+	struct resource res;
+	u64 orig_end;
+	int ret = -1;
+
+	res.start = start;
+	res.end = end;
+	res.flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+	orig_end = res.end;
+	while ((res.start < res.end) &&
+		(!find_next_iomem_res(&res, "System RAM", true))) {
+		ret = (*func)(res.start, res.end, arg);
+		if (ret)
+			break;
+		res.start = res.end + 1;
+		res.end = orig_end;
+	}
+	return ret;
+}
+
+#if !defined(CONFIG_ARCH_HAS_WALK_MEMORY)
 
 /*
  * This function calls callback against all memory range of "System RAM"
@@ -337,7 +472,7 @@ int walk_system_ram_range(unsigned long start_pfn, unsigned long nr_pages,
 	res.flags = IORESOURCE_MEM | IORESOURCE_BUSY;
 	orig_end = res.end;
 	while ((res.start < res.end) &&
-		(find_next_system_ram(&res, "System RAM") >= 0)) {
+		(find_next_iomem_res(&res, "System RAM", true) >= 0)) {
 		pfn = (res.start + PAGE_SIZE - 1) >> PAGE_SHIFT;
 		end_pfn = (res.end + 1) >> PAGE_SHIFT;
 		if (end_pfn > pfn)
@@ -364,6 +499,54 @@ int __weak page_is_ram(unsigned long pfn)
 {
 	return walk_system_ram_range(pfn, 1, NULL, __is_ram) == 1;
 }
+EXPORT_SYMBOL_GPL(page_is_ram);
+
+/**
+ * region_intersects() - determine intersection of region with known resources
+ * @start: region start address
+ * @size: size of region
+ * @name: name of resource (in iomem_resource)
+ *
+ * Check if the specified region partially overlaps or fully eclipses a
+ * resource identified by @name.  Return REGION_DISJOINT if the region
+ * does not overlap @name, return REGION_MIXED if the region overlaps
+ * @type and another resource, and return REGION_INTERSECTS if the
+ * region overlaps @type and no other defined resource. Note, that
+ * REGION_INTERSECTS is also returned in the case when the specified
+ * region overlaps RAM and undefined memory holes.
+ *
+ * region_intersect() is used by memory remapping functions to ensure
+ * the user is not remapping RAM and is a vast speed up over walking
+ * through the resource table page by page.
+ */
+int region_intersects(resource_size_t start, size_t size, const char *name)
+{
+	unsigned long flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+	resource_size_t end = start + size - 1;
+	int type = 0; int other = 0;
+	struct resource *p;
+
+	read_lock(&resource_lock);
+	for (p = iomem_resource.child; p ; p = p->sibling) {
+		bool is_type = strcmp(p->name, name) == 0 && p->flags == flags;
+
+		if (start >= p->start && start <= p->end)
+			is_type ? type++ : other++;
+		if (end >= p->start && end <= p->end)
+			is_type ? type++ : other++;
+		if (p->start >= start && p->end <= end)
+			is_type ? type++ : other++;
+	}
+	read_unlock(&resource_lock);
+
+	if (other == 0)
+		return type ? REGION_INTERSECTS : REGION_DISJOINT;
+
+	if (type)
+		return REGION_MIXED;
+
+	return REGION_DISJOINT;
+}
 
 void __weak arch_remove_reservations(struct resource *avail)
 {
@@ -386,11 +569,6 @@ static void resource_clip(struct resource *res, resource_size_t min,
 		res->end = max;
 }
 
-static bool resource_contains(struct resource *res1, struct resource *res2)
-{
-	return res1->start <= res2->start && res1->end >= res2->end;
-}
-
 /*
  * Find empty slot in the resource tree with the given range and
  * alignment constraints
@@ -403,7 +581,6 @@ static int __find_resource(struct resource *root, struct resource *old,
 	struct resource *this = root->child;
 	struct resource tmp = *new, avail, alloc;
 
-	tmp.flags = new->flags;
 	tmp.start = root->start;
 	/*
 	 * Skip past an allocated resource that starts at 0, since the assignment
@@ -426,14 +603,16 @@ static int __find_resource(struct resource *root, struct resource *old,
 		arch_remove_reservations(&tmp);
 
 		/* Check for overflow after ALIGN() */
-		avail = *new;
 		avail.start = ALIGN(tmp.start, constraint->align);
 		avail.end = tmp.end;
+		avail.flags = new->flags & ~IORESOURCE_UNSET;
 		if (avail.start >= tmp.start) {
+			alloc.flags = avail.flags;
 			alloc.start = constraint->alignf(constraint->alignf_data, &avail,
 					size, constraint->align);
 			alloc.end = alloc.start + size - 1;
-			if (resource_contains(&avail, &alloc)) {
+			if (alloc.start <= alloc.end &&
+			    resource_contains(&avail, &alloc)) {
 				new->start = alloc.start;
 				new->end = alloc.end;
 				return 0;
@@ -470,7 +649,7 @@ static int find_resource(struct resource *root, struct resource *new,
  * @newsize: new size of the resource descriptor
  * @constraint: the size and alignment constraints to be met.
  */
-int reallocate_resource(struct resource *root, struct resource *old,
+static int reallocate_resource(struct resource *root, struct resource *old,
 			resource_size_t newsize,
 			struct resource_constraint  *constraint)
 {
@@ -515,8 +694,8 @@ out:
  * @root: root resource descriptor
  * @new: resource descriptor desired by caller
  * @size: requested resource region size
- * @min: minimum size to allocate
- * @max: maximum size to allocate
+ * @min: minimum boundary to allocate
+ * @max: maximum boundary to allocate
  * @align: alignment requested, in bytes
  * @alignf: alignment function, optional, called if not NULL
  * @alignf_data: arbitrary data to pass to the @alignf function
@@ -704,31 +883,18 @@ void insert_resource_expand_to_fit(struct resource *root, struct resource *new)
 	write_unlock(&resource_lock);
 }
 
-/**
- * adjust_resource - modify a resource's start and size
- * @res: resource to modify
- * @start: new start value
- * @size: new size
- *
- * Given an existing resource, change its start and size to match the
- * arguments.  Returns 0 on success, -EBUSY if it can't fit.
- * Existing children of the resource are assumed to be immutable.
- */
-int adjust_resource(struct resource *res, resource_size_t start, resource_size_t size)
+static int __adjust_resource(struct resource *res, resource_size_t start,
+				resource_size_t size)
 {
 	struct resource *tmp, *parent = res->parent;
 	resource_size_t end = start + size - 1;
 	int result = -EBUSY;
 
-	write_lock(&resource_lock);
+	if (!parent)
+		goto skip;
 
 	if ((start < parent->start) || (end > parent->end))
 		goto out;
-
-	for (tmp = res->child; tmp; tmp = tmp->sibling) {
-		if ((tmp->start < start) || (tmp->end > end))
-			goto out;
-	}
 
 	if (res->sibling && (res->sibling->start <= end))
 		goto out;
@@ -741,11 +907,36 @@ int adjust_resource(struct resource *res, resource_size_t start, resource_size_t
 			goto out;
 	}
 
+skip:
+	for (tmp = res->child; tmp; tmp = tmp->sibling)
+		if ((tmp->start < start) || (tmp->end > end))
+			goto out;
+
 	res->start = start;
 	res->end = end;
 	result = 0;
 
  out:
+	return result;
+}
+
+/**
+ * adjust_resource - modify a resource's start and size
+ * @res: resource to modify
+ * @start: new start value
+ * @size: new size
+ *
+ * Given an existing resource, change its start and size to match the
+ * arguments.  Returns 0 on success, -EBUSY if it can't fit.
+ * Existing children of the resource are assumed to be immutable.
+ */
+int adjust_resource(struct resource *res, resource_size_t start,
+			resource_size_t size)
+{
+	int result;
+
+	write_lock(&resource_lock);
+	result = __adjust_resource(res, start, size);
 	write_unlock(&resource_lock);
 	return result;
 }
@@ -757,7 +948,7 @@ static void __init __reserve_region_with_split(struct resource *root,
 {
 	struct resource *parent = root;
 	struct resource *conflict;
-	struct resource *res = kzalloc(sizeof(*res), GFP_ATOMIC);
+	struct resource *res = alloc_resource(GFP_ATOMIC);
 	struct resource *next_res = NULL;
 
 	if (!res)
@@ -782,7 +973,7 @@ static void __init __reserve_region_with_split(struct resource *root,
 		/* conflict covered whole area */
 		if (conflict->start <= res->start &&
 				conflict->end >= res->end) {
-			kfree(res);
+			free_resource(res);
 			WARN_ON(next_res);
 			break;
 		}
@@ -792,10 +983,9 @@ static void __init __reserve_region_with_split(struct resource *root,
 			end = res->end;
 			res->end = conflict->start - 1;
 			if (conflict->end < end) {
-				next_res = kzalloc(sizeof(*next_res),
-						GFP_ATOMIC);
+				next_res = alloc_resource(GFP_ATOMIC);
 				if (!next_res) {
-					kfree(res);
+					free_resource(res);
 					break;
 				}
 				next_res->name = name;
@@ -814,8 +1004,28 @@ void __init reserve_region_with_split(struct resource *root,
 		resource_size_t start, resource_size_t end,
 		const char *name)
 {
+	int abort = 0;
+
 	write_lock(&resource_lock);
-	__reserve_region_with_split(root, start, end, name);
+	if (root->start > start || root->end < end) {
+		pr_err("requested range [0x%llx-0x%llx] not in root %pr\n",
+		       (unsigned long long)start, (unsigned long long)end,
+		       root);
+		if (start > root->end || end < root->start)
+			abort = 1;
+		else {
+			if (end > root->end)
+				end = root->end;
+			if (start < root->start)
+				start = root->start;
+			pr_err("fixing request to [0x%llx-0x%llx]\n",
+			       (unsigned long long)start,
+			       (unsigned long long)end);
+		}
+		dump_stack();
+	}
+	if (!abort)
+		__reserve_region_with_split(root, start, end, name);
 	write_unlock(&resource_lock);
 }
 
@@ -845,8 +1055,6 @@ resource_size_t resource_alignment(struct resource *res)
  *
  * request_region creates a new busy region.
  *
- * check_region returns non-zero if the area is already busy.
- *
  * release_region releases a matching busy region.
  */
 
@@ -865,7 +1073,7 @@ struct resource * __request_region(struct resource *parent,
 				   const char *name, int flags)
 {
 	DECLARE_WAITQUEUE(wait, current);
-	struct resource *res = kzalloc(sizeof(*res), GFP_KERNEL);
+	struct resource *res = alloc_resource(GFP_KERNEL);
 
 	if (!res)
 		return NULL;
@@ -873,8 +1081,8 @@ struct resource * __request_region(struct resource *parent,
 	res->name = name;
 	res->start = start;
 	res->end = start + n - 1;
-	res->flags = IORESOURCE_BUSY;
-	res->flags |= flags;
+	res->flags = resource_type(parent);
+	res->flags |= IORESOURCE_BUSY | flags;
 
 	write_lock(&resource_lock);
 
@@ -885,9 +1093,10 @@ struct resource * __request_region(struct resource *parent,
 		if (!conflict)
 			break;
 		if (conflict != parent) {
-			parent = conflict;
-			if (!(conflict->flags & IORESOURCE_BUSY))
+			if (!(conflict->flags & IORESOURCE_BUSY)) {
+				parent = conflict;
 				continue;
+			}
 		}
 		if (conflict->flags & flags & IORESOURCE_MUXED) {
 			add_wait_queue(&muxed_resource_wait, &wait);
@@ -899,7 +1108,7 @@ struct resource * __request_region(struct resource *parent,
 			continue;
 		}
 		/* Uhhuh, that didn't work out.. */
-		kfree(res);
+		free_resource(res);
 		res = NULL;
 		break;
 	}
@@ -907,36 +1116,6 @@ struct resource * __request_region(struct resource *parent,
 	return res;
 }
 EXPORT_SYMBOL(__request_region);
-
-/**
- * __check_region - check if a resource region is busy or free
- * @parent: parent resource descriptor
- * @start: resource start address
- * @n: resource region size
- *
- * Returns 0 if the region is free at the moment it is checked,
- * returns %-EBUSY if the region is busy.
- *
- * NOTE:
- * This function is deprecated because its use is racy.
- * Even if it returns 0, a subsequent call to request_region()
- * may fail because another driver etc. just allocated the region.
- * Do NOT use it.  It will be removed from the kernel.
- */
-int __check_region(struct resource *parent, resource_size_t start,
-			resource_size_t n)
-{
-	struct resource * res;
-
-	res = __request_region(parent, start, n, "check-region", 0);
-	if (!res)
-		return -EBUSY;
-
-	release_resource(res);
-	kfree(res);
-	return 0;
-}
-EXPORT_SYMBOL(__check_region);
 
 /**
  * __release_region - release a previously reserved resource region
@@ -973,7 +1152,7 @@ void __release_region(struct resource *parent, resource_size_t start,
 			write_unlock(&resource_lock);
 			if (res->flags & IORESOURCE_MUXED)
 				wake_up(&muxed_resource_wait);
-			kfree(res);
+			free_resource(res);
 			return;
 		}
 		p = &res->sibling;
@@ -987,9 +1166,182 @@ void __release_region(struct resource *parent, resource_size_t start,
 }
 EXPORT_SYMBOL(__release_region);
 
+#ifdef CONFIG_MEMORY_HOTREMOVE
+/**
+ * release_mem_region_adjustable - release a previously reserved memory region
+ * @parent: parent resource descriptor
+ * @start: resource start address
+ * @size: resource region size
+ *
+ * This interface is intended for memory hot-delete.  The requested region
+ * is released from a currently busy memory resource.  The requested region
+ * must either match exactly or fit into a single busy resource entry.  In
+ * the latter case, the remaining resource is adjusted accordingly.
+ * Existing children of the busy memory resource must be immutable in the
+ * request.
+ *
+ * Note:
+ * - Additional release conditions, such as overlapping region, can be
+ *   supported after they are confirmed as valid cases.
+ * - When a busy memory resource gets split into two entries, the code
+ *   assumes that all children remain in the lower address entry for
+ *   simplicity.  Enhance this logic when necessary.
+ */
+int release_mem_region_adjustable(struct resource *parent,
+			resource_size_t start, resource_size_t size)
+{
+	struct resource **p;
+	struct resource *res;
+	struct resource *new_res;
+	resource_size_t end;
+	int ret = -EINVAL;
+
+	end = start + size - 1;
+	if ((start < parent->start) || (end > parent->end))
+		return ret;
+
+	/* The alloc_resource() result gets checked later */
+	new_res = alloc_resource(GFP_KERNEL);
+
+	p = &parent->child;
+	write_lock(&resource_lock);
+
+	while ((res = *p)) {
+		if (res->start >= end)
+			break;
+
+		/* look for the next resource if it does not fit into */
+		if (res->start > start || res->end < end) {
+			p = &res->sibling;
+			continue;
+		}
+
+		if (!(res->flags & IORESOURCE_MEM))
+			break;
+
+		if (!(res->flags & IORESOURCE_BUSY)) {
+			p = &res->child;
+			continue;
+		}
+
+		/* found the target resource; let's adjust accordingly */
+		if (res->start == start && res->end == end) {
+			/* free the whole entry */
+			*p = res->sibling;
+			free_resource(res);
+			ret = 0;
+		} else if (res->start == start && res->end != end) {
+			/* adjust the start */
+			ret = __adjust_resource(res, end + 1,
+						res->end - end);
+		} else if (res->start != start && res->end == end) {
+			/* adjust the end */
+			ret = __adjust_resource(res, res->start,
+						start - res->start);
+		} else {
+			/* split into two entries */
+			if (!new_res) {
+				ret = -ENOMEM;
+				break;
+			}
+			new_res->name = res->name;
+			new_res->start = end + 1;
+			new_res->end = res->end;
+			new_res->flags = res->flags;
+			new_res->parent = res->parent;
+			new_res->sibling = res->sibling;
+			new_res->child = NULL;
+
+			ret = __adjust_resource(res, res->start,
+						start - res->start);
+			if (ret)
+				break;
+			res->sibling = new_res;
+			new_res = NULL;
+		}
+
+		break;
+	}
+
+	write_unlock(&resource_lock);
+	free_resource(new_res);
+	return ret;
+}
+#endif	/* CONFIG_MEMORY_HOTREMOVE */
+
 /*
  * Managed region resource
  */
+static void devm_resource_release(struct device *dev, void *ptr)
+{
+	struct resource **r = ptr;
+
+	release_resource(*r);
+}
+
+/**
+ * devm_request_resource() - request and reserve an I/O or memory resource
+ * @dev: device for which to request the resource
+ * @root: root of the resource tree from which to request the resource
+ * @new: descriptor of the resource to request
+ *
+ * This is a device-managed version of request_resource(). There is usually
+ * no need to release resources requested by this function explicitly since
+ * that will be taken care of when the device is unbound from its driver.
+ * If for some reason the resource needs to be released explicitly, because
+ * of ordering issues for example, drivers must call devm_release_resource()
+ * rather than the regular release_resource().
+ *
+ * When a conflict is detected between any existing resources and the newly
+ * requested resource, an error message will be printed.
+ *
+ * Returns 0 on success or a negative error code on failure.
+ */
+int devm_request_resource(struct device *dev, struct resource *root,
+			  struct resource *new)
+{
+	struct resource *conflict, **ptr;
+
+	ptr = devres_alloc(devm_resource_release, sizeof(*ptr), GFP_KERNEL);
+	if (!ptr)
+		return -ENOMEM;
+
+	*ptr = new;
+
+	conflict = request_resource_conflict(root, new);
+	if (conflict) {
+		dev_err(dev, "resource collision: %pR conflicts with %s %pR\n",
+			new, conflict->name, conflict);
+		devres_free(ptr);
+		return -EBUSY;
+	}
+
+	devres_add(dev, ptr);
+	return 0;
+}
+EXPORT_SYMBOL(devm_request_resource);
+
+static int devm_resource_match(struct device *dev, void *res, void *data)
+{
+	struct resource **ptr = res;
+
+	return *ptr == data;
+}
+
+/**
+ * devm_release_resource() - release a previously requested resource
+ * @dev: device for which to release the resource
+ * @new: descriptor of the resource to release
+ *
+ * Releases a resource previously requested using devm_request_resource().
+ */
+void devm_release_resource(struct device *dev, struct resource *new)
+{
+	WARN_ON(devres_release(dev, devm_resource_release, devm_resource_match,
+			       new));
+}
+EXPORT_SYMBOL(devm_release_resource);
+
 struct region_devres {
 	struct resource *parent;
 	resource_size_t start;
@@ -1113,13 +1465,10 @@ int iomem_map_sanity_check(resource_size_t addr, unsigned long size)
 		if (p->flags & IORESOURCE_BUSY)
 			continue;
 
-		printk(KERN_WARNING "resource map sanity check conflict: "
-		       "0x%llx 0x%llx 0x%llx 0x%llx %s\n",
+		printk(KERN_WARNING "resource sanity check: requesting [mem %#010llx-%#010llx], which spans more than %s %pR\n",
 		       (unsigned long long)addr,
 		       (unsigned long long)(addr + size - 1),
-		       (unsigned long long)p->start,
-		       (unsigned long long)p->end,
-		       p->name);
+		       p->name, p);
 		err = -1;
 		break;
 	}
@@ -1170,6 +1519,30 @@ int iomem_is_exclusive(u64 addr)
 
 	return err;
 }
+
+struct resource_entry *resource_list_create_entry(struct resource *res,
+						  size_t extra_size)
+{
+	struct resource_entry *entry;
+
+	entry = kzalloc(sizeof(*entry) + extra_size, GFP_KERNEL);
+	if (entry) {
+		INIT_LIST_HEAD(&entry->node);
+		entry->res = res ? res : &entry->__res;
+	}
+
+	return entry;
+}
+EXPORT_SYMBOL(resource_list_create_entry);
+
+void resource_list_free(struct list_head *head)
+{
+	struct resource_entry *entry, *tmp;
+
+	list_for_each_entry_safe(entry, tmp, head, node)
+		resource_list_destroy_entry(entry);
+}
+EXPORT_SYMBOL(resource_list_free);
 
 static int __init strict_iomem(char *str)
 {

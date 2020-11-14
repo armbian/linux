@@ -479,7 +479,7 @@
 
 #include "de4x5.h"
 
-static const char version[] __devinitconst =
+static const char version[] =
 	KERN_INFO "de4x5.c:V0.546 2001/02/22 davies@maniac.ultranet.com\n";
 
 #define c_char const char
@@ -995,7 +995,6 @@ static void    de4x5_dbg_mii(struct net_device *dev, int k);
 static void    de4x5_dbg_media(struct net_device *dev);
 static void    de4x5_dbg_srom(struct de4x5_srom *p);
 static void    de4x5_dbg_rx(struct sk_buff *skb, int len);
-static int     de4x5_strncmp(char *a, char *b, int n);
 static int     dc21041_infoleaf(struct net_device *dev);
 static int     dc21140_infoleaf(struct net_device *dev);
 static int     dc21142_infoleaf(struct net_device *dev);
@@ -1092,7 +1091,7 @@ static const struct net_device_ops de4x5_netdev_ops = {
 };
 
 
-static int __devinit
+static int
 de4x5_hw_init(struct net_device *dev, u_long iobase, struct device *gendev)
 {
     char name[DE4X5_NAME_LENGTH + 1];
@@ -1321,7 +1320,7 @@ de4x5_open(struct net_device *dev)
     if (request_irq(dev->irq, de4x5_interrupt, IRQF_SHARED,
 		                                     lp->adapter_name, dev)) {
 	printk("de4x5_open(): Requested IRQ%d is busy - attemping FAST/SHARE...", dev->irq);
-	if (request_irq(dev->irq, de4x5_interrupt, IRQF_DISABLED | IRQF_SHARED,
+	if (request_irq(dev->irq, de4x5_interrupt, IRQF_SHARED,
 			                             lp->adapter_name, dev)) {
 	    printk("\n              Cannot get IRQ- reconfigure your hardware.\n");
 	    disable_ast(dev);
@@ -1874,7 +1873,7 @@ de4x5_local_stats(struct net_device *dev, char *buf, int pkt_len)
 	} else {
 	    lp->pktStats.multicast++;
 	}
-    } else if (compare_ether_addr(buf, dev->dev_addr) == 0) {
+    } else if (ether_addr_equal(buf, dev->dev_addr)) {
         lp->pktStats.unicast++;
     }
 
@@ -1991,7 +1990,7 @@ SetMulticastFilter(struct net_device *dev)
 
 static u_char de4x5_irq[] = EISA_ALLOWED_IRQ_LIST;
 
-static int __init de4x5_eisa_probe (struct device *gendev)
+static int de4x5_eisa_probe(struct device *gendev)
 {
 	struct eisa_device *edev;
 	u_long iobase;
@@ -2077,7 +2076,7 @@ static int __init de4x5_eisa_probe (struct device *gendev)
 	return status;
 }
 
-static int __devexit de4x5_eisa_remove (struct device *device)
+static int de4x5_eisa_remove(struct device *device)
 {
 	struct net_device *dev;
 	u_long iobase;
@@ -2104,7 +2103,7 @@ static struct eisa_driver de4x5_eisa_driver = {
         .driver   = {
                 .name    = "de4x5",
                 .probe   = de4x5_eisa_probe,
-                .remove  = __devexit_p (de4x5_eisa_remove),
+		.remove  = de4x5_eisa_remove,
         }
 };
 MODULE_DEVICE_TABLE(eisa, de4x5_eisa_ids);
@@ -2118,7 +2117,7 @@ MODULE_DEVICE_TABLE(eisa, de4x5_eisa_ids);
 ** DECchips, we can find the base SROM irrespective of the BIOS scan direction.
 ** For single port cards this is a time waster...
 */
-static void __devinit
+static void
 srom_search(struct net_device *dev, struct pci_dev *pdev)
 {
     u_char pb;
@@ -2192,8 +2191,8 @@ srom_search(struct net_device *dev, struct pci_dev *pdev)
 ** kernels use the V0.535[n] drivers.
 */
 
-static int __devinit de4x5_pci_probe (struct pci_dev *pdev,
-				   const struct pci_device_id *ent)
+static int de4x5_pci_probe(struct pci_dev *pdev,
+			   const struct pci_device_id *ent)
 {
 	u_char pb, pbus = 0, dev_num, dnum = 0, timer;
 	u_short vendor, status;
@@ -2314,12 +2313,12 @@ static int __devinit de4x5_pci_probe (struct pci_dev *pdev,
 	return error;
 }
 
-static void __devexit de4x5_pci_remove (struct pci_dev *pdev)
+static void de4x5_pci_remove(struct pci_dev *pdev)
 {
 	struct net_device *dev;
 	u_long iobase;
 
-	dev = dev_get_drvdata(&pdev->dev);
+	dev = pci_get_drvdata(pdev);
 	iobase = dev->base_addr;
 
 	unregister_netdev (dev);
@@ -2328,7 +2327,7 @@ static void __devexit de4x5_pci_remove (struct pci_dev *pdev)
 	pci_disable_device (pdev);
 }
 
-static struct pci_device_id de4x5_pci_tbl[] = {
+static const struct pci_device_id de4x5_pci_tbl[] = {
         { PCI_VENDOR_ID_DEC, PCI_DEVICE_ID_DEC_TULIP,
           PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
         { PCI_VENDOR_ID_DEC, PCI_DEVICE_ID_DEC_TULIP_PLUS,
@@ -2344,7 +2343,7 @@ static struct pci_driver de4x5_pci_driver = {
         .name           = "de4x5",
         .id_table       = de4x5_pci_tbl,
         .probe          = de4x5_pci_probe,
-	.remove         = __devexit_p (de4x5_pci_remove),
+	.remove         = de4x5_pci_remove,
 };
 
 #endif
@@ -3250,7 +3249,6 @@ srom_map_media(struct net_device *dev)
 	printk("%s: Bad media code [%d] detected in SROM!\n", dev->name,
 	                                                  lp->infoblock_media);
 	return -1;
-	break;
     }
 
     return 0;
@@ -3973,7 +3971,7 @@ DevicePresent(struct net_device *dev, u_long aprom_addr)
 	    tmp = srom_rd(aprom_addr, i);
 	    *p++ = cpu_to_le16(tmp);
 	}
-	de4x5_dbg_srom((struct de4x5_srom *)&lp->srom);
+	de4x5_dbg_srom(&lp->srom);
     }
 }
 
@@ -4103,8 +4101,7 @@ get_hw_addr(struct net_device *dev)
 }
 
 /*
-** Test for enet addresses in the first 32 bytes. The built-in strncmp
-** didn't seem to work here...?
+** Test for enet addresses in the first 32 bytes.
 */
 static int
 de4x5_bad_srom(struct de4x5_private *lp)
@@ -4112,8 +4109,8 @@ de4x5_bad_srom(struct de4x5_private *lp)
     int i, status = 0;
 
     for (i = 0; i < ARRAY_SIZE(enet_det); i++) {
-	if (!de4x5_strncmp((char *)&lp->srom, (char *)&enet_det[i], 3) &&
-	    !de4x5_strncmp((char *)&lp->srom+0x10, (char *)&enet_det[i], 3)) {
+	if (!memcmp(&lp->srom, &enet_det[i], 3) &&
+	    !memcmp((char *)&lp->srom+0x10, &enet_det[i], 3)) {
 	    if (i == 0) {
 		status = SMC;
 	    } else if (i == 1) {
@@ -4124,18 +4121,6 @@ de4x5_bad_srom(struct de4x5_private *lp)
     }
 
     return status;
-}
-
-static int
-de4x5_strncmp(char *a, char *b, int n)
-{
-    int ret=0;
-
-    for (;n && !ret; n--) {
-	ret = *a++ - *b++;
-    }
-
-    return ret;
 }
 
 static void
@@ -5204,16 +5189,16 @@ de4x5_parse_params(struct net_device *dev)
 	if (strstr(p, "fdx") || strstr(p, "FDX")) lp->params.fdx = true;
 
 	if (strstr(p, "autosense") || strstr(p, "AUTOSENSE")) {
-	    if (strstr(p, "TP")) {
-		lp->params.autosense = TP;
-	    } else if (strstr(p, "TP_NW")) {
+	    if (strstr(p, "TP_NW")) {
 		lp->params.autosense = TP_NW;
+	    } else if (strstr(p, "TP")) {
+		lp->params.autosense = TP;
+	    } else if (strstr(p, "BNC_AUI")) {
+		lp->params.autosense = BNC;
 	    } else if (strstr(p, "BNC")) {
 		lp->params.autosense = BNC;
 	    } else if (strstr(p, "AUI")) {
 		lp->params.autosense = AUI;
-	    } else if (strstr(p, "BNC_AUI")) {
-		lp->params.autosense = BNC;
 	    } else if (strstr(p, "10Mb")) {
 		lp->params.autosense = _10Mb;
 	    } else if (strstr(p, "100Mb")) {

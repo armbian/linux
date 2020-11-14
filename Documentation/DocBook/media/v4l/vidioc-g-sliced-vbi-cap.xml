@@ -148,7 +148,7 @@ using the &VIDIOC-S-FMT; ioctl as described in <xref
 <structfield>service_lines</structfield>[1][0] to zero.</entry>
 	  </row>
 	  <row>
-	    <entry>&v4l2-buf-type;</entry>
+	    <entry>__u32</entry>
 	    <entry><structfield>type</structfield></entry>
 	    <entry>Type of the data stream, see <xref
 		  linkend="v4l2-buf-type" />. Should be
@@ -205,7 +205,7 @@ ETS&nbsp;300&nbsp;231, lsb first transmitted.</entry>
 	  <row>
 	    <entry><constant>V4L2_SLICED_CAPTION_525</constant></entry>
 	    <entry>0x1000</entry>
-	    <entry><xref linkend="eia608" /></entry>
+	    <entry><xref linkend="cea608" /></entry>
 	    <entry>NTSC line 21, 284 (second field 21)</entry>
 	    <entry>Two bytes in transmission order, including parity
 bit, lsb first transmitted.</entry>

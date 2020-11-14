@@ -110,6 +110,7 @@ static struct file_system_type ibmasmfs_type = {
 	.mount          = ibmasmfs_mount,
 	.kill_sb        = kill_litter_super,
 };
+MODULE_ALIAS_FS("ibmasmfs");
 
 static int ibmasmfs_fill_super (struct super_block *sb, void *data, int silent)
 {
@@ -148,8 +149,7 @@ static struct inode *ibmasmfs_make_inode(struct super_block *sb, int mode)
 	return ret;
 }
 
-static struct dentry *ibmasmfs_create_file (struct super_block *sb,
-			struct dentry *parent,
+static struct dentry *ibmasmfs_create_file(struct dentry *parent,
 			const char *name,
 			const struct file_operations *fops,
 			void *data,
@@ -162,7 +162,7 @@ static struct dentry *ibmasmfs_create_file (struct super_block *sb,
 	if (!dentry)
 		return NULL;
 
-	inode = ibmasmfs_make_inode(sb, S_IFREG | mode);
+	inode = ibmasmfs_make_inode(parent->d_sb, S_IFREG | mode);
 	if (!inode) {
 		dput(dentry);
 		return NULL;
@@ -175,8 +175,7 @@ static struct dentry *ibmasmfs_create_file (struct super_block *sb,
 	return dentry;
 }
 
-static struct dentry *ibmasmfs_create_dir (struct super_block *sb,
-				struct dentry *parent,
+static struct dentry *ibmasmfs_create_dir(struct dentry *parent,
 				const char *name)
 {
 	struct dentry *dentry;
@@ -186,7 +185,7 @@ static struct dentry *ibmasmfs_create_dir (struct super_block *sb,
 	if (!dentry)
 		return NULL;
 
-	inode = ibmasmfs_make_inode(sb, S_IFDIR | 0500);
+	inode = ibmasmfs_make_inode(parent->d_sb, S_IFDIR | 0500);
 	if (!inode) {
 		dput(dentry);
 		return NULL;
@@ -508,35 +507,14 @@ static int remote_settings_file_close(struct inode *inode, struct file *file)
 static ssize_t remote_settings_file_read(struct file *file, char __user *buf, size_t count, loff_t *offset)
 {
 	void __iomem *address = (void __iomem *)file->private_data;
-	unsigned char *page;
-	int retval;
 	int len = 0;
 	unsigned int value;
-
-	if (*offset < 0)
-		return -EINVAL;
-	if (count == 0 || count > 1024)
-		return 0;
-	if (*offset != 0)
-		return 0;
-
-	page = (unsigned char *)__get_free_page(GFP_KERNEL);
-	if (!page)
-		return -ENOMEM;
+	char lbuf[20];
 
 	value = readl(address);
-	len = sprintf(page, "%d\n", value);
+	len = snprintf(lbuf, sizeof(lbuf), "%d\n", value);
 
-	if (copy_to_user(buf, page, len)) {
-		retval = -EFAULT;
-		goto exit;
-	}
-	*offset += len;
-	retval = len;
-
-exit:
-	free_page((unsigned long)page);
-	return retval;
+	return simple_read_from_buffer(buf, count, offset, lbuf, len);
 }
 
 static ssize_t remote_settings_file_write(struct file *file, const char __user *ubuff, size_t count, loff_t *offset)
@@ -611,20 +589,20 @@ static void ibmasmfs_create_files (struct super_block *sb)
 		struct dentry *dir;
 		struct dentry *remote_dir;
 		sp = list_entry(entry, struct service_processor, node);
-		dir = ibmasmfs_create_dir(sb, sb->s_root, sp->dirname);
+		dir = ibmasmfs_create_dir(sb->s_root, sp->dirname);
 		if (!dir)
 			continue;
 
-		ibmasmfs_create_file(sb, dir, "command", &command_fops, sp, S_IRUSR|S_IWUSR);
-		ibmasmfs_create_file(sb, dir, "event", &event_fops, sp, S_IRUSR|S_IWUSR);
-		ibmasmfs_create_file(sb, dir, "reverse_heartbeat", &r_heartbeat_fops, sp, S_IRUSR|S_IWUSR);
+		ibmasmfs_create_file(dir, "command", &command_fops, sp, S_IRUSR|S_IWUSR);
+		ibmasmfs_create_file(dir, "event", &event_fops, sp, S_IRUSR|S_IWUSR);
+		ibmasmfs_create_file(dir, "reverse_heartbeat", &r_heartbeat_fops, sp, S_IRUSR|S_IWUSR);
 
-		remote_dir = ibmasmfs_create_dir(sb, dir, "remote_video");
+		remote_dir = ibmasmfs_create_dir(dir, "remote_video");
 		if (!remote_dir)
 			continue;
 
-		ibmasmfs_create_file(sb, remote_dir, "width", &remote_settings_fops, (void *)display_width(sp), S_IRUSR|S_IWUSR);
-		ibmasmfs_create_file(sb, remote_dir, "height", &remote_settings_fops, (void *)display_height(sp), S_IRUSR|S_IWUSR);
-		ibmasmfs_create_file(sb, remote_dir, "depth", &remote_settings_fops, (void *)display_depth(sp), S_IRUSR|S_IWUSR);
+		ibmasmfs_create_file(remote_dir, "width", &remote_settings_fops, (void *)display_width(sp), S_IRUSR|S_IWUSR);
+		ibmasmfs_create_file(remote_dir, "height", &remote_settings_fops, (void *)display_height(sp), S_IRUSR|S_IWUSR);
+		ibmasmfs_create_file(remote_dir, "depth", &remote_settings_fops, (void *)display_depth(sp), S_IRUSR|S_IWUSR);
 	}
 }

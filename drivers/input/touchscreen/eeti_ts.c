@@ -154,10 +154,10 @@ static void eeti_ts_close(struct input_dev *dev)
 	eeti_ts_stop(priv);
 }
 
-static int __devinit eeti_ts_probe(struct i2c_client *client,
+static int eeti_ts_probe(struct i2c_client *client,
 				   const struct i2c_device_id *idp)
 {
-	struct eeti_ts_platform_data *pdata = client->dev.platform_data;
+	struct eeti_ts_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct eeti_ts_priv *priv;
 	struct input_dev *input;
 	unsigned int irq_flags;
@@ -206,8 +206,7 @@ static int __devinit eeti_ts_probe(struct i2c_client *client,
 	if (err < 0)
 		goto err1;
 
-	if (pdata)
-		priv->irq_active_high = pdata->irq_active_high;
+	priv->irq_active_high = pdata->irq_active_high;
 
 	irq_flags = priv->irq_active_high ?
 		IRQF_TRIGGER_RISING : IRQF_TRIGGER_FALLING;
@@ -248,7 +247,7 @@ err0:
 	return err;
 }
 
-static int __devexit eeti_ts_remove(struct i2c_client *client)
+static int eeti_ts_remove(struct i2c_client *client)
 {
 	struct eeti_ts_priv *priv = i2c_get_clientdata(client);
 
@@ -265,8 +264,7 @@ static int __devexit eeti_ts_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int eeti_ts_suspend(struct device *dev)
+static int __maybe_unused eeti_ts_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct eeti_ts_priv *priv = i2c_get_clientdata(client);
@@ -285,7 +283,7 @@ static int eeti_ts_suspend(struct device *dev)
 	return 0;
 }
 
-static int eeti_ts_resume(struct device *dev)
+static int __maybe_unused eeti_ts_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct eeti_ts_priv *priv = i2c_get_clientdata(client);
@@ -305,7 +303,6 @@ static int eeti_ts_resume(struct device *dev)
 }
 
 static SIMPLE_DEV_PM_OPS(eeti_ts_pm, eeti_ts_suspend, eeti_ts_resume);
-#endif
 
 static const struct i2c_device_id eeti_ts_id[] = {
 	{ "eeti_ts", 0 },
@@ -316,12 +313,10 @@ MODULE_DEVICE_TABLE(i2c, eeti_ts_id);
 static struct i2c_driver eeti_ts_driver = {
 	.driver = {
 		.name = "eeti_ts",
-#ifdef CONFIG_PM
 		.pm = &eeti_ts_pm,
-#endif
 	},
 	.probe = eeti_ts_probe,
-	.remove = __devexit_p(eeti_ts_remove),
+	.remove = eeti_ts_remove,
 	.id_table = eeti_ts_id,
 };
 

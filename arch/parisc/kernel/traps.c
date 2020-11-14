@@ -25,9 +25,10 @@
 #include <linux/interrupt.h>
 #include <linux/console.h>
 #include <linux/bug.h>
+#include <linux/ratelimit.h>
+#include <linux/uaccess.h>
 
 #include <asm/assembly.h>
-#include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/traps.h>
@@ -41,13 +42,6 @@
 #include <asm/cacheflush.h>
 
 #include "../math-emu/math-emu.h"	/* for handle_fpe() */
-
-#define PRINT_USER_FAULTS /* (turn this on if you want user faults to be */
-			  /*  dumped to the console via printk)          */
-
-#if defined(CONFIG_SMP) || defined(CONFIG_DEBUG_SPINLOCK)
-DEFINE_SPINLOCK(pa_dbit_lock);
-#endif
 
 static void parisc_show_stack(struct task_struct *task, unsigned long *sp,
 	struct pt_regs *regs);
@@ -126,6 +120,8 @@ void show_regs(struct pt_regs *regs)
 	user = user_mode(regs);
 	level = user ? KERN_DEBUG : KERN_CRIT;
 
+	show_regs_print_info(level);
+
 	print_gr(level, regs);
 
 	for (i = 0; i < 8; i += 4)
@@ -158,13 +154,16 @@ void show_regs(struct pt_regs *regs)
 	}
 }
 
+static DEFINE_RATELIMIT_STATE(_hppa_rs,
+	DEFAULT_RATELIMIT_INTERVAL, DEFAULT_RATELIMIT_BURST);
 
-void dump_stack(void)
-{
-	show_stack(NULL, NULL);
+#define parisc_printk_ratelimited(critical, regs, fmt, ...)	{	      \
+	if ((critical || show_unhandled_signals) && __ratelimit(&_hppa_rs)) { \
+		printk(fmt, ##__VA_ARGS__);				      \
+		show_regs(regs);					      \
+	}								      \
 }
 
-EXPORT_SYMBOL(dump_stack);
 
 static void do_show_stack(struct unwind_frame_info *info)
 {
@@ -235,12 +234,10 @@ void die_if_kernel(char *str, struct pt_regs *regs, long err)
 		if (err == 0)
 			return; /* STFU */
 
-		printk(KERN_CRIT "%s (pid %d): %s (code %ld) at " RFMT "\n",
+		parisc_printk_ratelimited(1, regs,
+			KERN_CRIT "%s (pid %d): %s (code %ld) at " RFMT "\n",
 			current->comm, task_pid_nr(current), str, err, regs->iaoq[0]);
-#ifdef PRINT_USER_FAULTS
-		/* XXX for debugging only */
-		show_regs(regs);
-#endif
+
 		return;
 	}
 
@@ -282,7 +279,7 @@ void die_if_kernel(char *str, struct pt_regs *regs, long err)
 
 	show_regs(regs);
 	dump_stack();
-	add_taint(TAINT_DIE);
+	add_taint(TAINT_DIE, LOCKDEP_NOW_UNRELIABLE);
 
 	if (in_interrupt())
 		panic("Fatal exception in interrupt");
@@ -295,11 +292,6 @@ void die_if_kernel(char *str, struct pt_regs *regs, long err)
 
 	oops_exit();
 	do_exit(SIGSEGV);
-}
-
-int syscall_ipi(int (*syscall) (struct pt_regs *), struct pt_regs *regs)
-{
-	return syscall(regs);
 }
 
 /* gdb uses break 4,8 */
@@ -332,14 +324,11 @@ static void handle_break(struct pt_regs *regs)
 			(tt == BUG_TRAP_TYPE_NONE) ? 9 : 0);
 	}
 
-#ifdef PRINT_USER_FAULTS
-	if (unlikely(iir != GDB_BREAK_INSN)) {
-		printk(KERN_DEBUG "break %d,%d: pid=%d command='%s'\n",
+	if (unlikely(iir != GDB_BREAK_INSN))
+		parisc_printk_ratelimited(0, regs,
+			KERN_DEBUG "break %d,%d: pid=%d command='%s'\n",
 			iir & 31, (iir>>13) & ((1<<13)-1),
 			task_pid_nr(current), current->comm);
-		show_regs(regs);
-	}
-#endif
 
 	/* send standard GDB signal */
 	handle_gdb_break(regs, TRAP_BRKPT);
@@ -528,10 +517,10 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 	 */
 	if (((unsigned long)regs->iaoq[0] & 3) &&
 	    ((unsigned long)regs->iasq[0] != (unsigned long)regs->sr[7])) { 
-	  	/* Kill the user process later */
-	  	regs->iaoq[0] = 0 | 3;
+		/* Kill the user process later */
+		regs->iaoq[0] = 0 | 3;
 		regs->iaoq[1] = regs->iaoq[0] + 4;
-	 	regs->iasq[0] = regs->iasq[1] = regs->sr[7];
+		regs->iasq[0] = regs->iasq[1] = regs->sr[7];
 		regs->gr[0] &= ~PSW_B;
 		return;
 	}
@@ -547,8 +536,8 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 		
 		/* set up a new led state on systems shipped with a LED State panel */
 		pdc_chassis_send_status(PDC_CHASSIS_DIRECT_HPMC);
-		    
-	    	parisc_terminate("High Priority Machine Check (HPMC)",
+
+		parisc_terminate("High Priority Machine Check (HPMC)",
 				regs, code, 0);
 		/* NOT REACHED */
 		
@@ -590,13 +579,13 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 		/* Break instruction trap */
 		handle_break(regs);
 		return;
-	
+
 	case 10:
 		/* Privileged operation trap */
 		die_if_kernel("Privileged operation", regs, code);
 		si.si_code = ILL_PRVOPC;
 		goto give_sigill;
-	
+
 	case 11:
 		/* Privileged register trap */
 		if ((regs->iir & 0xffdfffe0) == 0x034008a0) {
@@ -640,7 +629,7 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 		if(user_mode(regs)){
 			si.si_signo = SIGFPE;
 			/* Set to zero, and let the userspace app figure it out from
-		   	   the insn pointed to by si_addr */
+			   the insn pointed to by si_addr */
 			si.si_code = 0;
 			si.si_addr = (void __user *) regs->iaoq[0];
 			force_sig_info(SIGFPE, &si, current);
@@ -652,9 +641,10 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 	case 14:
 		/* Assist Exception Trap, i.e. floating point exception. */
 		die_if_kernel("Floating point exception", regs, 0); /* quiet */
+		__inc_irq_stat(irq_fpassist_count);
 		handle_fpe(regs);
 		return;
-		
+
 	case 15:
 		/* Data TLB miss fault/Data page fault */
 		/* Fall through */
@@ -666,15 +656,15 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 	case 17:
 		/* Non-access data TLB miss fault/Non-access data page fault */
 		/* FIXME: 
-		 	 Still need to add slow path emulation code here!
-		         If the insn used a non-shadow register, then the tlb
+			 Still need to add slow path emulation code here!
+			 If the insn used a non-shadow register, then the tlb
 			 handlers could not have their side-effect (e.g. probe
 			 writing to a target register) emulated since rfir would
 			 erase the changes to said register. Instead we have to
 			 setup everything, call this function we are in, and emulate
 			 by hand. Technically we need to emulate:
 			 fdc,fdce,pdc,"fic,4f",prober,probeir,probew, probeiw
-		*/			  
+		*/
 		fault_address = regs->ior;
 		fault_space = regs->isr;
 		break;
@@ -768,11 +758,9 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 
 	default:
 		if (user_mode(regs)) {
-#ifdef PRINT_USER_FAULTS
-			printk(KERN_DEBUG "\nhandle_interruption() pid=%d command='%s'\n",
-			    task_pid_nr(current), current->comm);
-			show_regs(regs);
-#endif
+			parisc_printk_ratelimited(0, regs, KERN_DEBUG
+				"handle_interruption() pid=%d command='%s'\n",
+				task_pid_nr(current), current->comm);
 			/* SIGBUS, for lack of a better one. */
 			si.si_signo = SIGBUS;
 			si.si_code = BUS_OBJERR;
@@ -789,16 +777,10 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 
 	if (user_mode(regs)) {
 	    if ((fault_space >> SPACEID_SHIFT) != (regs->sr[7] >> SPACEID_SHIFT)) {
-#ifdef PRINT_USER_FAULTS
-		if (fault_space == 0)
-			printk(KERN_DEBUG "User Fault on Kernel Space ");
-		else
-			printk(KERN_DEBUG "User Fault (long pointer) (fault %d) ",
-			       code);
-		printk(KERN_CONT "pid=%d command='%s'\n",
-		       task_pid_nr(current), current->comm);
-		show_regs(regs);
-#endif
+		parisc_printk_ratelimited(0, regs, KERN_DEBUG
+				"User fault %d on space 0x%08lx, pid=%d command='%s'\n",
+				code, fault_space,
+				task_pid_nr(current), current->comm);
 		si.si_signo = SIGSEGV;
 		si.si_errno = 0;
 		si.si_code = SEGV_MAPERR;
@@ -814,8 +796,11 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 	     * unless pagefault_disable() was called before.
 	     */
 
-	    if (fault_space == 0 && !in_atomic())
+	    if (fault_space == 0 && !faulthandler_disabled())
 	    {
+		/* Clean up and return if in exception table. */
+		if (fixup_exception(regs))
+			return;
 		pdc_chassis_send_status(PDC_CHASSIS_DIRECT_PANIC);
 		parisc_terminate("Kernel Fault", regs, code, fault_address);
 	    }
@@ -825,7 +810,7 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 }
 
 
-int __init check_ivt(void *iva)
+void __init initialize_ivt(const void *iva)
 {
 	extern u32 os_hpmc_size;
 	extern const u32 os_hpmc[];
@@ -836,8 +821,8 @@ int __init check_ivt(void *iva)
 	u32 *hpmcp;
 	u32 length;
 
-	if (strcmp((char *)iva, "cows can fly"))
-		return -1;
+	if (strcmp((const char *)iva, "cows can fly"))
+		panic("IVT invalid");
 
 	ivap = (u32 *)iva;
 
@@ -857,28 +842,23 @@ int __init check_ivt(void *iva)
 	    check += ivap[i];
 
 	ivap[5] = -check;
-
-	return 0;
 }
 	
+
+/* early_trap_init() is called before we set up kernel mappings and
+ * write-protect the kernel */
+void  __init early_trap_init(void)
+{
+	extern const void fault_vector_20;
+
 #ifndef CONFIG_64BIT
-extern const void fault_vector_11;
+	extern const void fault_vector_11;
+	initialize_ivt(&fault_vector_11);
 #endif
-extern const void fault_vector_20;
+
+	initialize_ivt(&fault_vector_20);
+}
 
 void __init trap_init(void)
 {
-	void *iva;
-
-	if (boot_cpu_data.cpu_type >= pcxu)
-		iva = (void *) &fault_vector_20;
-	else
-#ifdef CONFIG_64BIT
-		panic("Can't boot 64-bit OS on PA1.1 processor!");
-#else
-		iva = (void *) &fault_vector_11;
-#endif
-
-	if (check_ivt(iva))
-		panic("IVT invalid");
 }

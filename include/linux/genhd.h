@@ -13,10 +13,10 @@
 #include <linux/kdev_t.h>
 #include <linux/rcupdate.h>
 #include <linux/slab.h>
+#include <linux/percpu-refcount.h>
 
 #ifdef CONFIG_BLOCK
 
-#define kobj_to_dev(k)		container_of((k), struct device, kobj)
 #define dev_to_disk(device)	container_of((device), struct gendisk, part0.__dev)
 #define dev_to_part(device)	container_of((device), struct hd_struct, __dev)
 #define disk_to_dev(disk)	(&(disk)->part0.__dev)
@@ -89,16 +89,26 @@ struct disk_stats {
 };
 
 #define PARTITION_META_INFO_VOLNAMELTH	64
-#define PARTITION_META_INFO_UUIDLTH	16
+/*
+ * Enough for the string representation of any kind of UUID plus NULL.
+ * EFI UUID is 36 characters. MSDOS UUID is 11 characters.
+ */
+#define PARTITION_META_INFO_UUIDLTH	37
 
 struct partition_meta_info {
-	u8 uuid[PARTITION_META_INFO_UUIDLTH];	/* always big endian */
+	char uuid[PARTITION_META_INFO_UUIDLTH];
 	u8 volname[PARTITION_META_INFO_VOLNAMELTH];
 };
 
 struct hd_struct {
 	sector_t start_sect;
+	/*
+	 * nr_sects is protected by sequence counter. One might extend a
+	 * partition while IO is happening to it and update of nr_sects
+	 * can be non-atomic on 32bit machines with 64bit sector_t.
+	 */
 	sector_t nr_sects;
+	seqcount_t nr_sects_seq;
 	sector_t alignment_offset;
 	unsigned int discard_alignment;
 	struct device __dev;
@@ -115,7 +125,7 @@ struct hd_struct {
 #else
 	struct disk_stats dkstats;
 #endif
-	atomic_t ref;
+	struct percpu_ref ref;
 	struct rcu_head rcu_head;
 };
 
@@ -153,6 +163,18 @@ struct disk_part_tbl {
 
 struct disk_events;
 
+#if defined(CONFIG_BLK_DEV_INTEGRITY)
+
+struct blk_integrity {
+	struct blk_integrity_profile	*profile;
+	unsigned char			flags;
+	unsigned char			tuple_size;
+	unsigned char			interval_exp;
+	unsigned char			tag_size;
+};
+
+#endif	/* CONFIG_BLK_DEV_INTEGRITY */
+
 struct gendisk {
 	/* major, first_minor and minors are input parameters only,
 	 * don't use directly.  Use disk_devt() and disk_max_parts().
@@ -180,6 +202,8 @@ struct gendisk {
 	struct request_queue *queue;
 	void *private_data;
 
+	/* Flag of rockchip specific disk: eMMC/eSD, NVMe, etc. */
+	bool is_rk_disk;
 	int flags;
 	struct device *driverfs_dev;  // FIXME: remove
 	struct kobject *slave_dir;
@@ -188,8 +212,8 @@ struct gendisk {
 	atomic_t sync_io;		/* RAID */
 	struct disk_events *ev;
 #ifdef  CONFIG_BLK_DEV_INTEGRITY
-	struct blk_integrity *integrity;
-#endif
+	struct kobject integrity_kobj;
+#endif	/* CONFIG_BLK_DEV_INTEGRITY */
 	int node_id;
 };
 
@@ -220,6 +244,12 @@ static inline void part_pack_uuid(const u8 *uuid_str, u8 *to)
 			continue;
 		}
 	}
+}
+
+static inline int blk_part_pack_uuid(const u8 *uuid_str, u8 *to)
+{
+	part_pack_uuid(uuid_str, to);
+	return 0;
 }
 
 static inline int disk_max_parts(struct gendisk *disk)
@@ -596,7 +626,7 @@ extern struct hd_struct * __must_check add_partition(struct gendisk *disk,
 						     sector_t len, int flags,
 						     struct partition_meta_info
 						       *info);
-extern void __delete_partition(struct hd_struct *);
+extern void __delete_partition(struct percpu_ref *);
 extern void delete_partition(struct gendisk *, int);
 extern void printk_all_partitions(void);
 
@@ -625,28 +655,99 @@ extern ssize_t part_fail_store(struct device *dev,
 			       const char *buf, size_t count);
 #endif /* CONFIG_FAIL_MAKE_REQUEST */
 
-static inline void hd_ref_init(struct hd_struct *part)
+static inline int hd_ref_init(struct hd_struct *part)
 {
-	atomic_set(&part->ref, 1);
-	smp_mb();
+	if (percpu_ref_init(&part->ref, __delete_partition, 0,
+				GFP_KERNEL))
+		return -ENOMEM;
+	return 0;
 }
 
 static inline void hd_struct_get(struct hd_struct *part)
 {
-	atomic_inc(&part->ref);
-	smp_mb__after_atomic_inc();
+	percpu_ref_get(&part->ref);
 }
 
 static inline int hd_struct_try_get(struct hd_struct *part)
 {
-	return atomic_inc_not_zero(&part->ref);
+	return percpu_ref_tryget_live(&part->ref);
 }
 
 static inline void hd_struct_put(struct hd_struct *part)
 {
-	if (atomic_dec_and_test(&part->ref))
-		__delete_partition(part);
+	percpu_ref_put(&part->ref);
 }
+
+static inline void hd_struct_kill(struct hd_struct *part)
+{
+	percpu_ref_kill(&part->ref);
+}
+
+static inline void hd_free_part(struct hd_struct *part)
+{
+	free_part_stats(part);
+	free_part_info(part);
+	percpu_ref_exit(&part->ref);
+}
+
+/*
+ * Any access of part->nr_sects which is not protected by partition
+ * bd_mutex or gendisk bdev bd_mutex, should be done using this
+ * accessor function.
+ *
+ * Code written along the lines of i_size_read() and i_size_write().
+ * CONFIG_PREEMPT case optimizes the case of UP kernel with preemption
+ * on.
+ */
+static inline sector_t part_nr_sects_read(struct hd_struct *part)
+{
+#if BITS_PER_LONG==32 && defined(CONFIG_LBDAF) && defined(CONFIG_SMP)
+	sector_t nr_sects;
+	unsigned seq;
+	do {
+		seq = read_seqcount_begin(&part->nr_sects_seq);
+		nr_sects = part->nr_sects;
+	} while (read_seqcount_retry(&part->nr_sects_seq, seq));
+	return nr_sects;
+#elif BITS_PER_LONG==32 && defined(CONFIG_LBDAF) && defined(CONFIG_PREEMPT)
+	sector_t nr_sects;
+
+	preempt_disable();
+	nr_sects = part->nr_sects;
+	preempt_enable();
+	return nr_sects;
+#else
+	return part->nr_sects;
+#endif
+}
+
+/*
+ * Should be called with mutex lock held (typically bd_mutex) of partition
+ * to provide mutual exlusion among writers otherwise seqcount might be
+ * left in wrong state leaving the readers spinning infinitely.
+ */
+static inline void part_nr_sects_write(struct hd_struct *part, sector_t size)
+{
+#if BITS_PER_LONG==32 && defined(CONFIG_LBDAF) && defined(CONFIG_SMP)
+	write_seqcount_begin(&part->nr_sects_seq);
+	part->nr_sects = size;
+	write_seqcount_end(&part->nr_sects_seq);
+#elif BITS_PER_LONG==32 && defined(CONFIG_LBDAF) && defined(CONFIG_PREEMPT)
+	preempt_disable();
+	part->nr_sects = size;
+	preempt_enable();
+#else
+	part->nr_sects = size;
+#endif
+}
+
+#if defined(CONFIG_BLK_DEV_INTEGRITY)
+extern void blk_integrity_add(struct gendisk *);
+extern void blk_integrity_del(struct gendisk *);
+#else	/* CONFIG_BLK_DEV_INTEGRITY */
+static inline void blk_integrity_add(struct gendisk *disk) { }
+static inline void blk_integrity_del(struct gendisk *disk) { }
+#endif	/* CONFIG_BLK_DEV_INTEGRITY */
 
 #else /* CONFIG_BLOCK */
 
@@ -658,6 +759,10 @@ static inline dev_t blk_lookup_devt(const char *name, int partno)
 	return devt;
 }
 
+static inline int blk_part_pack_uuid(const u8 *uuid_str, u8 *to)
+{
+	return -EINVAL;
+}
 #endif /* CONFIG_BLOCK */
 
 #endif /* _LINUX_GENHD_H */

@@ -39,6 +39,7 @@ SECTIONS
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
+		SOFTIRQENTRY_TEXT
 		*(.fixup)
 		*(.gnu.warning)
 		_etext = .;		/* End of text section */
@@ -78,7 +79,6 @@ SECTIONS
 	. = ALIGN(PAGE_SIZE);
 	__init_end = .;
 	BSS_SECTION(0, PAGE_SIZE, 4)
-	_ebss = .;			/* uClinux MTD sucks */
 	_end = . ;
 
 	STABS_DEBUG

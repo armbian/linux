@@ -16,11 +16,11 @@
 #include <linux/linkage.h>
 #include <asm/assembler.h>
 
-#include <plat/board-ams-delta.h>
-
+#include <mach/board-ams-delta.h>
 #include <mach/ams-delta-fiq.h>
 
 #include "iomap.h"
+#include "soc.h"
 
 /*
  * GPIO related definitions, copied from arch/arm/plat-omap/gpio.c.

@@ -32,20 +32,20 @@ static enum power_supply_property *prop;
 
 static unsigned long wm97xx_read_bat(struct power_supply *bat_ps)
 {
-	struct wm97xx_pdata *wmdata = bat_ps->dev->parent->platform_data;
+	struct wm97xx_pdata *wmdata = bat_ps->dev.parent->platform_data;
 	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
 
-	return wm97xx_read_aux_adc(dev_get_drvdata(bat_ps->dev->parent),
+	return wm97xx_read_aux_adc(dev_get_drvdata(bat_ps->dev.parent),
 					pdata->batt_aux) * pdata->batt_mult /
 					pdata->batt_div;
 }
 
 static unsigned long wm97xx_read_temp(struct power_supply *bat_ps)
 {
-	struct wm97xx_pdata *wmdata = bat_ps->dev->parent->platform_data;
+	struct wm97xx_pdata *wmdata = bat_ps->dev.parent->platform_data;
 	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
 
-	return wm97xx_read_aux_adc(dev_get_drvdata(bat_ps->dev->parent),
+	return wm97xx_read_aux_adc(dev_get_drvdata(bat_ps->dev.parent),
 					pdata->temp_aux) * pdata->temp_mult /
 					pdata->temp_div;
 }
@@ -54,7 +54,7 @@ static int wm97xx_bat_get_property(struct power_supply *bat_ps,
 			    enum power_supply_property psp,
 			    union power_supply_propval *val)
 {
-	struct wm97xx_pdata *wmdata = bat_ps->dev->parent->platform_data;
+	struct wm97xx_pdata *wmdata = bat_ps->dev.parent->platform_data;
 	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
 
 	switch (psp) {
@@ -105,7 +105,7 @@ static void wm97xx_bat_external_power_changed(struct power_supply *bat_ps)
 static void wm97xx_bat_update(struct power_supply *bat_ps)
 {
 	int old_status = bat_status;
-	struct wm97xx_pdata *wmdata = bat_ps->dev->parent->platform_data;
+	struct wm97xx_pdata *wmdata = bat_ps->dev.parent->platform_data;
 	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
 
 	mutex_lock(&work_lock);
@@ -117,7 +117,7 @@ static void wm97xx_bat_update(struct power_supply *bat_ps)
 			POWER_SUPPLY_STATUS_UNKNOWN;
 
 	if (old_status != bat_status) {
-		pr_debug("%s: %i -> %i\n", bat_ps->name, old_status,
+		pr_debug("%s: %i -> %i\n", bat_ps->desc->name, old_status,
 					bat_status);
 		power_supply_changed(bat_ps);
 	}
@@ -125,7 +125,8 @@ static void wm97xx_bat_update(struct power_supply *bat_ps)
 	mutex_unlock(&work_lock);
 }
 
-static struct power_supply bat_ps = {
+static struct power_supply *bat_psy;
+static struct power_supply_desc bat_psy_desc = {
 	.type			= POWER_SUPPLY_TYPE_BATTERY,
 	.get_property		= wm97xx_bat_get_property,
 	.external_power_changed = wm97xx_bat_external_power_changed,
@@ -134,7 +135,7 @@ static struct power_supply bat_ps = {
 
 static void wm97xx_bat_work(struct work_struct *work)
 {
-	wm97xx_bat_update(&bat_ps);
+	wm97xx_bat_update(bat_psy);
 }
 
 static irqreturn_t wm97xx_chrg_irq(int irq, void *data)
@@ -146,7 +147,7 @@ static irqreturn_t wm97xx_chrg_irq(int irq, void *data)
 #ifdef CONFIG_PM
 static int wm97xx_bat_suspend(struct device *dev)
 {
-	flush_work_sync(&bat_work);
+	flush_work(&bat_work);
 	return 0;
 }
 
@@ -162,7 +163,7 @@ static const struct dev_pm_ops wm97xx_bat_pm_ops = {
 };
 #endif
 
-static int __devinit wm97xx_bat_probe(struct platform_device *dev)
+static int wm97xx_bat_probe(struct platform_device *dev)
 {
 	int ret = 0;
 	int props = 1;	/* POWER_SUPPLY_PROP_PRESENT */
@@ -212,8 +213,10 @@ static int __devinit wm97xx_bat_probe(struct platform_device *dev)
 		props++;	/* POWER_SUPPLY_PROP_VOLTAGE_MIN */
 
 	prop = kzalloc(props * sizeof(*prop), GFP_KERNEL);
-	if (!prop)
+	if (!prop) {
+		ret = -ENOMEM;
 		goto err3;
+	}
 
 	prop[i++] = POWER_SUPPLY_PROP_PRESENT;
 	if (pdata->charge_gpio >= 0)
@@ -235,18 +238,20 @@ static int __devinit wm97xx_bat_probe(struct platform_device *dev)
 		dev_info(&dev->dev, "Please consider setting proper battery "
 				"name in platform definition file, falling "
 				"back to name \"wm97xx-batt\"\n");
-		bat_ps.name = "wm97xx-batt";
+		bat_psy_desc.name = "wm97xx-batt";
 	} else
-		bat_ps.name = pdata->batt_name;
+		bat_psy_desc.name = pdata->batt_name;
 
-	bat_ps.properties = prop;
-	bat_ps.num_properties = props;
+	bat_psy_desc.properties = prop;
+	bat_psy_desc.num_properties = props;
 
-	ret = power_supply_register(&dev->dev, &bat_ps);
-	if (!ret)
+	bat_psy = power_supply_register(&dev->dev, &bat_psy_desc, NULL);
+	if (!IS_ERR(bat_psy)) {
 		schedule_work(&bat_work);
-	else
+	} else {
+		ret = PTR_ERR(bat_psy);
 		goto err4;
+	}
 
 	return 0;
 err4:
@@ -261,7 +266,7 @@ err:
 	return ret;
 }
 
-static int __devexit wm97xx_bat_remove(struct platform_device *dev)
+static int wm97xx_bat_remove(struct platform_device *dev)
 {
 	struct wm97xx_pdata *wmdata = dev->dev.platform_data;
 	struct wm97xx_batt_pdata *pdata = wmdata->batt_pdata;
@@ -271,7 +276,7 @@ static int __devexit wm97xx_bat_remove(struct platform_device *dev)
 		gpio_free(pdata->charge_gpio);
 	}
 	cancel_work_sync(&bat_work);
-	power_supply_unregister(&bat_ps);
+	power_supply_unregister(bat_psy);
 	kfree(prop);
 	return 0;
 }
@@ -279,13 +284,12 @@ static int __devexit wm97xx_bat_remove(struct platform_device *dev)
 static struct platform_driver wm97xx_bat_driver = {
 	.driver	= {
 		.name	= "wm97xx-battery",
-		.owner	= THIS_MODULE,
 #ifdef CONFIG_PM
 		.pm	= &wm97xx_bat_pm_ops,
 #endif
 	},
 	.probe		= wm97xx_bat_probe,
-	.remove		= __devexit_p(wm97xx_bat_remove),
+	.remove		= wm97xx_bat_remove,
 };
 
 module_platform_driver(wm97xx_bat_driver);

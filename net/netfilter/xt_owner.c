@@ -14,16 +14,29 @@
 #include <linux/skbuff.h>
 #include <linux/file.h>
 #include <net/sock.h>
+#include <net/inet_sock.h>
 #include <linux/netfilter/x_tables.h>
 #include <linux/netfilter/xt_owner.h>
+
+static int owner_check(const struct xt_mtchk_param *par)
+{
+	struct xt_owner_match_info *info = par->matchinfo;
+
+	/* For now only allow adding matches from the initial user namespace */
+	if ((info->match & (XT_OWNER_UID|XT_OWNER_GID)) &&
+	    (current_user_ns() != &init_user_ns))
+		return -EINVAL;
+	return 0;
+}
 
 static bool
 owner_mt(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	const struct xt_owner_match_info *info = par->matchinfo;
 	const struct file *filp;
+	struct sock *sk = skb_to_full_sk(skb);
 
-	if (skb->sk == NULL || skb->sk->sk_socket == NULL)
+	if (sk == NULL || sk->sk_socket == NULL)
 		return (info->match ^ info->invert) == 0;
 	else if (info->match & info->invert & XT_OWNER_SOCKET)
 		/*
@@ -32,22 +45,28 @@ owner_mt(const struct sk_buff *skb, struct xt_action_param *par)
 		 */
 		return false;
 
-	filp = skb->sk->sk_socket->file;
+	filp = sk->sk_socket->file;
 	if (filp == NULL)
 		return ((info->match ^ info->invert) &
 		       (XT_OWNER_UID | XT_OWNER_GID)) == 0;
 
-	if (info->match & XT_OWNER_UID)
-		if ((filp->f_cred->fsuid >= info->uid_min &&
-		    filp->f_cred->fsuid <= info->uid_max) ^
+	if (info->match & XT_OWNER_UID) {
+		kuid_t uid_min = make_kuid(&init_user_ns, info->uid_min);
+		kuid_t uid_max = make_kuid(&init_user_ns, info->uid_max);
+		if ((uid_gte(filp->f_cred->fsuid, uid_min) &&
+		     uid_lte(filp->f_cred->fsuid, uid_max)) ^
 		    !(info->invert & XT_OWNER_UID))
 			return false;
+	}
 
-	if (info->match & XT_OWNER_GID)
-		if ((filp->f_cred->fsgid >= info->gid_min &&
-		    filp->f_cred->fsgid <= info->gid_max) ^
+	if (info->match & XT_OWNER_GID) {
+		kgid_t gid_min = make_kgid(&init_user_ns, info->gid_min);
+		kgid_t gid_max = make_kgid(&init_user_ns, info->gid_max);
+		if ((gid_gte(filp->f_cred->fsgid, gid_min) &&
+		     gid_lte(filp->f_cred->fsgid, gid_max)) ^
 		    !(info->invert & XT_OWNER_GID))
 			return false;
+	}
 
 	return true;
 }
@@ -56,6 +75,7 @@ static struct xt_match owner_mt_reg __read_mostly = {
 	.name       = "owner",
 	.revision   = 1,
 	.family     = NFPROTO_UNSPEC,
+	.checkentry = owner_check,
 	.match      = owner_mt,
 	.matchsize  = sizeof(struct xt_owner_match_info),
 	.hooks      = (1 << NF_INET_LOCAL_OUT) |

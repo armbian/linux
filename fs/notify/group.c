@@ -31,11 +31,8 @@
 /*
  * Final freeing of a group
  */
-void fsnotify_final_destroy_group(struct fsnotify_group *group)
+static void fsnotify_final_destroy_group(struct fsnotify_group *group)
 {
-	/* clear the notification queue of all events */
-	fsnotify_flush_notify(group);
-
 	if (group->ops->free_group_priv)
 		group->ops->free_group_priv(group);
 
@@ -43,23 +40,56 @@ void fsnotify_final_destroy_group(struct fsnotify_group *group)
 }
 
 /*
- * Trying to get rid of a group.  We need to first get rid of any outstanding
- * allocations and then free the group.  Remember that fsnotify_clear_marks_by_group
- * could miss marks that are being freed by inode and those marks could still
- * hold a reference to this group (via group->num_marks)  If we get into that
- * situtation, the fsnotify_final_destroy_group will get called when that final
- * mark is freed.
+ * Stop queueing new events for this group. Once this function returns
+ * fsnotify_add_event() will not add any new events to the group's queue.
  */
-static void fsnotify_destroy_group(struct fsnotify_group *group)
+void fsnotify_group_stop_queueing(struct fsnotify_group *group)
 {
+	mutex_lock(&group->notification_mutex);
+	group->shutdown = true;
+	mutex_unlock(&group->notification_mutex);
+}
+
+/*
+ * Trying to get rid of a group. Remove all marks, flush all events and release
+ * the group reference.
+ * Note that another thread calling fsnotify_clear_marks_by_group() may still
+ * hold a ref to the group.
+ */
+void fsnotify_destroy_group(struct fsnotify_group *group)
+{
+	/*
+	 * Stop queueing new events. The code below is careful enough to not
+	 * require this but fanotify needs to stop queuing events even before
+	 * fsnotify_destroy_group() is called and this makes the other callers
+	 * of fsnotify_destroy_group() to see the same behavior.
+	 */
+	fsnotify_group_stop_queueing(group);
+
 	/* clear all inode marks for this group */
 	fsnotify_clear_marks_by_group(group);
 
 	synchronize_srcu(&fsnotify_mark_srcu);
 
-	/* past the point of no return, matches the initial value of 1 */
-	if (atomic_dec_and_test(&group->num_marks))
-		fsnotify_final_destroy_group(group);
+	/* clear the notification queue of all events */
+	fsnotify_flush_notify(group);
+
+	/*
+	 * Destroy overflow event (we cannot use fsnotify_destroy_event() as
+	 * that deliberately ignores overflow events.
+	 */
+	if (group->overflow_event)
+		group->ops->free_event(group->overflow_event);
+
+	fsnotify_put_group(group);
+}
+
+/*
+ * Get reference to a group.
+ */
+void fsnotify_get_group(struct fsnotify_group *group)
+{
+	atomic_inc(&group->refcnt);
 }
 
 /*
@@ -68,7 +98,7 @@ static void fsnotify_destroy_group(struct fsnotify_group *group)
 void fsnotify_put_group(struct fsnotify_group *group)
 {
 	if (atomic_dec_and_test(&group->refcnt))
-		fsnotify_destroy_group(group);
+		fsnotify_final_destroy_group(group);
 }
 
 /*
@@ -84,21 +114,24 @@ struct fsnotify_group *fsnotify_alloc_group(const struct fsnotify_ops *ops)
 
 	/* set to 0 when there a no external references to this group */
 	atomic_set(&group->refcnt, 1);
-	/*
-	 * hits 0 when there are no external references AND no marks for
-	 * this group
-	 */
-	atomic_set(&group->num_marks, 1);
+	atomic_set(&group->num_marks, 0);
 
 	mutex_init(&group->notification_mutex);
 	INIT_LIST_HEAD(&group->notification_list);
 	init_waitqueue_head(&group->notification_waitq);
 	group->max_events = UINT_MAX;
 
-	spin_lock_init(&group->mark_lock);
+	mutex_init(&group->mark_mutex);
 	INIT_LIST_HEAD(&group->marks_list);
 
 	group->ops = ops;
 
 	return group;
+}
+
+int fsnotify_fasync(int fd, struct file *file, int on)
+{
+	struct fsnotify_group *group = file->private_data;
+
+	return fasync_helper(fd, file, on, &group->fsn_fa) >= 0 ? 0 : -EIO;
 }

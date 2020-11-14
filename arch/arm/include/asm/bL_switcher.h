@@ -40,9 +40,6 @@ static inline int bL_switch_request(unsigned int cpu, unsigned int new_cluster_i
 
 #ifdef CONFIG_BL_SWITCHER
 
-void bL_switch_request_detach(unsigned int cpu,
-			      bL_switch_completion_handler completer);
-
 int bL_switcher_register_notifier(struct notifier_block *nb);
 int bL_switcher_unregister_notifier(struct notifier_block *nb);
 
@@ -61,9 +58,6 @@ int bL_switcher_trace_trigger(void);
 int bL_switcher_get_logical_index(u32 mpidr);
 
 #else
-//static void bL_switch_request_detach(unsigned int cpu,
-//				     bL_switch_completion_handler completer) { }
-
 static inline int bL_switcher_register_notifier(struct notifier_block *nb)
 {
 	return 0;

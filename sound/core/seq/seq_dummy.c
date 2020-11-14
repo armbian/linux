@@ -167,7 +167,7 @@ register_client(void)
 	int i;
 
 	if (ports < 1) {
-		snd_printk(KERN_ERR "invalid number of ports %d\n", ports);
+		pr_err("ALSA: seq_dummy: invalid number of ports %d\n", ports);
 		return -EINVAL;
 	}
 
@@ -214,11 +214,7 @@ delete_client(void)
 
 static int __init alsa_seq_dummy_init(void)
 {
-	int err;
-	snd_seq_autoload_lock();
-	err = register_client();
-	snd_seq_autoload_unlock();
-	return err;
+	return register_client();
 }
 
 static void __exit alsa_seq_dummy_exit(void)

@@ -35,9 +35,9 @@
 
 struct ds2781_device_info {
 	struct device *dev;
-	struct power_supply bat;
+	struct power_supply *bat;
+	struct power_supply_desc bat_desc;
 	struct device *w1_dev;
-	struct task_struct *mutex_holder;
 };
 
 enum current_types {
@@ -51,7 +51,7 @@ static const char manufacturer[] = "Maxim/Dallas";
 static inline struct ds2781_device_info *
 to_ds2781_device_info(struct power_supply *psy)
 {
-	return container_of(psy, struct ds2781_device_info, bat);
+	return power_supply_get_drvdata(psy);
 }
 
 static inline struct power_supply *to_power_supply(struct device *dev)
@@ -62,14 +62,10 @@ static inline struct power_supply *to_power_supply(struct device *dev)
 static inline int ds2781_battery_io(struct ds2781_device_info *dev_info,
 	char *buf, int addr, size_t count, int io)
 {
-	if (dev_info->mutex_holder == current)
-		return w1_ds2781_io_nolock(dev_info->w1_dev, buf, addr,
-				count, io);
-	else
-		return w1_ds2781_io(dev_info->w1_dev, buf, addr, count, io);
+	return w1_ds2781_io(dev_info->w1_dev, buf, addr, count, io);
 }
 
-int w1_ds2781_read(struct ds2781_device_info *dev_info, char *buf,
+static int w1_ds2781_read(struct ds2781_device_info *dev_info, char *buf,
 		int addr, size_t count)
 {
 	return ds2781_battery_io(dev_info, buf, addr, count, 0);
@@ -333,7 +329,7 @@ static int ds2781_get_status(struct ds2781_device_info *dev_info, int *status)
 	if (ret < 0)
 		return ret;
 
-	if (power_supply_am_i_supplied(&dev_info->bat)) {
+	if (power_supply_am_i_supplied(dev_info->bat)) {
 		if (capacity == 100)
 			*status = POWER_SUPPLY_STATUS_FULL;
 		else if (current_uA > 50000)
@@ -643,10 +639,6 @@ static ssize_t ds2781_read_param_eeprom_bin(struct file *filp,
 	struct power_supply *psy = to_power_supply(dev);
 	struct ds2781_device_info *dev_info = to_ds2781_device_info(psy);
 
-	count = min_t(loff_t, count,
-		DS2781_EEPROM_BLOCK1_END -
-		DS2781_EEPROM_BLOCK1_START + 1 - off);
-
 	return ds2781_read_block(dev_info, buf,
 				DS2781_EEPROM_BLOCK1_START + off, count);
 }
@@ -660,10 +652,6 @@ static ssize_t ds2781_write_param_eeprom_bin(struct file *filp,
 	struct power_supply *psy = to_power_supply(dev);
 	struct ds2781_device_info *dev_info = to_ds2781_device_info(psy);
 	int ret;
-
-	count = min_t(loff_t, count,
-		DS2781_EEPROM_BLOCK1_END -
-		DS2781_EEPROM_BLOCK1_START + 1 - off);
 
 	ret = ds2781_write(dev_info, buf,
 				DS2781_EEPROM_BLOCK1_START + off, count);
@@ -682,7 +670,7 @@ static struct bin_attribute ds2781_param_eeprom_bin_attr = {
 		.name = "param_eeprom",
 		.mode = S_IRUGO | S_IWUSR,
 	},
-	.size = DS2781_EEPROM_BLOCK1_END - DS2781_EEPROM_BLOCK1_START + 1,
+	.size = DS2781_PARAM_EEPROM_SIZE,
 	.read = ds2781_read_param_eeprom_bin,
 	.write = ds2781_write_param_eeprom_bin,
 };
@@ -695,10 +683,6 @@ static ssize_t ds2781_read_user_eeprom_bin(struct file *filp,
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct power_supply *psy = to_power_supply(dev);
 	struct ds2781_device_info *dev_info = to_ds2781_device_info(psy);
-
-	count = min_t(loff_t, count,
-		DS2781_EEPROM_BLOCK0_END -
-		DS2781_EEPROM_BLOCK0_START + 1 - off);
 
 	return ds2781_read_block(dev_info, buf,
 				DS2781_EEPROM_BLOCK0_START + off, count);
@@ -714,10 +698,6 @@ static ssize_t ds2781_write_user_eeprom_bin(struct file *filp,
 	struct power_supply *psy = to_power_supply(dev);
 	struct ds2781_device_info *dev_info = to_ds2781_device_info(psy);
 	int ret;
-
-	count = min_t(loff_t, count,
-		DS2781_EEPROM_BLOCK0_END -
-		DS2781_EEPROM_BLOCK0_START + 1 - off);
 
 	ret = ds2781_write(dev_info, buf,
 				DS2781_EEPROM_BLOCK0_START + off, count);
@@ -736,7 +716,7 @@ static struct bin_attribute ds2781_user_eeprom_bin_attr = {
 		.name = "user_eeprom",
 		.mode = S_IRUGO | S_IWUSR,
 	},
-	.size = DS2781_EEPROM_BLOCK0_END - DS2781_EEPROM_BLOCK0_START + 1,
+	.size = DS2781_USER_EEPROM_SIZE,
 	.read = ds2781_read_user_eeprom_bin,
 	.write = ds2781_write_user_eeprom_bin,
 };
@@ -763,41 +743,43 @@ static const struct attribute_group ds2781_attr_group = {
 	.attrs = ds2781_attributes,
 };
 
-static int __devinit ds2781_battery_probe(struct platform_device *pdev)
+static int ds2781_battery_probe(struct platform_device *pdev)
 {
+	struct power_supply_config psy_cfg = {};
 	int ret = 0;
 	struct ds2781_device_info *dev_info;
 
-	dev_info = kzalloc(sizeof(*dev_info), GFP_KERNEL);
-	if (!dev_info) {
-		ret = -ENOMEM;
-		goto fail;
-	}
+	dev_info = devm_kzalloc(&pdev->dev, sizeof(*dev_info), GFP_KERNEL);
+	if (!dev_info)
+		return -ENOMEM;
 
 	platform_set_drvdata(pdev, dev_info);
 
 	dev_info->dev			= &pdev->dev;
 	dev_info->w1_dev		= pdev->dev.parent;
-	dev_info->bat.name		= dev_name(&pdev->dev);
-	dev_info->bat.type		= POWER_SUPPLY_TYPE_BATTERY;
-	dev_info->bat.properties	= ds2781_battery_props;
-	dev_info->bat.num_properties	= ARRAY_SIZE(ds2781_battery_props);
-	dev_info->bat.get_property	= ds2781_battery_get_property;
-	dev_info->mutex_holder		= current;
+	dev_info->bat_desc.name		= dev_name(&pdev->dev);
+	dev_info->bat_desc.type		= POWER_SUPPLY_TYPE_BATTERY;
+	dev_info->bat_desc.properties	= ds2781_battery_props;
+	dev_info->bat_desc.num_properties = ARRAY_SIZE(ds2781_battery_props);
+	dev_info->bat_desc.get_property	= ds2781_battery_get_property;
 
-	ret = power_supply_register(&pdev->dev, &dev_info->bat);
-	if (ret) {
+	psy_cfg.drv_data		= dev_info;
+
+	dev_info->bat = power_supply_register(&pdev->dev, &dev_info->bat_desc,
+						&psy_cfg);
+	if (IS_ERR(dev_info->bat)) {
 		dev_err(dev_info->dev, "failed to register battery\n");
-		goto fail_free_info;
+		ret = PTR_ERR(dev_info->bat);
+		goto fail;
 	}
 
-	ret = sysfs_create_group(&dev_info->bat.dev->kobj, &ds2781_attr_group);
+	ret = sysfs_create_group(&dev_info->bat->dev.kobj, &ds2781_attr_group);
 	if (ret) {
 		dev_err(dev_info->dev, "failed to create sysfs group\n");
 		goto fail_unregister;
 	}
 
-	ret = sysfs_create_bin_file(&dev_info->bat.dev->kobj,
+	ret = sysfs_create_bin_file(&dev_info->bat->dev.kobj,
 					&ds2781_param_eeprom_bin_attr);
 	if (ret) {
 		dev_err(dev_info->dev,
@@ -805,7 +787,7 @@ static int __devinit ds2781_battery_probe(struct platform_device *pdev)
 		goto fail_remove_group;
 	}
 
-	ret = sysfs_create_bin_file(&dev_info->bat.dev->kobj,
+	ret = sysfs_create_bin_file(&dev_info->bat->dev.kobj,
 					&ds2781_user_eeprom_bin_attr);
 	if (ret) {
 		dev_err(dev_info->dev,
@@ -813,35 +795,31 @@ static int __devinit ds2781_battery_probe(struct platform_device *pdev)
 		goto fail_remove_bin_file;
 	}
 
-	dev_info->mutex_holder = NULL;
-
 	return 0;
 
 fail_remove_bin_file:
-	sysfs_remove_bin_file(&dev_info->bat.dev->kobj,
+	sysfs_remove_bin_file(&dev_info->bat->dev.kobj,
 				&ds2781_param_eeprom_bin_attr);
 fail_remove_group:
-	sysfs_remove_group(&dev_info->bat.dev->kobj, &ds2781_attr_group);
+	sysfs_remove_group(&dev_info->bat->dev.kobj, &ds2781_attr_group);
 fail_unregister:
-	power_supply_unregister(&dev_info->bat);
-fail_free_info:
-	kfree(dev_info);
+	power_supply_unregister(dev_info->bat);
 fail:
 	return ret;
 }
 
-static int __devexit ds2781_battery_remove(struct platform_device *pdev)
+static int ds2781_battery_remove(struct platform_device *pdev)
 {
 	struct ds2781_device_info *dev_info = platform_get_drvdata(pdev);
 
-	dev_info->mutex_holder = current;
+	/*
+	 * Remove attributes before unregistering power supply
+	 * because 'bat' will be freed on power_supply_unregister() call.
+	 */
+	sysfs_remove_group(&dev_info->bat->dev.kobj, &ds2781_attr_group);
 
-	/* remove attributes */
-	sysfs_remove_group(&dev_info->bat.dev->kobj, &ds2781_attr_group);
+	power_supply_unregister(dev_info->bat);
 
-	power_supply_unregister(&dev_info->bat);
-
-	kfree(dev_info);
 	return 0;
 }
 
@@ -850,22 +828,9 @@ static struct platform_driver ds2781_battery_driver = {
 		.name = "ds2781-battery",
 	},
 	.probe	  = ds2781_battery_probe,
-	.remove   = __devexit_p(ds2781_battery_remove),
+	.remove   = ds2781_battery_remove,
 };
-
-static int __init ds2781_battery_init(void)
-{
-	return platform_driver_register(&ds2781_battery_driver);
-}
-
-static void __exit ds2781_battery_exit(void)
-{
-	platform_driver_unregister(&ds2781_battery_driver);
-}
-
-module_init(ds2781_battery_init);
-module_exit(ds2781_battery_exit);
-
+module_platform_driver(ds2781_battery_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Renata Sayakhova <renata@oktetlabs.ru>");

@@ -59,6 +59,7 @@
 #define HFA384x_FIRMWARE_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + (c))
 
 #include <linux/if_ether.h>
+#include <linux/usb.h>
 
 /*--- Mins & Maxs -----------------------------------*/
 #define	HFA384x_PORTID_MAX		((u16)7)
@@ -81,8 +82,8 @@
 #define		HFA384x_WEPFLAGS_EXCLUDE		((u16)BIT(1))
 #define		HFA384x_WEPFLAGS_DISABLE_TXCRYPT	((u16)BIT(4))
 #define		HFA384x_WEPFLAGS_DISABLE_RXCRYPT	((u16)BIT(7))
-#define 	HFA384x_ROAMMODE_HOSTSCAN_HOSTROAM	((u16)3)
-#define 	HFA384x_PORTSTATUS_DISABLED		((u16)1)
+#define		HFA384x_ROAMMODE_HOSTSCAN_HOSTROAM	((u16)3)
+#define		HFA384x_PORTSTATUS_DISABLED		((u16)1)
 #define		HFA384x_RATEBIT_1			((u16)1)
 #define		HFA384x_RATEBIT_2			((u16)2)
 #define		HFA384x_RATEBIT_5dot5			((u16)4)
@@ -164,7 +165,7 @@
 #define		HFA384x_CMDCODE_DOWNLD		((u16)0x22)
 
 /*--- Debugging Commands -----------------------------*/
-#define 	HFA384x_CMDCODE_MONITOR		((u16)(0x38))
+#define		HFA384x_CMDCODE_MONITOR		((u16)(0x38))
 #define		HFA384x_MONITOR_ENABLE		((u16)(0x0b))
 #define		HFA384x_MONITOR_DISABLE		((u16)(0x0f))
 
@@ -275,15 +276,15 @@ API ENHANCEMENTS (NOT ALREADY IMPLEMENTED)
 #define		HFA384x_RID_CNFAUTHENTICATION	((u16)0xFC2A)
 #define		HFA384x_RID_CNFROAMINGMODE	((u16)0xFC2D)
 #define		HFA384x_RID_CNFAPBCNint		((u16)0xFC33)
-#define		HFA384x_RID_CNFDBMADJUST  	((u16)0xFC46)
-#define		HFA384x_RID_CNFWPADATA       	((u16)0xFC48)
+#define		HFA384x_RID_CNFDBMADJUST	((u16)0xFC46)
+#define		HFA384x_RID_CNFWPADATA		((u16)0xFC48)
 #define		HFA384x_RID_CNFBASICRATES	((u16)0xFCB3)
 #define		HFA384x_RID_CNFSUPPRATES	((u16)0xFCB4)
 #define		HFA384x_RID_CNFPASSIVESCANCTRL	((u16)0xFCBA)
-#define		HFA384x_RID_TXPOWERMAX        	((u16)0xFCBE)
+#define		HFA384x_RID_TXPOWERMAX		((u16)0xFCBE)
 #define		HFA384x_RID_JOINREQUEST		((u16)0xFCE2)
 #define		HFA384x_RID_AUTHENTICATESTA	((u16)0xFCE3)
-#define		HFA384x_RID_HOSTSCAN          	((u16)0xFCE5)
+#define		HFA384x_RID_HOSTSCAN		((u16)0xFCE5)
 
 #define		HFA384x_RID_CNFWEPDEFAULTKEY_LEN	((u16)6)
 #define		HFA384x_RID_CNFWEP128DEFAULTKEY_LEN	((u16)14)
@@ -311,7 +312,7 @@ PD Record codes
 #define HFA384x_PDR_HFA3861_IFRF	((u16)0x0204)
 #define HFA384x_PDR_HFA3861_CHCALSP	((u16)0x0300)
 #define HFA384x_PDR_HFA3861_CHCALI	((u16)0x0301)
-#define HFA384x_PDR_MAX_TX_POWER  	((u16)0x0302)
+#define HFA384x_PDR_MAX_TX_POWER	((u16)0x0302)
 #define HFA384x_PDR_MASTER_CHAN_LIST	((u16)0x0303)
 #define HFA384x_PDR_3842_NIC_CONFIG	((u16)0x0400)
 #define HFA384x_PDR_USB_ID		((u16)0x0401)
@@ -322,10 +323,10 @@ PD Record codes
 #define HFA384x_PDR_USB_POWER_TYPE      ((u16)0x0407)
 #define HFA384x_PDR_USB_MAX_POWER	((u16)0x0409)
 #define HFA384x_PDR_USB_MANUFACTURER	((u16)0x0410)
-#define HFA384x_PDR_USB_PRODUCT  	((u16)0x0411)
-#define HFA384x_PDR_ANT_DIVERSITY   	((u16)0x0412)
-#define HFA384x_PDR_HFO_DELAY       	((u16)0x0413)
-#define HFA384x_PDR_SCALE_THRESH 	((u16)0x0414)
+#define HFA384x_PDR_USB_PRODUCT		((u16)0x0411)
+#define HFA384x_PDR_ANT_DIVERSITY	((u16)0x0412)
+#define HFA384x_PDR_HFO_DELAY		((u16)0x0413)
+#define HFA384x_PDR_SCALE_THRESH	((u16)0x0414)
 
 #define HFA384x_PDR_HFA3861_MANF_TESTSP	((u16)0x0900)
 #define HFA384x_PDR_HFA3861_MANF_TESTI	((u16)0x0901)
@@ -349,10 +350,10 @@ PD Record codes
 
 /*-------------------------------------------------------------*/
 /* Commonly used basic types */
-typedef struct hfa384x_bytestr {
+struct hfa384x_bytestr {
 	u16 len;
 	u8 data[0];
-} __packed hfa384x_bytestr_t;
+} __packed;
 
 typedef struct hfa384x_bytestr32 {
 	u16 len;
@@ -383,7 +384,7 @@ typedef struct hfa384x_caplevel {
 /*-- Configuration Record: cnfAuthentication --*/
 #define HFA384x_CNFAUTHENTICATION_OPENSYSTEM	0x0001
 #define HFA384x_CNFAUTHENTICATION_SHAREDKEY	0x0002
-#define HFA384x_CNFAUTHENTICATION_LEAP     	0x0004
+#define HFA384x_CNFAUTHENTICATION_LEAP		0x0004
 
 /*--------------------------------------------------------------------
 Configuration Record Structures:
@@ -530,14 +531,14 @@ typedef struct hfa384x_rx_frame {
 	u16 reserved2;
 
 	/*-- 802.11 Header Information (802.11 byte order) --*/
-	u16 frame_control;
+	__le16 frame_control;
 	u16 duration_id;
 	u8 address1[6];
 	u8 address2[6];
 	u8 address3[6];
 	u16 sequence_control;
 	u8 address4[6];
-	u16 data_len;		/* hfa384x (little endian) format */
+	__le16 data_len;		/* hfa384x (little endian) format */
 
 	/*-- 802.3 Header Information --*/
 	u8 dest_addr[6];
@@ -575,8 +576,8 @@ Information Types
 #define		HFA384x_IT_AUTHREQ			((u16)0xF202UL)
 #define		HFA384x_IT_PSUSERCNT			((u16)0xF203UL)
 #define		HFA384x_IT_KEYIDCHANGED			((u16)0xF204UL)
-#define		HFA384x_IT_ASSOCREQ    			((u16)0xF205UL)
-#define		HFA384x_IT_MICFAILURE  			((u16)0xF206UL)
+#define		HFA384x_IT_ASSOCREQ			((u16)0xF205UL)
+#define		HFA384x_IT_MICFAILURE			((u16)0xF206UL)
 
 /*--------------------------------------------------------------------
 Information Frames Structures
@@ -878,7 +879,7 @@ typedef struct hfa384x_usb_error {
 /* Unions for packaging all the known packet types together */
 
 typedef union hfa384x_usbout {
-	u16 type;
+	__le16 type;
 	hfa384x_usb_txfrm_t txfrm;
 	hfa384x_usb_cmdreq_t cmdreq;
 	hfa384x_usb_wridreq_t wridreq;
@@ -888,7 +889,7 @@ typedef union hfa384x_usbout {
 } __packed hfa384x_usbout_t;
 
 typedef union hfa384x_usbin {
-	u16 type;
+	__le16 type;
 	hfa384x_usb_rxfrm_t rxfrm;
 	hfa384x_usb_txfrm_t txfrm;
 	hfa384x_usb_infofrm_t infofrm;
@@ -1203,19 +1204,19 @@ typedef struct hfa484x_metacmd {
 #define WLAN_ACCESS_DENY	3   /* Do not authenticate "denied" stations. */
 
 /* XXX These are going away ASAP */
-typedef struct prism2sta_authlist {
+struct prism2sta_authlist {
 	unsigned int cnt;
 	u8 addr[WLAN_AUTH_MAX][ETH_ALEN];
 	u8 assoc[WLAN_AUTH_MAX];
-} prism2sta_authlist_t;
+};
 
-typedef struct prism2sta_accesslist {
+struct prism2sta_accesslist {
 	unsigned int modify;
 	unsigned int cnt;
 	u8 addr[WLAN_ACCESS_MAX][ETH_ALEN];
 	unsigned int cnt1;
 	u8 addr1[WLAN_ACCESS_MAX][ETH_ALEN];
-} prism2sta_accesslist_t;
+};
 
 typedef struct hfa384x {
 	/* USB support data */
@@ -1267,7 +1268,7 @@ typedef struct hfa384x {
 	hfa384x_downloadbuffer_t bufinfo;
 	u16 dltimeout;
 
-	int scanflag;		/* to signal scan comlete */
+	int scanflag;		/* to signal scan complete */
 	int join_ap;		/* are we joined to a specific ap */
 	int join_retries;	/* number of join retries till we fail */
 	hfa384x_JoinRequest_data_t joinreq;	/* join request saved data */
@@ -1347,10 +1348,10 @@ typedef struct hfa384x {
 
 	hfa384x_InfFrame_t *scanresults;
 
-	prism2sta_authlist_t authlist;	/* Authenticated station list. */
-	unsigned int accessmode;	/* Access mode. */
-	prism2sta_accesslist_t allow;	/* Allowed station list. */
-	prism2sta_accesslist_t deny;	/* Denied station list. */
+	struct prism2sta_authlist authlist;	/* Authenticated station list. */
+	unsigned int accessmode;		/* Access mode. */
+	struct prism2sta_accesslist allow;	/* Allowed station list. */
+	struct prism2sta_accesslist deny;	/* Denied station list. */
 
 } hfa384x_t;
 
@@ -1375,6 +1376,7 @@ int hfa384x_drvr_setconfig(hfa384x_t *hw, u16 rid, void *buf, u16 len);
 static inline int hfa384x_drvr_getconfig16(hfa384x_t *hw, u16 rid, void *val)
 {
 	int result = 0;
+
 	result = hfa384x_drvr_getconfig(hw, rid, val, sizeof(u16));
 	if (result == 0)
 		*((u16 *) val) = le16_to_cpu(*((u16 *) val));
@@ -1384,6 +1386,7 @@ static inline int hfa384x_drvr_getconfig16(hfa384x_t *hw, u16 rid, void *val)
 static inline int hfa384x_drvr_setconfig16(hfa384x_t *hw, u16 rid, u16 val)
 {
 	u16 value = cpu_to_le16(val);
+
 	return hfa384x_drvr_setconfig(hw, rid, &value, sizeof(value));
 }
 
@@ -1401,6 +1404,7 @@ static inline int
 hfa384x_drvr_setconfig16_async(hfa384x_t *hw, u16 rid, u16 val)
 {
 	u16 value = cpu_to_le16(val);
+
 	return hfa384x_drvr_setconfig_async(hw, rid, &value, sizeof(value),
 					    NULL, NULL);
 }
@@ -1409,7 +1413,8 @@ int hfa384x_drvr_start(hfa384x_t *hw);
 int hfa384x_drvr_stop(hfa384x_t *hw);
 int
 hfa384x_drvr_txframe(hfa384x_t *hw, struct sk_buff *skb,
-		     union p80211_hdr *p80211_hdr, struct p80211_metawep *p80211_wep);
+		     union p80211_hdr *p80211_hdr,
+		     struct p80211_metawep *p80211_wep);
 void hfa384x_tx_timeout(wlandevice_t *wlandev);
 
 int hfa384x_cmd_initialize(hfa384x_t *hw);

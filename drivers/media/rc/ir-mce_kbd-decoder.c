@@ -216,7 +216,7 @@ static int ir_mce_kbd_decode(struct rc_dev *dev, struct ir_raw_event ev)
 	u32 scancode;
 	unsigned long delay;
 
-	if (!(dev->raw->enabled_protocols & RC_TYPE_MCE_KBD))
+	if (!(dev->enabled_protocols & RC_BIT_MCE_KBD))
 		return 0;
 
 	if (!is_timing_event(ev)) {
@@ -422,7 +422,7 @@ static int ir_mce_kbd_unregister(struct rc_dev *dev)
 }
 
 static struct ir_raw_handler mce_kbd_handler = {
-	.protocols	= RC_TYPE_MCE_KBD,
+	.protocols	= RC_BIT_MCE_KBD,
 	.decode		= ir_mce_kbd_decode,
 	.raw_register	= ir_mce_kbd_register,
 	.raw_unregister	= ir_mce_kbd_unregister,
@@ -432,7 +432,7 @@ static int __init ir_mce_kbd_decode_init(void)
 {
 	ir_raw_handler_register(&mce_kbd_handler);
 
-	pr_debug("IR MCE Keyboard/mouse protocol handler initialized\n");
+	printk(KERN_INFO "IR MCE Keyboard/mouse protocol handler initialized\n");
 	return 0;
 }
 

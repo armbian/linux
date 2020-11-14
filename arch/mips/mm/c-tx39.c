@@ -28,14 +28,12 @@ static unsigned long icache_size, dcache_size;		/* Size in bytes */
 
 #include <asm/r4kcache.h>
 
-extern int r3k_have_wired_reg;	/* in r3k-tlb.c */
-
 /* This sequence is required to ensure icache is disabled immediately */
 #define TX39_STOP_STREAMING() \
 __asm__ __volatile__( \
-	".set    push\n\t" \
-	".set    noreorder\n\t" \
-	"b       1f\n\t" \
+	".set	 push\n\t" \
+	".set	 noreorder\n\t" \
+	"b	 1f\n\t" \
 	"nop\n\t" \
 	"1:\n\t" \
 	".set pop" \
@@ -344,7 +342,7 @@ static __init void tx39_probe_cache(void)
 	}
 }
 
-void __cpuinit tx39_cache_init(void)
+void tx39_cache_init(void)
 {
 	extern void build_clear_page(void);
 	extern void build_copy_page(void);
@@ -361,7 +359,7 @@ void __cpuinit tx39_cache_init(void)
 		/* TX39/H core (writethru direct-map cache) */
 		__flush_cache_vmap	= tx39__flush_cache_vmap;
 		__flush_cache_vunmap	= tx39__flush_cache_vunmap;
-		flush_cache_all	= tx39h_flush_icache_all;
+		flush_cache_all = tx39h_flush_icache_all;
 		__flush_cache_all	= tx39h_flush_icache_all;
 		flush_cache_mm		= (void *) tx39h_flush_icache_all;
 		flush_cache_range	= (void *) tx39h_flush_icache_all;
@@ -383,8 +381,6 @@ void __cpuinit tx39_cache_init(void)
 	case CPU_TX3927:
 	default:
 		/* TX39/H2,H3 core (writeback 2way-set-associative cache) */
-		r3k_have_wired_reg = 1;
-		write_c0_wired(0);	/* set 8 on reset... */
 		/* board-dependent init code may set WBON */
 
 		__flush_cache_vmap	= tx39__flush_cache_vmap;
@@ -409,8 +405,8 @@ void __cpuinit tx39_cache_init(void)
 		_dma_cache_inv = tx39_dma_cache_inv;
 
 		shm_align_mask = max_t(unsigned long,
-		                       (dcache_size / current_cpu_data.dcache.ways) - 1,
-		                       PAGE_SIZE - 1);
+				       (dcache_size / current_cpu_data.dcache.ways) - 1,
+				       PAGE_SIZE - 1);
 
 		break;
 	}

@@ -24,7 +24,6 @@
 
 #include <linux/fs.h>
 #include <linux/string.h>
-#include <linux/buffer_head.h>
 #include <linux/mutex.h>
 
 uint32_t udf_get_pblock(struct super_block *sb, uint32_t block,
@@ -80,7 +79,7 @@ uint32_t udf_get_pblock_virt15(struct super_block *sb, uint32_t block,
 		index = vdata->s_start_offset / sizeof(uint32_t) + block;
 	}
 
-	loc = udf_block_map(sbi->s_vat_inode, newblock, NULL);
+	loc = udf_block_map(sbi->s_vat_inode, newblock);
 
 	bh = sb_bread(sb, loc);
 	if (!bh) {

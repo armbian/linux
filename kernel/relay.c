@@ -81,10 +81,7 @@ static struct page **relay_alloc_page_array(unsigned int n_pages)
  */
 static void relay_free_page_array(struct page **array)
 {
-	if (is_vmalloc_addr(array))
-		vfree(array);
-	else
-		kfree(array);
+	kvfree(array);
 }
 
 /**
@@ -166,7 +163,7 @@ static struct rchan_buf *relay_create_buf(struct rchan *chan)
 {
 	struct rchan_buf *buf;
 
-	if (chan->n_subbufs > UINT_MAX / sizeof(size_t *))
+	if (chan->n_subbufs > KMALLOC_MAX_SIZE / sizeof(size_t *))
 		return NULL;
 
 	buf = kzalloc(sizeof(struct rchan_buf), GFP_KERNEL);
@@ -227,14 +224,13 @@ static void relay_destroy_buf(struct rchan_buf *buf)
  *	relay_remove_buf - remove a channel buffer
  *	@kref: target kernel reference that contains the relay buffer
  *
- *	Removes the file from the fileystem, which also frees the
+ *	Removes the file from the filesystem, which also frees the
  *	rchan_buf_struct and the channel buffer.  Should only be called from
  *	kref_put().
  */
 static void relay_remove_buf(struct kref *kref)
 {
 	struct rchan_buf *buf = container_of(kref, struct rchan_buf, kref);
-	buf->chan->cb->remove_buf_file(buf->dentry);
 	relay_destroy_buf(buf);
 }
 
@@ -408,7 +404,7 @@ static inline void relay_set_buf_dentry(struct rchan_buf *buf,
 					struct dentry *dentry)
 {
 	buf->dentry = dentry;
-	buf->dentry->d_inode->i_size = buf->early_bytes;
+	d_inode(buf->dentry)->i_size = buf->early_bytes;
 }
 
 static struct dentry *relay_create_buf_file(struct rchan *chan,
@@ -484,6 +480,7 @@ static void relay_close_buf(struct rchan_buf *buf)
 {
 	buf->finalized = 1;
 	del_timer_sync(&buf->timer);
+	buf->chan->cb->remove_buf_file(buf->dentry);
 	kref_put(&buf->kref, relay_remove_buf);
 }
 
@@ -516,7 +513,7 @@ static void setup_callbacks(struct rchan *chan,
  *
  * 	Returns the success/failure of the operation. (%NOTIFY_OK, %NOTIFY_BAD)
  */
-static int __cpuinit relay_hotcpu_callback(struct notifier_block *nb,
+static int relay_hotcpu_callback(struct notifier_block *nb,
 				unsigned long action,
 				void *hcpu)
 {
@@ -588,7 +585,7 @@ struct rchan *relay_open(const char *base_filename,
 	chan->version = RELAYFS_CHANNEL_VERSION;
 	chan->n_subbufs = n_subbufs;
 	chan->subbuf_size = subbuf_size;
-	chan->alloc_size = FIX_SIZE(subbuf_size * n_subbufs);
+	chan->alloc_size = PAGE_ALIGN(subbuf_size * n_subbufs);
 	chan->parent = parent;
 	chan->private_data = private_data;
 	if (base_filename) {
@@ -733,7 +730,7 @@ size_t relay_switch_subbuf(struct rchan_buf *buf, size_t length)
 		buf->padding[old_subbuf] = buf->prev_padding;
 		buf->subbufs_produced++;
 		if (buf->dentry)
-			buf->dentry->d_inode->i_size +=
+			d_inode(buf->dentry)->i_size +=
 				buf->chan->subbuf_size -
 				buf->padding[old_subbuf];
 		else
@@ -1099,8 +1096,7 @@ static size_t relay_file_read_end_pos(struct rchan_buf *buf,
 static int subbuf_read_actor(size_t read_start,
 			     struct rchan_buf *buf,
 			     size_t avail,
-			     read_descriptor_t *desc,
-			     read_actor_t actor)
+			     read_descriptor_t *desc)
 {
 	void *from;
 	int ret = 0;
@@ -1121,15 +1117,13 @@ static int subbuf_read_actor(size_t read_start,
 typedef int (*subbuf_actor_t) (size_t read_start,
 			       struct rchan_buf *buf,
 			       size_t avail,
-			       read_descriptor_t *desc,
-			       read_actor_t actor);
+			       read_descriptor_t *desc);
 
 /*
  *	relay_file_read_subbufs - read count bytes, bridging subbuf boundaries
  */
 static ssize_t relay_file_read_subbufs(struct file *filp, loff_t *ppos,
 					subbuf_actor_t subbuf_actor,
-					read_actor_t actor,
 					read_descriptor_t *desc)
 {
 	struct rchan_buf *buf = filp->private_data;
@@ -1139,7 +1133,7 @@ static ssize_t relay_file_read_subbufs(struct file *filp, loff_t *ppos,
 	if (!desc->count)
 		return 0;
 
-	mutex_lock(&filp->f_path.dentry->d_inode->i_mutex);
+	mutex_lock(&file_inode(filp)->i_mutex);
 	do {
 		if (!relay_file_read_avail(buf, *ppos))
 			break;
@@ -1150,7 +1144,7 @@ static ssize_t relay_file_read_subbufs(struct file *filp, loff_t *ppos,
 			break;
 
 		avail = min(desc->count, avail);
-		ret = subbuf_actor(read_start, buf, avail, desc, actor);
+		ret = subbuf_actor(read_start, buf, avail, desc);
 		if (desc->error < 0)
 			break;
 
@@ -1159,7 +1153,7 @@ static ssize_t relay_file_read_subbufs(struct file *filp, loff_t *ppos,
 			*ppos = relay_file_read_end_pos(buf, read_start, ret);
 		}
 	} while (desc->count && ret);
-	mutex_unlock(&filp->f_path.dentry->d_inode->i_mutex);
+	mutex_unlock(&file_inode(filp)->i_mutex);
 
 	return desc->written;
 }
@@ -1174,8 +1168,7 @@ static ssize_t relay_file_read(struct file *filp,
 	desc.count = count;
 	desc.arg.buf = buffer;
 	desc.error = 0;
-	return relay_file_read_subbufs(filp, ppos, subbuf_read_actor,
-				       NULL, &desc);
+	return relay_file_read_subbufs(filp, ppos, subbuf_read_actor, &desc);
 }
 
 static void relay_consume_bytes(struct rchan_buf *rbuf, int bytes_consumed)
@@ -1199,8 +1192,6 @@ static void relay_pipe_buf_release(struct pipe_inode_info *pipe,
 
 static const struct pipe_buf_operations relay_pipe_buf_ops = {
 	.can_merge = 0,
-	.map = generic_pipe_buf_map,
-	.unmap = generic_pipe_buf_unmap,
 	.confirm = generic_pipe_buf_confirm,
 	.release = relay_pipe_buf_release,
 	.steal = generic_pipe_buf_steal,
@@ -1257,7 +1248,7 @@ static ssize_t subbuf_splice_actor(struct file *in,
 	subbuf_pages = rbuf->chan->alloc_size >> PAGE_SHIFT;
 	pidx = (read_start / PAGE_SIZE) % subbuf_pages;
 	poff = read_start & ~PAGE_MASK;
-	nr_pages = min_t(unsigned int, subbuf_pages, pipe->buffers);
+	nr_pages = min_t(unsigned int, subbuf_pages, spd.nr_pages_max);
 
 	for (total_len = 0; spd.nr_pages < nr_pages; spd.nr_pages++) {
 		unsigned int this_len, this_end, private;

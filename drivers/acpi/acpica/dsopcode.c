@@ -1,11 +1,11 @@
 /******************************************************************************
  *
- * Module Name: dsopcode - Dispatcher suport for regions and fields
+ * Module Name: dsopcode - Dispatcher support for regions and fields
  *
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2015, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -257,7 +257,7 @@ acpi_ds_init_buffer_field(u16 aml_opcode,
 	    (buffer_desc->common.reference_count +
 	     obj_desc->common.reference_count);
 
-      cleanup:
+cleanup:
 
 	/* Always delete the operands */
 
@@ -286,7 +286,7 @@ acpi_ds_init_buffer_field(u16 aml_opcode,
  * FUNCTION:    acpi_ds_eval_buffer_field_operands
  *
  * PARAMETERS:  walk_state      - Current walk
- *              Op              - A valid buffer_field Op object
+ *              op              - A valid buffer_field Op object
  *
  * RETURN:      Status
  *
@@ -370,7 +370,7 @@ acpi_ds_eval_buffer_field_operands(struct acpi_walk_state *walk_state,
  * FUNCTION:    acpi_ds_eval_region_operands
  *
  * PARAMETERS:  walk_state      - Current walk
- *              Op              - A valid region Op object
+ *              op              - A valid region Op object
  *
  * RETURN:      Status
  *
@@ -397,7 +397,7 @@ acpi_ds_eval_region_operands(struct acpi_walk_state *walk_state,
 	 */
 	node = op->common.node;
 
-	/* next_op points to the op that holds the space_iD */
+	/* next_op points to the op that holds the space_ID */
 
 	next_op = op->common.value.arg;
 
@@ -446,7 +446,7 @@ acpi_ds_eval_region_operands(struct acpi_walk_state *walk_state,
 
 	ACPI_DEBUG_PRINT((ACPI_DB_EXEC, "RgnObj %p Addr %8.8X%8.8X Len %X\n",
 			  obj_desc,
-			  ACPI_FORMAT_NATIVE_UINT(obj_desc->region.address),
+			  ACPI_FORMAT_UINT64(obj_desc->region.address),
 			  obj_desc->region.length));
 
 	/* Now the address and length are valid for this opregion */
@@ -461,7 +461,7 @@ acpi_ds_eval_region_operands(struct acpi_walk_state *walk_state,
  * FUNCTION:    acpi_ds_eval_table_region_operands
  *
  * PARAMETERS:  walk_state      - Current walk
- *              Op              - A valid region Op object
+ *              op              - A valid region Op object
  *
  * RETURN:      Status
  *
@@ -480,41 +480,41 @@ acpi_ds_eval_table_region_operands(struct acpi_walk_state *walk_state,
 	union acpi_operand_object **operand;
 	struct acpi_namespace_node *node;
 	union acpi_parse_object *next_op;
-	u32 table_index;
 	struct acpi_table_header *table;
+	u32 table_index;
 
 	ACPI_FUNCTION_TRACE_PTR(ds_eval_table_region_operands, op);
 
 	/*
-	 * This is where we evaluate the signature_string and oem_iDString
-	 * and oem_table_iDString of the data_table_region declaration
+	 * This is where we evaluate the Signature string, oem_id string,
+	 * and oem_table_id string of the Data Table Region declaration
 	 */
 	node = op->common.node;
 
-	/* next_op points to signature_string op */
+	/* next_op points to Signature string op */
 
 	next_op = op->common.value.arg;
 
 	/*
-	 * Evaluate/create the signature_string and oem_iDString
-	 * and oem_table_iDString operands
+	 * Evaluate/create the Signature string, oem_id string,
+	 * and oem_table_id string operands
 	 */
 	status = acpi_ds_create_operands(walk_state, next_op);
 	if (ACPI_FAILURE(status)) {
 		return_ACPI_STATUS(status);
 	}
 
+	operand = &walk_state->operands[0];
+
 	/*
-	 * Resolve the signature_string and oem_iDString
-	 * and oem_table_iDString operands
+	 * Resolve the Signature string, oem_id string,
+	 * and oem_table_id string operands
 	 */
 	status = acpi_ex_resolve_operands(op->common.aml_opcode,
 					  ACPI_WALK_OPERANDS, walk_state);
 	if (ACPI_FAILURE(status)) {
-		return_ACPI_STATUS(status);
+		goto cleanup;
 	}
-
-	operand = &walk_state->operands[0];
 
 	/* Find the ACPI table */
 
@@ -522,35 +522,43 @@ acpi_ds_eval_table_region_operands(struct acpi_walk_state *walk_state,
 				    operand[1]->string.pointer,
 				    operand[2]->string.pointer, &table_index);
 	if (ACPI_FAILURE(status)) {
-		return_ACPI_STATUS(status);
+		if (status == AE_NOT_FOUND) {
+			ACPI_ERROR((AE_INFO,
+				    "ACPI Table [%4.4s] OEM:(%s, %s) not found in RSDT/XSDT",
+				    operand[0]->string.pointer,
+				    operand[1]->string.pointer,
+				    operand[2]->string.pointer));
+		}
+		goto cleanup;
 	}
-
-	acpi_ut_remove_reference(operand[0]);
-	acpi_ut_remove_reference(operand[1]);
-	acpi_ut_remove_reference(operand[2]);
 
 	status = acpi_get_table_by_index(table_index, &table);
 	if (ACPI_FAILURE(status)) {
-		return_ACPI_STATUS(status);
+		goto cleanup;
 	}
 
 	obj_desc = acpi_ns_get_attached_object(node);
 	if (!obj_desc) {
-		return_ACPI_STATUS(AE_NOT_EXIST);
+		status = AE_NOT_EXIST;
+		goto cleanup;
 	}
 
-	obj_desc->region.address =
-	    (acpi_physical_address) ACPI_TO_INTEGER(table);
+	obj_desc->region.address = ACPI_PTR_TO_PHYSADDR(table);
 	obj_desc->region.length = table->length;
 
 	ACPI_DEBUG_PRINT((ACPI_DB_EXEC, "RgnObj %p Addr %8.8X%8.8X Len %X\n",
 			  obj_desc,
-			  ACPI_FORMAT_NATIVE_UINT(obj_desc->region.address),
+			  ACPI_FORMAT_UINT64(obj_desc->region.address),
 			  obj_desc->region.length));
 
 	/* Now the address and length are valid for this opregion */
 
 	obj_desc->region.flags |= AOPOBJ_DATA_VALID;
+
+cleanup:
+	acpi_ut_remove_reference(operand[0]);
+	acpi_ut_remove_reference(operand[1]);
+	acpi_ut_remove_reference(operand[2]);
 
 	return_ACPI_STATUS(status);
 }
@@ -560,7 +568,7 @@ acpi_ds_eval_table_region_operands(struct acpi_walk_state *walk_state,
  * FUNCTION:    acpi_ds_eval_data_object_operands
  *
  * PARAMETERS:  walk_state      - Current walk
- *              Op              - A valid data_object Op object
+ *              op              - A valid data_object Op object
  *              obj_desc        - data_object
  *
  * RETURN:      Status
@@ -636,6 +644,7 @@ acpi_ds_eval_data_object_operands(struct acpi_walk_state *walk_state,
 		break;
 
 	default:
+
 		return_ACPI_STATUS(AE_AML_BAD_OPCODE);
 	}
 
@@ -649,7 +658,8 @@ acpi_ds_eval_data_object_operands(struct acpi_walk_state *walk_state,
 		    ((op->common.parent->common.aml_opcode != AML_PACKAGE_OP) &&
 		     (op->common.parent->common.aml_opcode !=
 		      AML_VAR_PACKAGE_OP)
-		     && (op->common.parent->common.aml_opcode != AML_NAME_OP))) {
+		     && (op->common.parent->common.aml_opcode !=
+			 AML_NAME_OP))) {
 			walk_state->result_obj = obj_desc;
 		}
 	}
@@ -662,7 +672,7 @@ acpi_ds_eval_data_object_operands(struct acpi_walk_state *walk_state,
  * FUNCTION:    acpi_ds_eval_bank_field_operands
  *
  * PARAMETERS:  walk_state      - Current walk
- *              Op              - A valid bank_field Op object
+ *              op              - A valid bank_field Op object
  *
  * RETURN:      Status
  *

@@ -18,23 +18,8 @@
 #include <asm/mach/irq.h>
 #include <mach/pm.h>
 #include <mach/bridge-regs.h>
+#include <plat/orion-gpio.h>
 #include "common.h"
-
-static void gpio_irq_handler(unsigned int irq, struct irq_desc *desc)
-{
-	int irqoff;
-	BUG_ON(irq < IRQ_DOVE_GPIO_0_7 || irq > IRQ_DOVE_HIGH_GPIO);
-
-	irqoff = irq <= IRQ_DOVE_GPIO_16_23 ? irq - IRQ_DOVE_GPIO_0_7 :
-		3 + irq - IRQ_DOVE_GPIO_24_31;
-
-	orion_gpio_irq_handler(irqoff << 3);
-	if (irq == IRQ_DOVE_HIGH_GPIO) {
-		orion_gpio_irq_handler(40);
-		orion_gpio_irq_handler(48);
-		orion_gpio_irq_handler(56);
-	}
-}
 
 static void pmu_irq_mask(struct irq_data *d)
 {
@@ -84,13 +69,14 @@ static struct irq_chip pmu_irq_chip = {
 	.irq_ack	= pmu_irq_ack,
 };
 
-static void pmu_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void pmu_irq_handler(struct irq_desc *desc)
 {
 	unsigned long cause = readl(PMU_INTERRUPT_CAUSE);
+	unsigned int irq;
 
 	cause &= readl(PMU_INTERRUPT_MASK);
 	if (cause == 0) {
-		do_bad_IRQ(irq, desc);
+		do_bad_IRQ(desc);
 		return;
 	}
 
@@ -102,29 +88,81 @@ static void pmu_irq_handler(unsigned int irq, struct irq_desc *desc)
 	}
 }
 
+static int __initdata gpio0_irqs[4] = {
+	IRQ_DOVE_GPIO_0_7,
+	IRQ_DOVE_GPIO_8_15,
+	IRQ_DOVE_GPIO_16_23,
+	IRQ_DOVE_GPIO_24_31,
+};
+
+static int __initdata gpio1_irqs[4] = {
+	IRQ_DOVE_HIGH_GPIO,
+	0,
+	0,
+	0,
+};
+
+static int __initdata gpio2_irqs[4] = {
+	0,
+	0,
+	0,
+	0,
+};
+
+#ifdef CONFIG_MULTI_IRQ_HANDLER
+/*
+ * Compiling with both non-DT and DT support enabled, will
+ * break asm irq handler used by non-DT boards. Therefore,
+ * we provide a C-style irq handler even for non-DT boards,
+ * if MULTI_IRQ_HANDLER is set.
+ */
+
+static void __iomem *dove_irq_base = IRQ_VIRT_BASE;
+
+static asmlinkage void
+__exception_irq_entry dove_legacy_handle_irq(struct pt_regs *regs)
+{
+	u32 stat;
+
+	stat = readl_relaxed(dove_irq_base + IRQ_CAUSE_LOW_OFF);
+	stat &= readl_relaxed(dove_irq_base + IRQ_MASK_LOW_OFF);
+	if (stat) {
+		unsigned int hwirq = 1 + __fls(stat);
+		handle_IRQ(hwirq, regs);
+		return;
+	}
+	stat = readl_relaxed(dove_irq_base + IRQ_CAUSE_HIGH_OFF);
+	stat &= readl_relaxed(dove_irq_base + IRQ_MASK_HIGH_OFF);
+	if (stat) {
+		unsigned int hwirq = 33 + __fls(stat);
+		handle_IRQ(hwirq, regs);
+		return;
+	}
+}
+#endif
+
 void __init dove_init_irq(void)
 {
 	int i;
 
-	orion_irq_init(0, (void __iomem *)(IRQ_VIRT_BASE + IRQ_MASK_LOW_OFF));
-	orion_irq_init(32, (void __iomem *)(IRQ_VIRT_BASE + IRQ_MASK_HIGH_OFF));
+	orion_irq_init(1, IRQ_VIRT_BASE + IRQ_MASK_LOW_OFF);
+	orion_irq_init(33, IRQ_VIRT_BASE + IRQ_MASK_HIGH_OFF);
+
+#ifdef CONFIG_MULTI_IRQ_HANDLER
+	set_handle_irq(dove_legacy_handle_irq);
+#endif
 
 	/*
 	 * Initialize gpiolib for GPIOs 0-71.
 	 */
-	orion_gpio_init(0, 32, DOVE_GPIO_LO_VIRT_BASE, 0,
-			IRQ_DOVE_GPIO_START);
-	irq_set_chained_handler(IRQ_DOVE_GPIO_0_7, gpio_irq_handler);
-	irq_set_chained_handler(IRQ_DOVE_GPIO_8_15, gpio_irq_handler);
-	irq_set_chained_handler(IRQ_DOVE_GPIO_16_23, gpio_irq_handler);
-	irq_set_chained_handler(IRQ_DOVE_GPIO_24_31, gpio_irq_handler);
+	orion_gpio_init(NULL, 0, 32, DOVE_GPIO_LO_VIRT_BASE, 0,
+			IRQ_DOVE_GPIO_START, gpio0_irqs);
 
-	orion_gpio_init(32, 32, DOVE_GPIO_HI_VIRT_BASE, 0,
-			IRQ_DOVE_GPIO_START + 32);
-	irq_set_chained_handler(IRQ_DOVE_HIGH_GPIO, gpio_irq_handler);
+	orion_gpio_init(NULL, 32, 32, DOVE_GPIO_HI_VIRT_BASE, 0,
+			IRQ_DOVE_GPIO_START + 32, gpio1_irqs);
 
-	orion_gpio_init(64, 8, DOVE_GPIO2_VIRT_BASE, 0,
-			IRQ_DOVE_GPIO_START + 64);
+	orion_gpio_init(NULL, 64, 8, DOVE_GPIO2_VIRT_BASE, 0,
+			IRQ_DOVE_GPIO_START + 64, gpio2_irqs);
 
 	/*
 	 * Mask and clear PMU interrupts
@@ -135,7 +173,7 @@ void __init dove_init_irq(void)
 	for (i = IRQ_DOVE_PMU_START; i < NR_IRQS; i++) {
 		irq_set_chip_and_handler(i, &pmu_irq_chip, handle_level_irq);
 		irq_set_status_flags(i, IRQ_LEVEL);
-		set_irq_flags(i, IRQF_VALID);
+		irq_clear_status_flags(i, IRQ_NOREQUEST);
 	}
 	irq_set_chained_handler(IRQ_DOVE_PMU, pmu_irq_handler);
 }

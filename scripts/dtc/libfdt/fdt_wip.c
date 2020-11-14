@@ -55,26 +55,47 @@
 
 #include "libfdt_internal.h"
 
-int fdt_setprop_inplace(void *fdt, int nodeoffset, const char *name,
-			const void *val, int len)
+int fdt_setprop_inplace_namelen_partial(void *fdt, int nodeoffset,
+					const char *name, int namelen,
+					uint32_t idx, const void *val,
+					int len)
 {
 	void *propval;
 	int proplen;
 
-	propval = fdt_getprop_w(fdt, nodeoffset, name, &proplen);
-	if (! propval)
+	propval = fdt_getprop_namelen_w(fdt, nodeoffset, name, namelen,
+					&proplen);
+	if (!propval)
+		return proplen;
+
+	if (proplen < (len + idx))
+		return -FDT_ERR_NOSPACE;
+
+	memcpy((char *)propval + idx, val, len);
+	return 0;
+}
+
+int fdt_setprop_inplace(void *fdt, int nodeoffset, const char *name,
+			const void *val, int len)
+{
+	const void *propval;
+	int proplen;
+
+	propval = fdt_getprop(fdt, nodeoffset, name, &proplen);
+	if (!propval)
 		return proplen;
 
 	if (proplen != len)
 		return -FDT_ERR_NOSPACE;
 
-	memcpy(propval, val, len);
-	return 0;
+	return fdt_setprop_inplace_namelen_partial(fdt, nodeoffset, name,
+						   strlen(name), 0,
+						   val, len);
 }
 
 static void _fdt_nop_region(void *start, int len)
 {
-	uint32_t *p;
+	fdt32_t *p;
 
 	for (p = start; (char *)p < ((char *)start + len); p++)
 		*p = cpu_to_fdt32(FDT_NOP);
@@ -86,7 +107,7 @@ int fdt_nop_property(void *fdt, int nodeoffset, const char *name)
 	int len;
 
 	prop = fdt_get_property_w(fdt, nodeoffset, name, &len);
-	if (! prop)
+	if (!prop)
 		return len;
 
 	_fdt_nop_region(prop, len + sizeof(*prop));
@@ -94,41 +115,14 @@ int fdt_nop_property(void *fdt, int nodeoffset, const char *name)
 	return 0;
 }
 
-int _fdt_node_end_offset(void *fdt, int nodeoffset)
+int _fdt_node_end_offset(void *fdt, int offset)
 {
-	int level = 0;
-	uint32_t tag;
-	int offset, nextoffset;
+	int depth = 0;
 
-	tag = fdt_next_tag(fdt, nodeoffset, &nextoffset);
-	if (tag != FDT_BEGIN_NODE)
-		return -FDT_ERR_BADOFFSET;
-	do {
-		offset = nextoffset;
-		tag = fdt_next_tag(fdt, offset, &nextoffset);
+	while ((offset >= 0) && (depth >= 0))
+		offset = fdt_next_node(fdt, offset, &depth);
 
-		switch (tag) {
-		case FDT_END:
-			return offset;
-
-		case FDT_BEGIN_NODE:
-			level++;
-			break;
-
-		case FDT_END_NODE:
-			level--;
-			break;
-
-		case FDT_PROP:
-		case FDT_NOP:
-			break;
-
-		default:
-			return -FDT_ERR_BADSTRUCTURE;
-		}
-	} while (level >= 0);
-
-	return nextoffset;
+	return offset;
 }
 
 int fdt_nop_node(void *fdt, int nodeoffset)

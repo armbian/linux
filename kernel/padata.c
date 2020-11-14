@@ -46,6 +46,7 @@ static int padata_index_to_cpu(struct parallel_data *pd, int cpu_index)
 
 static int padata_cpu_hash(struct parallel_data *pd)
 {
+	unsigned int seq_nr;
 	int cpu_index;
 
 	/*
@@ -53,10 +54,8 @@ static int padata_cpu_hash(struct parallel_data *pd)
 	 * seq_nr mod. number of cpus in use.
 	 */
 
-	spin_lock(&pd->seq_lock);
-	cpu_index =  pd->seq_nr % cpumask_weight(pd->cpumask.pcpu);
-	pd->seq_nr++;
-	spin_unlock(&pd->seq_lock);
+	seq_nr = atomic_inc_return(&pd->seq_nr);
+	cpu_index = seq_nr % cpumask_weight(pd->cpumask.pcpu);
 
 	return padata_index_to_cpu(pd, cpu_index);
 }
@@ -113,7 +112,7 @@ int padata_do_parallel(struct padata_instance *pinst,
 
 	rcu_read_lock_bh();
 
-	pd = rcu_dereference(pinst->pd);
+	pd = rcu_dereference_bh(pinst->pd);
 
 	err = -EINVAL;
 	if (!(pinst->flags & PADATA_INIT) || pinst->flags & PADATA_INVALID)
@@ -171,7 +170,7 @@ static struct padata_priv *padata_get_next(struct parallel_data *pd)
 {
 	int cpu, num_cpus;
 	unsigned int next_nr, next_index;
-	struct padata_parallel_queue *queue, *next_queue;
+	struct padata_parallel_queue *next_queue;
 	struct padata_priv *padata;
 	struct padata_list *reorder;
 
@@ -190,22 +189,22 @@ static struct padata_priv *padata_get_next(struct parallel_data *pd)
 
 	reorder = &next_queue->reorder;
 
+	spin_lock(&reorder->lock);
 	if (!list_empty(&reorder->list)) {
 		padata = list_entry(reorder->list.next,
 				    struct padata_priv, list);
 
-		spin_lock(&reorder->lock);
 		list_del_init(&padata->list);
 		atomic_dec(&pd->reorder_objects);
-		spin_unlock(&reorder->lock);
 
 		pd->processed++;
 
+		spin_unlock(&reorder->lock);
 		goto out;
 	}
+	spin_unlock(&reorder->lock);
 
-	queue = per_cpu_ptr(pd->pqueue, smp_processor_id());
-	if (queue->cpu_index == next_queue->cpu_index) {
+	if (__this_cpu_read(pd->pqueue->cpu_index) == next_queue->cpu_index) {
 		padata = ERR_PTR(-ENODATA);
 		goto out;
 	}
@@ -358,7 +357,7 @@ static int padata_setup_cpumasks(struct parallel_data *pd,
 
 	cpumask_and(pd->cpumask.pcpu, pcpumask, cpu_online_mask);
 	if (!alloc_cpumask_var(&pd->cpumask.cbcpu, GFP_KERNEL)) {
-		free_cpumask_var(pd->cpumask.cbcpu);
+		free_cpumask_var(pd->cpumask.pcpu);
 		return -ENOMEM;
 	}
 
@@ -430,7 +429,7 @@ static struct parallel_data *padata_alloc_pd(struct padata_instance *pinst,
 	padata_init_pqueues(pd);
 	padata_init_squeues(pd);
 	setup_timer(&pd->timer, padata_reorder_timer, (unsigned long)pd);
-	pd->seq_nr = 0;
+	atomic_set(&pd->seq_nr, -1);
 	atomic_set(&pd->reorder_objects, 0);
 	atomic_set(&pd->refcnt, 0);
 	pd->pinst = pinst;
@@ -847,6 +846,8 @@ static int padata_cpu_callback(struct notifier_block *nfb,
 	switch (action) {
 	case CPU_ONLINE:
 	case CPU_ONLINE_FROZEN:
+	case CPU_DOWN_FAILED:
+	case CPU_DOWN_FAILED_FROZEN:
 		if (!pinst_has_cpu(pinst, cpu))
 			break;
 		mutex_lock(&pinst->lock);
@@ -858,6 +859,8 @@ static int padata_cpu_callback(struct notifier_block *nfb,
 
 	case CPU_DOWN_PREPARE:
 	case CPU_DOWN_PREPARE_FROZEN:
+	case CPU_UP_CANCELED:
+	case CPU_UP_CANCELED_FROZEN:
 		if (!pinst_has_cpu(pinst, cpu))
 			break;
 		mutex_lock(&pinst->lock);
@@ -866,22 +869,6 @@ static int padata_cpu_callback(struct notifier_block *nfb,
 		if (err)
 			return notifier_from_errno(err);
 		break;
-
-	case CPU_UP_CANCELED:
-	case CPU_UP_CANCELED_FROZEN:
-		if (!pinst_has_cpu(pinst, cpu))
-			break;
-		mutex_lock(&pinst->lock);
-		__padata_remove_cpu(pinst, cpu);
-		mutex_unlock(&pinst->lock);
-
-	case CPU_DOWN_FAILED:
-	case CPU_DOWN_FAILED_FROZEN:
-		if (!pinst_has_cpu(pinst, cpu))
-			break;
-		mutex_lock(&pinst->lock);
-		__padata_add_cpu(pinst, cpu);
-		mutex_unlock(&pinst->lock);
 	}
 
 	return NOTIFY_OK;
@@ -931,15 +918,10 @@ static ssize_t show_cpumask(struct padata_instance *pinst,
 	else
 		cpumask = pinst->cpumask.pcpu;
 
-	len = bitmap_scnprintf(buf, PAGE_SIZE, cpumask_bits(cpumask),
-			       nr_cpu_ids);
-	if (PAGE_SIZE - len < 2)
-		len = -EINVAL;
-	else
-		len += sprintf(buf + len, "\n");
-
+	len = snprintf(buf, PAGE_SIZE, "%*pb\n",
+		       nr_cpu_ids, cpumask_bits(cpumask));
 	mutex_unlock(&pinst->lock);
-	return len;
+	return len < PAGE_SIZE ? len : -EINVAL;
 }
 
 static ssize_t store_cpumask(struct padata_instance *pinst,
@@ -1087,17 +1069,17 @@ struct padata_instance *padata_alloc(struct workqueue_struct *wq,
 
 	pinst->flags = 0;
 
-#ifdef CONFIG_HOTPLUG_CPU
-	pinst->cpu_notifier.notifier_call = padata_cpu_callback;
-	pinst->cpu_notifier.priority = 0;
-	register_hotcpu_notifier(&pinst->cpu_notifier);
-#endif
-
 	put_online_cpus();
 
 	BLOCKING_INIT_NOTIFIER_HEAD(&pinst->cpumask_change_notifier);
 	kobject_init(&pinst->kobj, &padata_attr_type);
 	mutex_init(&pinst->lock);
+
+#ifdef CONFIG_HOTPLUG_CPU
+	pinst->cpu_notifier.notifier_call = padata_cpu_callback;
+	pinst->cpu_notifier.priority = 0;
+	register_hotcpu_notifier(&pinst->cpu_notifier);
+#endif
 
 	return pinst;
 

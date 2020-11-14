@@ -54,8 +54,8 @@ static ssize_t name_show(struct device *dev, struct device_attribute *attr,
 	return sprintf(buf, "%s\n", sdev->name);
 }
 
-static DEVICE_ATTR(state, S_IRUGO | S_IWUSR, state_show, NULL);
-static DEVICE_ATTR(name, S_IRUGO | S_IWUSR, name_show, NULL);
+static DEVICE_ATTR(state, S_IRUGO, state_show, NULL);
+static DEVICE_ATTR(name, S_IRUGO, name_show, NULL);
 
 void switch_set_state(struct switch_dev *sdev, int state)
 {
@@ -151,8 +151,8 @@ void switch_dev_unregister(struct switch_dev *sdev)
 {
 	device_remove_file(sdev->dev, &dev_attr_name);
 	device_remove_file(sdev->dev, &dev_attr_state);
-	device_destroy(switch_class, MKDEV(0, sdev->index));
 	dev_set_drvdata(sdev->dev, NULL);
+	device_destroy(switch_class, MKDEV(0, sdev->index));
 }
 EXPORT_SYMBOL_GPL(switch_dev_unregister);
 

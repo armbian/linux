@@ -253,7 +253,7 @@ lbtf_deb_leave(LBTF_DEB_MAIN);
 static void if_usb_disconnect(struct usb_interface *intf)
 {
 	struct if_usb_card *cardp = usb_get_intfdata(intf);
-	struct lbtf_private *priv = (struct lbtf_private *) cardp->priv;
+	struct lbtf_private *priv = cardp->priv;
 
 	lbtf_deb_enter(LBTF_DEB_MAIN);
 
@@ -365,7 +365,6 @@ static int if_usb_reset_device(struct if_usb_card *cardp)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(if_usb_reset_device);
 
 /**
  *  usb_tx_block - transfer data to the device
@@ -822,15 +821,15 @@ static int if_usb_prog_firmware(struct if_usb_card *cardp)
 
 	lbtf_deb_enter(LBTF_DEB_USB);
 
-	kparam_block_sysfs_write(fw_name);
+	kernel_param_lock(THIS_MODULE);
 	ret = request_firmware(&cardp->fw, lbtf_fw_name, &cardp->udev->dev);
 	if (ret < 0) {
 		pr_err("request_firmware() failed with %#x\n", ret);
 		pr_err("firmware %s not found\n", lbtf_fw_name);
-		kparam_unblock_sysfs_write(fw_name);
+		kernel_param_unlock(THIS_MODULE);
 		goto done;
 	}
-	kparam_unblock_sysfs_write(fw_name);
+	kernel_param_unlock(THIS_MODULE);
 
 	if (check_fwfile_format(cardp->fw->data, cardp->fw->size))
 		goto release_fw;
@@ -907,7 +906,6 @@ restart:
 	lbtf_deb_leave_args(LBTF_DEB_USB, "ret %d", ret);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(if_usb_prog_firmware);
 
 
 #define if_usb_suspend NULL
@@ -920,6 +918,7 @@ static struct usb_driver if_usb_driver = {
 	.id_table = if_usb_table,
 	.suspend = if_usb_suspend,
 	.resume = if_usb_resume,
+	.disable_hub_initiated_lpm = 1,
 };
 
 module_usb_driver(if_usb_driver);

@@ -28,7 +28,7 @@
 #define PRESSED 1
 #define RELEASED 0
 
-DEFINE_PER_CPU(bool, reporting_keystroke);
+static DEFINE_PER_CPU(bool, reporting_keystroke);
 
 static struct input_dev *virt_keyboard;
 
@@ -81,6 +81,7 @@ void speakup_fake_down_arrow(void)
 	__this_cpu_write(reporting_keystroke, true);
 	input_report_key(virt_keyboard, KEY_DOWN, PRESSED);
 	input_report_key(virt_keyboard, KEY_DOWN, RELEASED);
+	input_sync(virt_keyboard);
 	__this_cpu_write(reporting_keystroke, false);
 
 	/* reenable preemption */

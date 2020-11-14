@@ -28,17 +28,18 @@
 #include <linux/kfifo.h>
 #include <linux/miscdevice.h>
 #include <linux/spinlock.h>
+#ifdef INV_KERNEL_3_10
+#include <linux/mpu.h>
+#include <linux/iio/iio.h>
+#include <linux/iio/buffer.h>
+#else
 #include <linux/mpu.h>
 
-#include "../../iio.h"
-#include "../../buffer.h"
+#include "iio.h"
+#include "buffer.h"
+#endif
 
 #include "dmpKey.h"
-
-#define CAL_DATA_AUTO_LOAD  1
-
-#define ALL_WINNER  //rocky 
-
 
 /**
  *  struct inv_reg_map_s - Notable slave registers.
@@ -92,6 +93,7 @@ enum inv_devices {
 	INV_MPU6500,
 	INV_MPU9250,
 	INV_MPU6XXX,
+	INV_MPU6515,
 	INV_NUM_PARTS
 };
 
@@ -145,14 +147,15 @@ struct inv_hw_s {
  *  @firmware_loaded:	flag indicate firmware loaded or not.
  *  @lpa_mod:		low power mode.
  *  @tap_on:		tap on/off.
- *  @flick_int_on:	flick interrupt on/off.
  *  @quaternion_on:	send quaternion data on/off.
  *  @display_orient_on:	display orientation on/off.
  *  @normal_compass_measure: discard first compass data after reset.
+ *  @smd_enable: disable/enable SMD function.
  *  @lpa_freq:		low power frequency
  *  @prog_start_addr:	firmware program start address.
- *  @dmp_output_rate:   dmp output rate.
- *  @fifo_rate:		FIFO update rate.
+ *  @fifo_rate:		current FIFO update rate.
+ *  @new_fifo_rate:	set FIFO update rate
+ *  @dmp_output_rate:   current dmp output rate.
  */
 struct inv_chip_config_s {
 	u32 fsr:2;
@@ -175,13 +178,14 @@ struct inv_chip_config_s {
 	u32 firmware_loaded:1;
 	u32 lpa_mode:1;
 	u32 tap_on:1;
-	u32 flick_int_on:1;
 	u32 quaternion_on:1;
 	u32 display_orient_on:1;
 	u32 normal_compass_measure:1;
+	u32 smd_enable:1;
 	u16 lpa_freq;
 	u16  prog_start_addr;
 	u16 fifo_rate;
+	u16 new_fifo_rate;
 	u16 dmp_output_rate;
 };
 
@@ -205,22 +209,6 @@ struct inv_chip_info_s {
 	u8 compass_sens[3];
 	u32 gyro_sens_trim;
 	u32 accl_sens_trim;
-};
-
-/**
- *  struct inv_flick_s structure to store flick data.
- *  @lower:	lower bound of flick.
- *  @upper:     upper bound of flick.
- *  @counter:	counter of flick.
- *  @msg_on;    message to carry flick
- *  @axis:      axis of flick
- */
-struct inv_flick_s {
-	int lower;
-	int upper;
-	int counter;
-	int msg_on;
-	int axis;
 };
 
 enum inv_channel_num {
@@ -254,15 +242,40 @@ struct accel_mot_int_s {
 	u8 mot_on:1;
 };
 
+/**
+ * struct self_test_setting - self test settables from sysfs
+ * samples: number of samples used in self test.
+ * threshold: threshold fail/pass criterion in self test.
+ *            This value is in the percentage multiplied by 100.
+ *            So 14% would be 14.
+ */
+struct self_test_setting {
+	u16 samples;
+	u16 threshold;
+};
+
+/**
+ * struct inv_smd_s significant motion detection structure.
+ * threshold: accel threshold for motion detection.
+ * delay: delay time to confirm 2nd motion.
+ * delay2: delay window parameter.
+ */
+struct inv_smd_s {
+	u32 threshold;
+	u32 delay;
+	u32 delay2;
+};
+
 struct inv_mpu_slave;
 /**
  *  struct inv_mpu_iio_s - Driver state variables.
  *  @chip_config:	Cached attribute information.
  *  @chip_info:		Chip information from read-only registers.
  *  @trig;              iio trigger.
- *  @flick:		flick data structure
- *  @tap:               tap data structure
+ *  @tap:               tap data structure.
+ *  @smd:               SMD data structure.
  *  @reg:		Map of important registers.
+ *  @self_test:         self test settings.
  *  @hw:		Other hardware-specific information.
  *  @chip_type:		chip type.
  *  @time_stamp_lock:	spin lock to time stamp.
@@ -288,6 +301,7 @@ struct inv_mpu_slave;
  *  @raw_accel:         raw accel data.
  *  @raw_compass:       raw compass.
  *  @raw_quaternion     raw quaternion data.
+ *  @int input_accel_bias[3]: accel bias from sysfs.
  *  @compass_scale:     compass scale.
  *  @i2c_addr:          i2c address.
  *  @compass_divider:   slow down compass rate.
@@ -306,16 +320,17 @@ struct inv_mpu_slave;
  */
 struct inv_mpu_iio_s {
 #define TIMESTAMP_FIFO_SIZE 16
+	struct device *dev;
 	struct inv_chip_config_s chip_config;
 	struct inv_chip_info_s chip_info;
 	struct iio_trigger  *trig;
-	struct inv_flick_s flick;
 	struct inv_tap_s   tap;
+	struct inv_smd_s smd;
 	struct inv_reg_map_s reg;
+	struct self_test_setting self_test;
 	const struct inv_hw_s *hw;
 	enum   inv_devices chip_type;
 	spinlock_t time_stamp_lock;
-	struct mutex mutex;
 	struct i2c_client *client;
 	struct mpu_platform_data plat_data;
 	struct inv_mpu_slave *mpu_slave;
@@ -333,10 +348,24 @@ struct inv_mpu_iio_s {
 				struct iio_buffer *ring, bool on);
 	int (*init_config)(struct iio_dev *indio_dev);
 	void (*setup_reg)(struct inv_reg_map_s *reg);
+
+	int (*plat_read)(struct inv_mpu_iio_s *st, u8 reg, int len, u8 *data);
+	int (*plat_single_write)(struct inv_mpu_iio_s *st, u8 reg, u8 data);
+	int (*secondary_read)(struct inv_mpu_iio_s *st, u8 reg, int len, u8 *data);
+	int (*secondary_write)(struct inv_mpu_iio_s *st, u8 reg, u8 data);
+	int (*memory_write)(struct inv_mpu_iio_s *st, u8 mpu_addr, u16 mem_addr,
+				 u32 len, u8 const *data);
+	int (*memory_read)(struct inv_mpu_iio_s *st, u8 mpu_addr, u16 mem_addr,
+				u32 len, u8 *data);
+
 	DECLARE_KFIFO(timestamps, u64, TIMESTAMP_FIFO_SIZE);
 	const short *compass_st_upper;
 	const short *compass_st_lower;
 	short irq;
+	signed short hid_temperature;
+	u64 hid_timestamp;
+	int use_hid;
+	int support_hw_poweroff;
 	int accel_bias[3];
 	int gyro_bias[3];
 	short raw_gyro[3];
@@ -358,14 +387,9 @@ struct inv_mpu_iio_s {
 	u32 irq_dur_ns;
 	u64 last_isr_time;
 	u64 mpu6500_last_motion_time;
+	u8 i2c_dis;
 	u8 name[20];
-#if CAL_DATA_AUTO_LOAD == 1
-    u8 cal_data_auto_load;
-#endif
-
-#ifdef ALL_WINNER
-	struct work_struct  work;
-#endif
+	u8 secondary_name[20];
 };
 
 /* produces an unique identifier for each device based on the
@@ -423,41 +447,6 @@ struct inv_mpu_slave {
 #define AKM8963_SCALE_SHIFT      4
 #define NUM_BYTES_COMPASS_SLAVE  8
 
-
-
-/* AK09911 */
-#define AK09911_REG_WIA1			0x00
-#define AK09911_REG_WIA2			0x01
-#define AK09911_REG_INFO1			0x02
-#define AK09911_REG_INFO2			0x03
-#define AK09911_REG_ST1				0x10
-#define AK09911_REG_HXL				0x11
-#define AK09911_REG_HXH				0x12
-#define AK09911_REG_HYL				0x13
-#define AK09911_REG_HYH				0x14
-#define AK09911_REG_HZL				0x15
-#define AK09911_REG_HZH				0x16
-#define AK09911_REG_TMPS			0x17
-#define AK09911_REG_ST2				0x18
-#define AK09911_REG_CNTL1			0x30
-#define AK09911_REG_CNTL2			0x31
-#define AK09911_REG_CNTL3			0x32
-
-#define AK09911_FUSE_ASAX			0x60
-#define AK09911_FUSE_ASAY			0x61
-#define AK09911_FUSE_ASAZ			0x62
-
-#define AK09911_MODE_SNG_MEASURE	0x01
-#define AK09911_MODE_SELF_TEST		0x10
-#define AK09911_MODE_FUSE_ACCESS	0x1F
-#define AK09911_MODE_POWERDOWN		0x00
-#define AK09911_RESET_DATA			0x01
-
-#define DATA_AK09911_DEVICE_ID      0x05
-#define DATA_AKM09911_SCALE      (19661 * (1L << 15))
-#define NUM_BYTES_COMPASS_SLAVE_AK09911  9
-
-
 /*register and associated bit definition*/
 #define REG_3050_FIFO_EN         0x12
 #define BITS_3050_ACCL_OUT		0x0E
@@ -479,6 +468,7 @@ struct inv_mpu_slave {
 
 #define REG_3050_USER_CTRL       0x3D
 #define BIT_3050_AUX_IF_EN		0x20
+#define BIT_3050_AUX_IF_RST		0x08
 #define BIT_3050_FIFO_RST		0x02
 
 #define REG_3050_PWR_MGMT_1      0x3E
@@ -523,6 +513,11 @@ struct inv_mpu_slave {
 #define REG_I2C_SLV1_ADDR       0x28
 #define REG_I2C_SLV1_REG        0x29
 #define REG_I2C_SLV1_CTRL       0x2A
+
+#define REG_I2C_SLV2_ADDR       0x2B
+#define REG_I2C_SLV2_REG        0x2C
+#define REG_I2C_SLV2_CTRL       0x2D
+
 #define REG_I2C_SLV4_CTRL       0x34
 
 #define REG_INT_PIN_CFG         0x37
@@ -536,6 +531,7 @@ struct inv_mpu_slave {
 #define BIT_6500_WOM_EN                 0x40
 
 #define REG_DMP_INT_STATUS      0x39
+#define SMD_INT_ON              0x04
 
 #define REG_INT_STATUS          0x3A
 #define BIT_MOT_INT                     0x40
@@ -553,6 +549,7 @@ struct inv_mpu_slave {
 #define REG_I2C_MST_DELAY_CTRL  0x67
 #define BIT_SLV0_DLY_EN                 0x01
 #define BIT_SLV1_DLY_EN                 0x02
+#define BIT_SLV2_DLY_EN                 0x04
 
 #define REG_USER_CTRL           0x6A
 #define BIT_FIFO_RST                    0x04
@@ -560,6 +557,7 @@ struct inv_mpu_slave {
 #define BIT_I2C_MST_EN                  0x20
 #define BIT_FIFO_EN                     0x40
 #define BIT_DMP_EN                      0x80
+#define BIT_I2C_IF_DIS                  0x10
 
 #define REG_PWR_MGMT_1          0x6B
 #define BIT_H_RESET                     0x80
@@ -582,9 +580,10 @@ struct inv_mpu_slave {
 
 #define REG_6500_XG_ST_DATA     0x0
 #define REG_6500_XA_ST_DATA     0xD
-
 #define REG_6500_ACCEL_CONFIG2  0x1D
 #define BIT_ACCEL_FCHOCIE_B              0x08
+#define BIT_FIFO_SIZE_1K                 0x40
+
 
 #define REG_6500_LP_ACCEL_ODR   0x1E
 #define REG_6500_ACCEL_WOM_THR  0x1F
@@ -608,12 +607,10 @@ struct inv_mpu_slave {
 #define FIFO_THRESHOLD           500
 #define POWER_UP_TIME            100
 #define SENSOR_UP_TIME           30
+#define REG_UP_TIME              5
 #define INV_MPU_SAMPLE_RATE_CHANGE_STABLE 50
 #define MPU_MEM_BANK_SIZE        256
-#define MPU3050_TEMP_OFFSET	 5383314L
-#define MPU3050_TEMP_SCALE       3834792L
-#define MPU6050_TEMP_OFFSET	 2462307L
-#define MPU6050_TEMP_SCALE       2977653L
+
 #define MPU6XXX_MAX_MOTION_THRESH (255*4)
 #define MPU6XXX_MOTION_THRESH_SHIFT 5
 #define MPU6050_MOTION_DUR_DEFAULT  1
@@ -625,30 +622,38 @@ struct inv_mpu_slave {
 #define MAX_GYRO_FS_PARAM        3
 #define MAX_ACCL_FS_PARAM        3
 #define MAX_LPA_FREQ_PARAM       3
+#define MPU6XXX_MAX_MPU_MEM      (256 * 12)
 
 #define INIT_MOT_DUR             128
 #define INIT_MOT_THR             128
 #define INIT_ZMOT_DUR            128
 #define INIT_ZMOT_THR            128
-
-/*---- MPU6515 ----*/
-#define MPU6515_ID               0x74      /* unique WHOAMI */
+#define INIT_ST_SAMPLES          50
+#define INIT_ST_THRESHOLD        14
+#define ST_THRESHOLD_MULTIPLIER  10
+#define ST_MAX_SAMPLES           500
+#define ST_MAX_THRESHOLD         100
 
 /*---- MPU6500 ----*/
 #define MPU6500_ID               0x70      /* unique WHOAMI */
 #define MPU6500_PRODUCT_REVISION 1
-#define MPU6500_MEM_REV_ADDR     0x17
+#define MPU6500_MEM_REV_ADDR     0x16
+#define INV_MPU_REV_MASK         0xF
 #define MPU6500_REV              2
+
+/*---- MPU6515 ----*/
+#define MPU6515_ID               0x74      /* unique WHOAMI */
 
 /*---- MPU9250 ----*/
 #define MPU9250_ID               0x71      /* unique WHOAMI */
 
+/*---- MPU6880 ----*/
+#define MPU6880_ID               0x78      /* unique WHOAMI */
+
 #define THREE_AXIS               3
 #define GYRO_CONFIG_FSR_SHIFT    3
 #define ACCL_CONFIG_FSR_SHIFT    3
-#define GYRO_DPS_SCALE           (250L)// +-250dps
-#define ACCL_G_SCALE             (2L)// +-2g
-#define DEF_GYRO_PRECISION	(1000)
+#define GYRO_DPS_SCALE           250
 #define MEM_ADDR_PROD_REV        0x6
 #define SOFT_PROD_VER_BYTES      5
 #define CRC_FIRMWARE_SEED        0
@@ -662,6 +667,10 @@ struct inv_mpu_slave {
 #define INIT_TAP_THRESHOLD       100
 #define INIT_TAP_TIME            100
 #define INIT_TAP_MIN_COUNT       2
+#define MPU_INIT_SMD_DELAY_THLD  3
+#define MPU_INIT_SMD_DELAY2_THLD 1
+#define MPU_INIT_SMD_THLD        1500
+#define MPU_DEFAULT_DMP_FREQ     200
 #define MPL_PROD_KEY(ver, rev) (ver * 100 + rev)
 #define NUM_OF_PROD_REVS (ARRAY_SIZE(prod_rev_map))
 /*---- MPU6050 Silicon Revisions ----*/
@@ -677,14 +686,10 @@ struct inv_mpu_slave {
 #define DEFAULT_ACCL_TRIM                     16384
 #define DEFAULT_GYRO_TRIM                     131
 #define MAX_FIFO_RATE                         1000
+#define MAX_DMP_OUTPUT_RATE                   200
 #define MIN_FIFO_RATE                         4
 #define ONE_K_HZ                              1000
 #define NS_PER_MS_SHIFT                       20
-
-/* flick related defines */
-#define DATA_INT                              2097
-#define DATA_MSG_ON                           262144
-#define FLICK_INT_STATUS                      8
 
 /*tap related defines */
 #define INV_TAP                               0x08
@@ -734,12 +739,12 @@ enum inv_mpu_scan {
 	INV_MPU_SCAN_QUAT_X,
 	INV_MPU_SCAN_QUAT_Y,
 	INV_MPU_SCAN_QUAT_Z,
-	INV_MPU_SCAN_GYRO_X,
-	INV_MPU_SCAN_GYRO_Y,
-	INV_MPU_SCAN_GYRO_Z,
 	INV_MPU_SCAN_ACCL_X,
 	INV_MPU_SCAN_ACCL_Y,
 	INV_MPU_SCAN_ACCL_Z,
+	INV_MPU_SCAN_GYRO_X,
+	INV_MPU_SCAN_GYRO_Y,
+	INV_MPU_SCAN_GYRO_Z,
 	INV_MPU_SCAN_MAGN_X,
 	INV_MPU_SCAN_MAGN_Y,
 	INV_MPU_SCAN_MAGN_Z,
@@ -783,41 +788,50 @@ enum MPU_MEMORY_BANKS {
 
 /* IIO attribute address */
 enum MPU_IIO_ATTR_ADDR {
-	ATTR_DMP_FLICK_LOWER,
-	ATTR_DMP_FLICK_UPPER,
-	ATTR_DMP_FLICK_COUNTER,
-	ATTR_DMP_FLICK_INT_ON,
-	ATTR_DMP_FLICK_AXIS,
-	ATTR_DMP_FLICK_MSG_ON,
-	ATTR_DMP_PEDOMETER_STEPS,
-	ATTR_DMP_PEDOMETER_TIME,
+	ATTR_DMP_SMD_ENABLE,
+	ATTR_DMP_SMD_THLD,
+	ATTR_DMP_SMD_DELAY_THLD,
+	ATTR_DMP_SMD_DELAY_THLD2,
+	ATTR_DMP_TAP_ON,
 	ATTR_DMP_TAP_THRESHOLD,
 	ATTR_DMP_TAP_MIN_COUNT,
-	ATTR_DMP_TAP_ON,
 	ATTR_DMP_TAP_TIME,
+	ATTR_DMP_DISPLAY_ORIENTATION_ON,
+/* *****above this line, are DMP features, power needs on/off */
+/* *****below this line, are DMP features, no power needed */
 	ATTR_DMP_ON,
 	ATTR_DMP_INT_ON,
 	ATTR_DMP_EVENT_INT_ON,
 	ATTR_DMP_OUTPUT_RATE,
 	ATTR_DMP_QUATERNION_ON,
-	ATTR_DMP_DISPLAY_ORIENTATION_ON,
-	ATTR_LPA_FREQ,
-	ATTR_SELF_TEST,
-	ATTR_KEY,
-	ATTR_GYRO_MATRIX,
-	ATTR_ACCL_MATRIX,
-	ATTR_COMPASS_MATRIX,
+/*  *****above this line, it is all DMP related features */
+/*  *****below this line, it is all non-DMP related features */
+	ATTR_MOTION_LPA_ON,
+	ATTR_MOTION_LPA_FREQ,
+	ATTR_MOTION_LPA_THRESHOLD,
+/*  *****above this line, it is non-DMP, power needs on/off */
+/*  *****below this line, it is non-DMP, no needs to on/off power */
+	ATTR_SELF_TEST_SAMPLES,
+	ATTR_SELF_TEST_THRESHOLD,
 	ATTR_GYRO_ENABLE,
 	ATTR_ACCL_ENABLE,
 	ATTR_COMPASS_ENABLE,
-	ATTR_POWER_STATE,
+	ATTR_POWER_STATE, /* this is fake sysfs for compatibility */
 	ATTR_FIRMWARE_LOADED,
-	ATTR_MOTION_ON,
-	ATTR_MOTION_DURATION,
-	ATTR_MOTION_THRESHOLD,
+	ATTR_SAMPLING_FREQ,
+/*  *****below this line, it is attributes only has show methods */
+	ATTR_SELF_TEST, /* this has show-only methods but needs power on/off */
+	ATTR_GYRO_MATRIX,
+	ATTR_ACCL_MATRIX,
+	ATTR_COMPASS_MATRIX,
+	ATTR_SECONDARY_NAME,
 #ifdef CONFIG_INV_TESTING
 	ATTR_I2C_COUNTERS,
 	ATTR_REG_WRITE,
+	ATTR_DEBUG_SMD_ENABLE_TESTP1,
+	ATTR_DEBUG_SMD_ENABLE_TESTP2,
+	ATTR_DEBUG_SMD_EXE_STATE,
+	ATTR_DEBUG_SMD_DELAY_CNTR
 #endif
 };
 
@@ -849,7 +863,8 @@ ssize_t inv_dmp_firmware_read(struct file *filp,
 				struct kobject *kobj,
 				struct bin_attribute *bin_attr,
 				char *buf, loff_t off, size_t count);
-
+int inv_reg_store(struct inv_mpu_iio_s *st);
+int inv_reg_recover(struct inv_mpu_iio_s *st);
 int inv_mpu_configure_ring(struct iio_dev *indio_dev);
 int inv_mpu_probe_trigger(struct iio_dev *indio_dev);
 void inv_mpu_unconfigure_ring(struct iio_dev *indio_dev);
@@ -863,7 +878,6 @@ void inv_setup_reg_mpu3050(struct inv_reg_map_s *reg);
 int inv_switch_3050_gyro_engine(struct inv_mpu_iio_s *st, bool en);
 int inv_switch_3050_accl_engine(struct inv_mpu_iio_s *st, bool en);
 int set_power_mpu3050(struct inv_mpu_iio_s *st, bool power_on);
-int set_inv_enable(struct iio_dev *indio_dev, bool enable);
 int inv_set_interrupt_on_gesture_event(struct inv_mpu_iio_s *st, bool on);
 int inv_send_quaternion(struct inv_mpu_iio_s *st, bool on);
 int inv_set_display_orient_interrupt_dmp(struct inv_mpu_iio_s *st, bool on);
@@ -875,43 +889,41 @@ int inv_set_tap_threshold_dmp(struct inv_mpu_iio_s *st,
 int inv_set_min_taps_dmp(struct inv_mpu_iio_s *st, u16 min_taps);
 int  inv_set_tap_time_dmp(struct inv_mpu_iio_s *st, u16 time);
 int inv_enable_tap_dmp(struct inv_mpu_iio_s *st, bool on);
-int inv_i2c_read_base(struct inv_mpu_iio_s *st, u16 i2c_addr,
-	u8 reg, u16 length, u8 *data);
-int inv_i2c_single_write_base(struct inv_mpu_iio_s *st,
-	u16 i2c_addr, u8 reg, u8 data);
+int inv_check_chip_type(struct inv_mpu_iio_s *st, const char *name);
+int inv_create_dmp_sysfs(struct iio_dev *ind);
+void inv_set_iio_info(struct inv_mpu_iio_s *st, struct iio_dev *indio_dev);
 int inv_do_test(struct inv_mpu_iio_s *st, int self_test_flag,
 		int *gyro_result, int *accl_result);
 int inv_hw_self_test(struct inv_mpu_iio_s *st);
-int inv_hw_self_test_6500(struct inv_mpu_iio_s *st);
 void inv_recover_setting(struct inv_mpu_iio_s *st);
+void inv_resume_recover_setting(struct inv_mpu_iio_s *st);
+int inv_power_up_self_test(struct inv_mpu_iio_s *st);
 s64 get_time_ns(void);
 int write_be32_key_to_mem(struct inv_mpu_iio_s *st,
 					u32 data, int key);
 int inv_set_accel_bias_dmp(struct inv_mpu_iio_s *st);
 int inv_send_sensor_data(struct inv_mpu_iio_s *st, u16 elements);
 int inv_send_interrupt_word(struct inv_mpu_iio_s *st, bool on);
-int mpu_memory_write(struct inv_mpu_iio_s *st, u8 mpu_addr, u16 mem_addr,
-		     u32 len, u8 const *data);
-int mpu_memory_read(struct inv_mpu_iio_s *st, u8 mpu_addr, u16 mem_addr,
-		    u32 len, u8 *data);
 int mpu_memory_write_unaligned(struct inv_mpu_iio_s *st, u16 key, int len,
 							u8 const *d);
 /* used to print i2c data using pr_debug */
 char *wr_pr_debug_begin(u8 const *data, u32 len, char *string);
 char *wr_pr_debug_end(char *string);
 
+#define inv_plat_read(st, reg, len, data) \
+       st->plat_read(st, reg, len, data)
+#define inv_plat_single_write(st, reg, data) \
+	st->plat_single_write(st, reg, data)
+#define inv_secondary_read(st, reg, len, data) \
+	st->secondary_read(st, reg, len, data)
+#define inv_secondary_write(st, reg, data) \
+	st->secondary_write(st, reg, data)
+#define mpu_memory_write(st, mpu_addr, mem_addr, len, data) \
+	st->memory_write(st, mpu_addr, mem_addr, len, data)
+#define mpu_memory_read(st, mpu_addr, mem_addr, len, data) \
+	st->memory_read(st, mpu_addr, mem_addr, len, data)
 #define mem_w(a, b, c) \
-	mpu_memory_write(st, st->i2c_addr, a, b, c)
+	st->memory_write(st, st->i2c_addr, a, b, c)
 #define mem_w_key(key, b, c) mpu_memory_write_unaligned(st, key, b, c)
-#define inv_i2c_read(st, reg, len, data) \
-	inv_i2c_read_base(st, st->i2c_addr, reg, len, data)
-#define inv_i2c_single_write(st, reg, data) \
-	inv_i2c_single_write_base(st, st->i2c_addr, reg, data)
-#define inv_secondary_read(reg, len, data) \
-	inv_i2c_read_base(st, st->plat_data.secondary_i2c_addr, reg, len, data)
-#define inv_secondary_write(reg, data) \
-	inv_i2c_single_write_base(st, st->plat_data.secondary_i2c_addr, \
-		reg, data)
-
 #endif  /* #ifndef _INV_MPU_IIO_H_ */
 

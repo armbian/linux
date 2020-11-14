@@ -20,11 +20,10 @@
 
 static inline void ipip6_ecn_decapsulate(struct sk_buff *skb)
 {
-	const struct ipv6hdr *outer_iph = ipv6_hdr(skb);
 	struct ipv6hdr *inner_iph = ipipv6_hdr(skb);
 
-	if (INET_ECN_is_ce(ipv6_get_dsfield(outer_iph)))
-		IP6_ECN_set_ce(inner_iph);
+	if (INET_ECN_is_ce(XFRM_MODE_SKB_CB(skb)->tos))
+		IP6_ECN_set_ce(skb, inner_iph);
 }
 
 /* Add encapsulation header.
@@ -49,8 +48,11 @@ static int xfrm6_mode_tunnel_output(struct xfrm_state *x, struct sk_buff *skb)
 	       sizeof(top_iph->flow_lbl));
 	top_iph->nexthdr = xfrm_af2proto(skb_dst(skb)->ops->family);
 
-	dsfield = XFRM_MODE_SKB_CB(skb)->tos;
-	dsfield = INET_ECN_encapsulate(dsfield, dsfield);
+	if (x->props.extra_flags & XFRM_SA_XFLAG_DONT_ENCAP_DSCP)
+		dsfield = 0;
+	else
+		dsfield = XFRM_MODE_SKB_CB(skb)->tos;
+	dsfield = INET_ECN_encapsulate(dsfield, XFRM_MODE_SKB_CB(skb)->tos);
 	if (x->props.flags & XFRM_STATE_NOECN)
 		dsfield &= ~INET_ECN_MASK;
 	ipv6_change_dsfield(top_iph, 0, dsfield);
@@ -59,6 +61,12 @@ static int xfrm6_mode_tunnel_output(struct xfrm_state *x, struct sk_buff *skb)
 	top_iph->daddr = *(struct in6_addr *)&x->id.daddr;
 	return 0;
 }
+
+#define for_each_input_rcu(head, handler)	\
+	for (handler = rcu_dereference(head);	\
+	     handler != NULL;			\
+	     handler = rcu_dereference(handler->next))
+
 
 static int xfrm6_mode_tunnel_input(struct xfrm_state *x, struct sk_buff *skb)
 {
@@ -69,8 +77,8 @@ static int xfrm6_mode_tunnel_input(struct xfrm_state *x, struct sk_buff *skb)
 	if (!pskb_may_pull(skb, sizeof(struct ipv6hdr)))
 		goto out;
 
-	if (skb_cloned(skb) &&
-	    (err = pskb_expand_head(skb, 0, 0, GFP_ATOMIC)))
+	err = skb_unclone(skb, GFP_ATOMIC);
+	if (err)
 		goto out;
 
 	if (x->props.flags & XFRM_STATE_DECAP_DSCP)

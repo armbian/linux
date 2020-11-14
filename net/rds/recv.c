@@ -76,6 +76,11 @@ static void rds_recv_rcvbuf_delta(struct rds_sock *rs, struct sock *sk,
 		return;
 
 	rs->rs_rcv_bytes += delta;
+
+	/* loop transport doesn't send/recv congestion updates */
+	if (rs->rs_transport->t_type == RDS_TRANS_LOOP)
+		return;
+
 	now_congested = rs->rs_rcv_bytes > rds_sk_rcvbuf(rs);
 
 	rdsdebug("rs %p (%pI4:%u) recv bytes %d buf %d "
@@ -395,14 +400,14 @@ static int rds_cmsg_recv(struct rds_incoming *inc, struct msghdr *msg)
 	return 0;
 }
 
-int rds_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
-		size_t size, int msg_flags)
+int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
+		int msg_flags)
 {
 	struct sock *sk = sock->sk;
 	struct rds_sock *rs = rds_sk_to_rs(sk);
 	long timeo;
 	int ret = 0, nonblock = msg_flags & MSG_DONTWAIT;
-	struct sockaddr_in *sin;
+	DECLARE_SOCKADDR(struct sockaddr_in *, sin, msg->msg_name);
 	struct rds_incoming *inc = NULL;
 
 	/* udp_recvmsg()->sock_recvtimeo() gets away without locking too.. */
@@ -414,6 +419,7 @@ int rds_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 		goto out;
 
 	while (1) {
+		struct iov_iter save;
 		/* If there are pending notifications, do those - and nothing else */
 		if (!list_empty(&rs->rs_notify_queue)) {
 			ret = rds_notify_queue_get(rs, msg);
@@ -449,8 +455,8 @@ int rds_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 		rdsdebug("copying inc %p from %pI4:%u to user\n", inc,
 			 &inc->i_conn->c_faddr,
 			 ntohs(inc->i_hdr.h_sport));
-		ret = inc->i_conn->c_trans->inc_copy_to_user(inc, msg->msg_iov,
-							     size);
+		save = msg->msg_iter;
+		ret = inc->i_conn->c_trans->inc_copy_to_user(inc, &msg->msg_iter);
 		if (ret < 0)
 			break;
 
@@ -463,6 +469,7 @@ int rds_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 			rds_inc_put(inc);
 			inc = NULL;
 			rds_stats_inc(s_recv_deliver_raced);
+			msg->msg_iter = save;
 			continue;
 		}
 
@@ -479,7 +486,6 @@ int rds_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 
 		rds_stats_inc(s_recv_delivered);
 
-		sin = (struct sockaddr_in *)msg->msg_name;
 		if (sin) {
 			sin->sin_family = AF_INET;
 			sin->sin_port = inc->i_hdr.h_sport;
@@ -543,6 +549,8 @@ void rds_inc_info_copy(struct rds_incoming *inc,
 		minfo.lport = inc->i_hdr.h_sport;
 		minfo.fport = inc->i_hdr.h_dport;
 	}
+
+	minfo.flags = 0;
 
 	rds_info_copy(iter, &minfo, sizeof(minfo));
 }

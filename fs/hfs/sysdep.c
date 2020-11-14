@@ -13,15 +13,15 @@
 
 /* dentry case-handling: just lowercase everything */
 
-static int hfs_revalidate_dentry(struct dentry *dentry, struct nameidata *nd)
+static int hfs_revalidate_dentry(struct dentry *dentry, unsigned int flags)
 {
 	struct inode *inode;
 	int diff;
 
-	if (nd->flags & LOOKUP_RCU)
+	if (flags & LOOKUP_RCU)
 		return -ECHILD;
 
-	inode = dentry->d_inode;
+	inode = d_inode(dentry);
 	if(!inode)
 		return 1;
 

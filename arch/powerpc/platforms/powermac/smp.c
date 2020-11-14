@@ -192,7 +192,7 @@ static int psurge_secondary_ipi_init(void)
 {
 	int rc = -ENOMEM;
 
-	psurge_host = irq_domain_add_nomap(NULL, 0, &psurge_host_ops, NULL);
+	psurge_host = irq_domain_add_nomap(NULL, ~0, &psurge_host_ops, NULL);
 
 	if (psurge_host)
 		psurge_secondary_virq = irq_create_direct_mapping(psurge_host);
@@ -268,14 +268,14 @@ static void __init psurge_quad_init(void)
 	mdelay(33);
 }
 
-static int __init smp_psurge_probe(void)
+static void __init smp_psurge_probe(void)
 {
 	int i, ncpus;
 	struct device_node *dn;
 
 	/* We don't do SMP on the PPC601 -- paulus */
 	if (PVR_VER(mfspr(SPRN_PVR)) == 1)
-		return 1;
+		return;
 
 	/*
 	 * The powersurge cpu board can be used in the generation
@@ -289,7 +289,7 @@ static int __init smp_psurge_probe(void)
 	 */
 	dn = of_find_node_by_name(NULL, "hammerhead");
 	if (dn == NULL)
-		return 1;
+		return;
 	of_node_put(dn);
 
 	hhead_base = ioremap(HAMMERHEAD_BASE, 0x800);
@@ -310,13 +310,13 @@ static int __init smp_psurge_probe(void)
 			/* not a dual-cpu card */
 			iounmap(hhead_base);
 			psurge_type = PSURGE_NONE;
-			return 1;
+			return;
 		}
 		ncpus = 2;
 	}
 
 	if (psurge_secondary_ipi_init())
-		return 1;
+		return;
 
 	psurge_start = ioremap(PSURGE_START, 4);
 	psurge_pri_intr = ioremap(PSURGE_PRI_INTR, 4);
@@ -332,8 +332,6 @@ static int __init smp_psurge_probe(void)
 		set_cpu_present(i, true);
 
 	if (ppc_md.progress) ppc_md.progress("smp_psurge_probe - done", 0x352);
-
-	return ncpus;
 }
 
 static int __init smp_psurge_kick_cpu(int nr)
@@ -484,7 +482,7 @@ static void smp_core99_give_timebase(void)
 }
 
 
-static void __devinit smp_core99_take_timebase(void)
+static void smp_core99_take_timebase(void)
 {
 	unsigned long flags;
 
@@ -577,7 +575,7 @@ static void __init smp_core99_setup_i2c_hwsync(int ncpus)
 	int ok;
 
 	/* Look for the clock chip */
-	while ((cc = of_find_node_by_name(cc, "i2c-hwclock")) != NULL) {
+	for_each_node_by_name(cc, "i2c-hwclock") {
 		p = of_get_parent(cc);
 		ok = p && of_device_is_compatible(p, "uni-n-i2c");
 		of_node_put(p);
@@ -669,7 +667,7 @@ static void smp_core99_gpio_tb_freeze(int freeze)
 volatile static long int core99_l2_cache;
 volatile static long int core99_l3_cache;
 
-static void __devinit core99_init_caches(int cpu)
+static void core99_init_caches(int cpu)
 {
 #ifndef CONFIG_PPC64
 	if (!cpu_has_feature(CPU_FTR_L2CR))
@@ -766,7 +764,7 @@ static void __init smp_core99_setup(int ncpus)
 		powersave_nap = 0;
 }
 
-static int __init smp_core99_probe(void)
+static void __init smp_core99_probe(void)
 {
 	struct device_node *cpus;
 	int ncpus = 0;
@@ -781,7 +779,7 @@ static int __init smp_core99_probe(void)
 
 	/* Nothing more to do if less than 2 of them */
 	if (ncpus <= 1)
-		return 1;
+		return;
 
 	/* We need to perform some early initialisations before we can start
 	 * setting up SMP as we are running before initcalls
@@ -797,11 +795,9 @@ static int __init smp_core99_probe(void)
 
 	/* Collect l2cr and l3cr values from CPU 0 */
 	core99_init_caches(0);
-
-	return ncpus;
 }
 
-static int __devinit smp_core99_kick_cpu(int nr)
+static int smp_core99_kick_cpu(int nr)
 {
 	unsigned int save_vector;
 	unsigned long target, flags;
@@ -844,7 +840,7 @@ static int __devinit smp_core99_kick_cpu(int nr)
 	return 0;
 }
 
-static void __devinit smp_core99_setup_cpu(int cpu_nr)
+static void smp_core99_setup_cpu(int cpu_nr)
 {
 	/* Setup L2/L3 */
 	if (cpu_nr != 0)
@@ -885,7 +881,7 @@ static int smp_core99_cpu_notify(struct notifier_block *self,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block __cpuinitdata smp_core99_cpu_nb = {
+static struct notifier_block smp_core99_cpu_nb = {
 	.notifier_call	= smp_core99_cpu_notify,
 };
 #endif /* CONFIG_HOTPLUG_CPU */

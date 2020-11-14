@@ -16,8 +16,8 @@
 #include <linux/sysfs.h>
 #include <linux/module.h>
 
-#include "../iio.h"
-#include "../sysfs.h"
+#include <linux/iio/iio.h>
+#include <linux/iio/sysfs.h>
 
 struct ad2s90_state {
 	struct mutex lock;
@@ -55,19 +55,18 @@ static const struct iio_chan_spec ad2s90_chan = {
 	.type = IIO_ANGL,
 	.indexed = 1,
 	.channel = 0,
+	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 };
 
-static int __devinit ad2s90_probe(struct spi_device *spi)
+static int ad2s90_probe(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev;
 	struct ad2s90_state *st;
 	int ret = 0;
 
-	indio_dev = iio_allocate_device(sizeof(*st));
-	if (indio_dev == NULL) {
-		ret = -ENOMEM;
-		goto error_ret;
-	}
+	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
+	if (!indio_dev)
+		return -ENOMEM;
 	st = iio_priv(indio_dev);
 	spi_set_drvdata(spi, indio_dev);
 
@@ -80,27 +79,14 @@ static int __devinit ad2s90_probe(struct spi_device *spi)
 	indio_dev->num_channels = 1;
 	indio_dev->name = spi_get_device_id(spi)->name;
 
-	ret = iio_device_register(indio_dev);
+	ret = devm_iio_device_register(indio_dev->dev.parent, indio_dev);
 	if (ret)
-		goto error_free_dev;
+		return ret;
 
 	/* need 600ns between CS and the first falling edge of SCLK */
 	spi->max_speed_hz = 830000;
 	spi->mode = SPI_MODE_3;
 	spi_setup(spi);
-
-	return 0;
-
-error_free_dev:
-	iio_free_device(indio_dev);
-error_ret:
-	return ret;
-}
-
-static int __devexit ad2s90_remove(struct spi_device *spi)
-{
-	iio_device_unregister(spi_get_drvdata(spi));
-	iio_free_device(spi_get_drvdata(spi));
 
 	return 0;
 }
@@ -114,10 +100,8 @@ MODULE_DEVICE_TABLE(spi, ad2s90_id);
 static struct spi_driver ad2s90_driver = {
 	.driver = {
 		.name = "ad2s90",
-		.owner = THIS_MODULE,
 	},
 	.probe = ad2s90_probe,
-	.remove = __devexit_p(ad2s90_remove),
 	.id_table = ad2s90_id,
 };
 module_spi_driver(ad2s90_driver);

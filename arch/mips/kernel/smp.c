@@ -25,7 +25,7 @@
 #include <linux/smp.h>
 #include <linux/spinlock.h>
 #include <linux/threads.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/time.h>
 #include <linux/timex.h>
 #include <linux/sched.h>
@@ -37,16 +37,14 @@
 #include <linux/atomic.h>
 #include <asm/cpu.h>
 #include <asm/processor.h>
+#include <asm/idle.h>
 #include <asm/r4k-timer.h>
 #include <asm/mmu_context.h>
 #include <asm/time.h>
 #include <asm/setup.h>
+#include <asm/maar.h>
 
-#ifdef CONFIG_MIPS_MT_SMTC
-#include <asm/mipsmtregs.h>
-#endif /* CONFIG_MIPS_MT_SMTC */
-
-volatile cpumask_t cpu_callin_map;	/* Bitmask of started secondaries */
+cpumask_t cpu_callin_map;		/* Bitmask of started secondaries */
 
 int __cpu_number_map[NR_CPUS];		/* Map physical to logical */
 EXPORT_SYMBOL(__cpu_number_map);
@@ -62,29 +60,88 @@ EXPORT_SYMBOL(smp_num_siblings);
 cpumask_t cpu_sibling_map[NR_CPUS] __read_mostly;
 EXPORT_SYMBOL(cpu_sibling_map);
 
+/* representing the core map of multi-core chips of each logical CPU */
+cpumask_t cpu_core_map[NR_CPUS] __read_mostly;
+EXPORT_SYMBOL(cpu_core_map);
+
+static DECLARE_COMPLETION(cpu_starting);
+static DECLARE_COMPLETION(cpu_running);
+
+/*
+ * A logcal cpu mask containing only one VPE per core to
+ * reduce the number of IPIs on large MT systems.
+ */
+cpumask_t cpu_foreign_map __read_mostly;
+EXPORT_SYMBOL(cpu_foreign_map);
+
 /* representing cpus for which sibling maps can be computed */
 static cpumask_t cpu_sibling_setup_map;
+
+/* representing cpus for which core maps can be computed */
+static cpumask_t cpu_core_setup_map;
+
+cpumask_t cpu_coherent_mask;
 
 static inline void set_cpu_sibling_map(int cpu)
 {
 	int i;
 
-	cpu_set(cpu, cpu_sibling_setup_map);
+	cpumask_set_cpu(cpu, &cpu_sibling_setup_map);
 
 	if (smp_num_siblings > 1) {
-		for_each_cpu_mask(i, cpu_sibling_setup_map) {
-			if (cpu_data[cpu].core == cpu_data[i].core) {
-				cpu_set(i, cpu_sibling_map[cpu]);
-				cpu_set(cpu, cpu_sibling_map[i]);
+		for_each_cpu(i, &cpu_sibling_setup_map) {
+			if (cpu_data[cpu].package == cpu_data[i].package &&
+				    cpu_data[cpu].core == cpu_data[i].core) {
+				cpumask_set_cpu(i, &cpu_sibling_map[cpu]);
+				cpumask_set_cpu(cpu, &cpu_sibling_map[i]);
 			}
 		}
 	} else
-		cpu_set(cpu, cpu_sibling_map[cpu]);
+		cpumask_set_cpu(cpu, &cpu_sibling_map[cpu]);
+}
+
+static inline void set_cpu_core_map(int cpu)
+{
+	int i;
+
+	cpumask_set_cpu(cpu, &cpu_core_setup_map);
+
+	for_each_cpu(i, &cpu_core_setup_map) {
+		if (cpu_data[cpu].package == cpu_data[i].package) {
+			cpumask_set_cpu(i, &cpu_core_map[cpu]);
+			cpumask_set_cpu(cpu, &cpu_core_map[i]);
+		}
+	}
+}
+
+/*
+ * Calculate a new cpu_foreign_map mask whenever a
+ * new cpu appears or disappears.
+ */
+static inline void calculate_cpu_foreign_map(void)
+{
+	int i, k, core_present;
+	cpumask_t temp_foreign_map;
+
+	/* Re-calculate the mask */
+	cpumask_clear(&temp_foreign_map);
+	for_each_online_cpu(i) {
+		core_present = 0;
+		for_each_cpu(k, &temp_foreign_map)
+			if (cpu_data[i].package == cpu_data[k].package &&
+			    cpu_data[i].core == cpu_data[k].core)
+				core_present = 1;
+		if (!core_present)
+			cpumask_set_cpu(i, &temp_foreign_map);
+	}
+
+	cpumask_copy(&cpu_foreign_map, &temp_foreign_map);
 }
 
 struct plat_smp_ops *mp_ops;
+EXPORT_SYMBOL(mp_ops);
 
-__cpuinit void register_smp_ops(struct plat_smp_ops *ops)
+void register_smp_ops(struct plat_smp_ops *ops)
 {
 	if (mp_ops)
 		printk(KERN_WARNING "Overriding previously set SMP ops\n");
@@ -96,19 +153,16 @@ __cpuinit void register_smp_ops(struct plat_smp_ops *ops)
  * First C code run on the secondary CPUs after being started up by
  * the master.
  */
-asmlinkage __cpuinit void start_secondary(void)
+asmlinkage void start_secondary(void)
 {
 	unsigned int cpu;
 
-#ifdef CONFIG_MIPS_MT_SMTC
-	/* Only do cpu_probe for first TC of CPU */
-	if ((read_c0_tcbind() & TCBIND_CURTC) == 0)
-#endif /* CONFIG_MIPS_MT_SMTC */
 	cpu_probe();
-	per_cpu_trap_init();
+	per_cpu_trap_init(false);
 	mips_clockevent_init();
 	mp_ops->init_secondary();
 	cpu_report();
+	maar_init();
 
 	/*
 	 * XXX parity protection should be folded in here when it's converted
@@ -120,39 +174,55 @@ asmlinkage __cpuinit void start_secondary(void)
 	cpu = smp_processor_id();
 	cpu_data[cpu].udelay_val = loops_per_jiffy;
 
+	cpumask_set_cpu(cpu, &cpu_coherent_mask);
 	notify_cpu_starting(cpu);
 
-	mp_ops->smp_finish();
+	/* Notify boot CPU that we're starting & ready to sync counters */
+	complete(&cpu_starting);
+
+	synchronise_count_slave(cpu);
+
+	/* The CPU is running and counters synchronised, now mark it online */
+	set_cpu_online(cpu, true);
+
 	set_cpu_sibling_map(cpu);
+	set_cpu_core_map(cpu);
 
-	cpu_set(cpu, cpu_callin_map);
+	calculate_cpu_foreign_map();
 
-	synchronise_count_slave();
+	/*
+	 * Notify boot CPU that we're up & online and it can safely return
+	 * from __cpu_up
+	 */
+	complete(&cpu_running);
 
-	cpu_idle();
-}
+	/*
+	 * irq will be enabled in ->smp_finish(), enabling it too early
+	 * is dangerous.
+	 */
+	WARN_ON_ONCE(!irqs_disabled());
+	mp_ops->smp_finish();
 
-/*
- * Call into both interrupt handlers, as we share the IPI for them
- */
-void __irq_entry smp_call_function_interrupt(void)
-{
-	irq_enter();
-	generic_smp_call_function_single_interrupt();
-	generic_smp_call_function_interrupt();
-	irq_exit();
+	cpu_startup_entry(CPUHP_ONLINE);
 }
 
 static void stop_this_cpu(void *dummy)
 {
 	/*
-	 * Remove this CPU:
+	 * Remove this CPU. Be a bit slow here and
+	 * set the bits for every online CPU so we don't miss
+	 * any IPI whilst taking this VPE down.
 	 */
+
+	cpumask_copy(&cpu_foreign_map, cpu_online_mask);
+
+	/* Make it visible to every other CPU */
+	smp_mb();
+
 	set_cpu_online(smp_processor_id(), false);
-	for (;;) {
-		if (cpu_wait)
-			(*cpu_wait)();		/* Wait if available. */
-	}
+	calculate_cpu_foreign_map();
+	local_irq_disable();
+	while (1);
 }
 
 void smp_send_stop(void)
@@ -162,8 +232,6 @@ void smp_send_stop(void)
 
 void __init smp_cpus_done(unsigned int max_cpus)
 {
-	mp_ops->cpus_done();
-	synchronise_count_master();
 }
 
 /* called from main before smp_init() */
@@ -173,83 +241,36 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 	current_thread_info()->cpu = 0;
 	mp_ops->prepare_cpus(max_cpus);
 	set_cpu_sibling_map(0);
+	set_cpu_core_map(0);
+	calculate_cpu_foreign_map();
 #ifndef CONFIG_HOTPLUG_CPU
 	init_cpu_present(cpu_possible_mask);
 #endif
+	cpumask_copy(&cpu_coherent_mask, cpu_possible_mask);
 }
 
 /* preload SMP state for boot cpu */
-void __devinit smp_prepare_boot_cpu(void)
+void smp_prepare_boot_cpu(void)
 {
 	set_cpu_possible(0, true);
 	set_cpu_online(0, true);
-	cpu_set(0, cpu_callin_map);
 }
 
-/*
- * Called once for each "cpu_possible(cpu)".  Needs to spin up the cpu
- * and keep control until "cpu_online(cpu)" is set.  Note: cpu is
- * physical, not logical.
- */
-static struct task_struct *cpu_idle_thread[NR_CPUS];
-
-struct create_idle {
-	struct work_struct work;
-	struct task_struct *idle;
-	struct completion done;
-	int cpu;
-};
-
-static void __cpuinit do_fork_idle(struct work_struct *work)
+int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
-	struct create_idle *c_idle =
-		container_of(work, struct create_idle, work);
+	mp_ops->boot_secondary(cpu, tidle);
 
-	c_idle->idle = fork_idle(c_idle->cpu);
-	complete(&c_idle->done);
-}
-
-int __cpuinit __cpu_up(unsigned int cpu)
-{
-	struct task_struct *idle;
-
-	/*
-	 * Processor goes to start_secondary(), sets online flag
-	 * The following code is purely to make sure
-	 * Linux can schedule processes on this slave.
-	 */
-	if (!cpu_idle_thread[cpu]) {
-		/*
-		 * Schedule work item to avoid forking user task
-		 * Ported from arch/x86/kernel/smpboot.c
-		 */
-		struct create_idle c_idle = {
-			.cpu    = cpu,
-			.done   = COMPLETION_INITIALIZER_ONSTACK(c_idle.done),
-		};
-
-		INIT_WORK_ONSTACK(&c_idle.work, do_fork_idle);
-		schedule_work(&c_idle.work);
-		wait_for_completion(&c_idle.done);
-		idle = cpu_idle_thread[cpu] = c_idle.idle;
-
-		if (IS_ERR(idle))
-			panic(KERN_ERR "Fork failed for CPU %d", cpu);
-	} else {
-		idle = cpu_idle_thread[cpu];
-		init_idle(idle, cpu);
+	/* Wait for CPU to start and be ready to sync counters */
+	if (!wait_for_completion_timeout(&cpu_starting,
+					 msecs_to_jiffies(1000))) {
+		pr_crit("CPU%u: failed to start\n", cpu);
+		return -EIO;
 	}
 
-	mp_ops->boot_secondary(cpu, idle);
+	synchronise_count_master(cpu);
 
-	/*
-	 * Trust is futile.  We should really have timeouts ...
-	 */
-	while (!cpu_isset(cpu, cpu_callin_map))
-		udelay(100);
-
-	set_cpu_online(cpu, true);
-
+	/* Wait for CPU to finish startup & mark itself online before return */
+	wait_for_completion(&cpu_running);
 	return 0;
 }
 
@@ -281,13 +302,10 @@ static void flush_tlb_mm_ipi(void *mm)
  *  o collapses to normal function call on UP kernels
  *  o collapses to normal function call on systems with a single shared
  *    primary cache.
- *  o CONFIG_MIPS_MT_SMTC currently implies there is only one physical core.
  */
 static inline void smp_on_other_tlbs(void (*func) (void *info), void *info)
 {
-#ifndef CONFIG_MIPS_MT_SMTC
 	smp_call_function(func, info, 1);
-#endif
 }
 
 static inline void smp_on_each_tlb(void (*func) (void *info), void *info)
@@ -430,3 +448,63 @@ void flush_tlb_one(unsigned long vaddr)
 
 EXPORT_SYMBOL(flush_tlb_page);
 EXPORT_SYMBOL(flush_tlb_one);
+
+#if defined(CONFIG_KEXEC)
+void (*dump_ipi_function_ptr)(void *) = NULL;
+void dump_send_ipi(void (*dump_ipi_callback)(void *))
+{
+	int i;
+	int cpu = smp_processor_id();
+
+	dump_ipi_function_ptr = dump_ipi_callback;
+	smp_mb();
+	for_each_online_cpu(i)
+		if (i != cpu)
+			mp_ops->send_ipi_single(i, SMP_DUMP);
+
+}
+EXPORT_SYMBOL(dump_send_ipi);
+#endif
+
+#ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
+
+static DEFINE_PER_CPU(atomic_t, tick_broadcast_count);
+static DEFINE_PER_CPU(struct call_single_data, tick_broadcast_csd);
+
+void tick_broadcast(const struct cpumask *mask)
+{
+	atomic_t *count;
+	struct call_single_data *csd;
+	int cpu;
+
+	for_each_cpu(cpu, mask) {
+		count = &per_cpu(tick_broadcast_count, cpu);
+		csd = &per_cpu(tick_broadcast_csd, cpu);
+
+		if (atomic_inc_return(count) == 1)
+			smp_call_function_single_async(cpu, csd);
+	}
+}
+
+static void tick_broadcast_callee(void *info)
+{
+	int cpu = smp_processor_id();
+	tick_receive_broadcast();
+	atomic_set(&per_cpu(tick_broadcast_count, cpu), 0);
+}
+
+static int __init tick_broadcast_init(void)
+{
+	struct call_single_data *csd;
+	int cpu;
+
+	for (cpu = 0; cpu < NR_CPUS; cpu++) {
+		csd = &per_cpu(tick_broadcast_csd, cpu);
+		csd->func = tick_broadcast_callee;
+	}
+
+	return 0;
+}
+early_initcall(tick_broadcast_init);
+
+#endif /* CONFIG_GENERIC_CLOCKEVENTS_BROADCAST */

@@ -50,6 +50,11 @@ void set_die_routine(void (*routine)(const char *err, va_list params) NORETURN)
 	die_routine = routine;
 }
 
+void set_warning_routine(void (*routine)(const char *err, va_list params))
+{
+	warn_routine = routine;
+}
+
 void usage(const char *err)
 {
 	usage_routine(err);
@@ -81,42 +86,4 @@ void warning(const char *warn, ...)
 	va_start(params, warn);
 	warn_routine(warn, params);
 	va_end(params);
-}
-
-uid_t parse_target_uid(const char *str, const char *tid, const char *pid)
-{
-	struct passwd pwd, *result;
-	char buf[1024];
-
-	if (str == NULL)
-		return UINT_MAX;
-
-	/* UID and PID are mutually exclusive */
-	if (tid || pid) {
-		ui__warning("PID/TID switch overriding UID\n");
-		sleep(1);
-		return UINT_MAX;
-	}
-
-	getpwnam_r(str, &pwd, buf, sizeof(buf), &result);
-
-	if (result == NULL) {
-		char *endptr;
-		int uid = strtol(str, &endptr, 10);
-
-		if (*endptr != '\0') {
-			ui__error("Invalid user %s\n", str);
-			return UINT_MAX - 1;
-		}
-
-		getpwuid_r(uid, &pwd, buf, sizeof(buf), &result);
-
-		if (result == NULL) {
-			ui__error("Problems obtaining information for user %s\n",
-				  str);
-			return UINT_MAX - 1;
-		}
-	}
-
-	return result->pw_uid;
 }

@@ -122,6 +122,10 @@ static int slave_configure(struct scsi_device *sdev)
 	if (us->fflags & (US_FL_MAX_SECTORS_64 | US_FL_MAX_SECTORS_MIN)) {
 		unsigned int max_sectors = 64;
 
+		if (le16_to_cpu(us->pusb_dev->descriptor.idVendor) == 0x05e3 &&
+		    le16_to_cpu(us->pusb_dev->descriptor.idProduct) == 0x0749)
+			max_sectors = 128;
+
 		if (us->fflags & US_FL_MAX_SECTORS_MIN)
 			max_sectors = PAGE_CACHE_SIZE >> 9;
 		if (queue_max_hw_sectors(sdev->request_queue) > max_sectors)
@@ -192,6 +196,12 @@ static int slave_configure(struct scsi_device *sdev)
 		/* Some devices don't handle VPD pages correctly */
 		sdev->skip_vpd_pages = 1;
 
+		/* Do not attempt to use REPORT SUPPORTED OPERATION CODES */
+		sdev->no_report_opcodes = 1;
+
+		/* Do not attempt to use WRITE SAME */
+		sdev->no_write_same = 1;
+
 		/* Some disks return the total number of blocks in response
 		 * to READ CAPACITY rather than the highest block number.
 		 * If this device makes that mistake, tell the sd driver. */
@@ -211,8 +221,11 @@ static int slave_configure(struct scsi_device *sdev)
 		/*
 		 * Many devices do not respond properly to READ_CAPACITY_16.
 		 * Tell the SCSI layer to try READ_CAPACITY_10 first.
+		 * However some USB 3.0 drive enclosures return capacity
+		 * modulo 2TB. Those must use READ_CAPACITY_16
 		 */
-		sdev->try_rc_10_first = 1;
+		if (!(us->fflags & US_FL_NEEDS_CAP16))
+			sdev->try_rc_10_first = 1;
 
 		/* assume SPC3 or latter devices support sense size > 18 */
 		if (sdev->scsi_level > SCSI_SPC_2)
@@ -232,7 +245,7 @@ static int slave_configure(struct scsi_device *sdev)
 
 		/* Some USB cardreaders have trouble reading an sdcard's last
 		 * sector in a larger then 1 sector read, since the performance
-		 * impact is negible we set this flag for all USB disks */
+		 * impact is negligible we set this flag for all USB disks */
 		sdev->last_sector_bug = 1;
 
 		/* Enable last-sector hacks for single-target devices using
@@ -243,9 +256,14 @@ static int slave_configure(struct scsi_device *sdev)
 				us->protocol == USB_PR_BULK)
 			us->use_last_sector_hacks = 1;
 
+		/* Check if write cache default on flag is set or not */
+		if (us->fflags & US_FL_WRITE_CACHE)
+			sdev->wce_default_on = 1;
+
 		/* A few buggy USB-ATA bridges don't understand FUA */
 		if (us->fflags & US_FL_BROKEN_FUA)
 			sdev->broken_fua = 1;
+
 	} else {
 
 		/* Non-disk-type devices don't need to blacklist any pages
@@ -312,8 +330,6 @@ static int queuecommand_lck(struct scsi_cmnd *srb,
 {
 	struct us_data *us = host_to_us(srb->device->host);
 
-	US_DEBUGP("%s called\n", __func__);
-
 	/* check for state-transition errors */
 	if (us->srb != NULL) {
 		printk(KERN_ERR USB_STORAGE "Error in %s: us->srb = %p\n",
@@ -323,7 +339,7 @@ static int queuecommand_lck(struct scsi_cmnd *srb,
 
 	/* fail the command if we are disconnecting */
 	if (test_bit(US_FLIDX_DISCONNECTING, &us->dflags)) {
-		US_DEBUGP("Fail command during disconnect\n");
+		usb_stor_dbg(us, "Fail command during disconnect\n");
 		srb->result = DID_NO_CONNECT << 16;
 		done(srb);
 		return 0;
@@ -348,7 +364,7 @@ static int command_abort(struct scsi_cmnd *srb)
 {
 	struct us_data *us = host_to_us(srb->device->host);
 
-	US_DEBUGP("%s called\n", __func__);
+	usb_stor_dbg(us, "%s called\n", __func__);
 
 	/* us->srb together with the TIMED_OUT, RESETTING, and ABORTING
 	 * bits are protected by the host lock. */
@@ -357,7 +373,7 @@ static int command_abort(struct scsi_cmnd *srb)
 	/* Is this command still active? */
 	if (us->srb != srb) {
 		scsi_unlock(us_to_host(us));
-		US_DEBUGP ("-- nothing to abort\n");
+		usb_stor_dbg(us, "-- nothing to abort\n");
 		return FAILED;
 	}
 
@@ -385,7 +401,7 @@ static int device_reset(struct scsi_cmnd *srb)
 	struct us_data *us = host_to_us(srb->device->host);
 	int result;
 
-	US_DEBUGP("%s called\n", __func__);
+	usb_stor_dbg(us, "%s called\n", __func__);
 
 	/* lock the device pointers and do the reset */
 	mutex_lock(&(us->dev_mutex));
@@ -401,7 +417,8 @@ static int bus_reset(struct scsi_cmnd *srb)
 	struct us_data *us = host_to_us(srb->device->host);
 	int result;
 
-	US_DEBUGP("%s called\n", __func__);
+	usb_stor_dbg(us, "%s called\n", __func__);
+
 	result = usb_stor_port_reset(us);
 	return result < 0 ? FAILED : SUCCESS;
 }
@@ -437,24 +454,19 @@ void usb_stor_report_bus_reset(struct us_data *us)
  * /proc/scsi/ functions
  ***********************************************************************/
 
-/* we use this macro to help us write into the buffer */
-#undef SPRINTF
-#define SPRINTF(args...) \
-	do { if (pos < buffer+length) pos += sprintf(pos, ## args); } while (0)
+static int write_info(struct Scsi_Host *host, char *buffer, int length)
+{
+	/* if someone is sending us data, just throw it away */
+	return length;
+}
 
-static int proc_info (struct Scsi_Host *host, char *buffer,
-		char **start, off_t offset, int length, int inout)
+static int show_info (struct seq_file *m, struct Scsi_Host *host)
 {
 	struct us_data *us = host_to_us(host);
-	char *pos = buffer;
 	const char *string;
 
-	/* if someone is sending us data, just throw it away */
-	if (inout)
-		return length;
-
 	/* print the controller name */
-	SPRINTF("   Host scsi%d: usb-storage\n", host->host_no);
+	seq_printf(m, "   Host scsi%d: usb-storage\n", host->host_no);
 
 	/* print product, vendor, and serial number strings */
 	if (us->pusb_dev->manufacturer)
@@ -463,47 +475,33 @@ static int proc_info (struct Scsi_Host *host, char *buffer,
 		string = us->unusual_dev->vendorName;
 	else
 		string = "Unknown";
-	SPRINTF("       Vendor: %s\n", string);
+	seq_printf(m, "       Vendor: %s\n", string);
 	if (us->pusb_dev->product)
 		string = us->pusb_dev->product;
 	else if (us->unusual_dev->productName)
 		string = us->unusual_dev->productName;
 	else
 		string = "Unknown";
-	SPRINTF("      Product: %s\n", string);
+	seq_printf(m, "      Product: %s\n", string);
 	if (us->pusb_dev->serial)
 		string = us->pusb_dev->serial;
 	else
 		string = "None";
-	SPRINTF("Serial Number: %s\n", string);
+	seq_printf(m, "Serial Number: %s\n", string);
 
 	/* show the protocol and transport */
-	SPRINTF("     Protocol: %s\n", us->protocol_name);
-	SPRINTF("    Transport: %s\n", us->transport_name);
+	seq_printf(m, "     Protocol: %s\n", us->protocol_name);
+	seq_printf(m, "    Transport: %s\n", us->transport_name);
 
 	/* show the device flags */
-	if (pos < buffer + length) {
-		pos += sprintf(pos, "       Quirks:");
+	seq_printf(m, "       Quirks:");
 
 #define US_FLAG(name, value) \
-	if (us->fflags & value) pos += sprintf(pos, " " #name);
+	if (us->fflags & value) seq_printf(m, " " #name);
 US_DO_ALL_FLAGS
 #undef US_FLAG
-
-		*(pos++) = '\n';
-	}
-
-	/*
-	 * Calculate start of next buffer, and return value.
-	 */
-	*start = buffer + offset;
-
-	if ((pos - buffer) < offset)
-		return (0);
-	else if ((pos - buffer - offset) < length)
-		return (pos - buffer - offset);
-	else
-		return (length);
+	seq_putc(m, '\n');
+	return 0;
 }
 
 /***********************************************************************
@@ -511,7 +509,7 @@ US_DO_ALL_FLAGS
  ***********************************************************************/
 
 /* Output routine for the sysfs max_sectors file */
-static ssize_t show_max_sectors(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t max_sectors_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct scsi_device *sdev = to_scsi_device(dev);
 
@@ -519,7 +517,7 @@ static ssize_t show_max_sectors(struct device *dev, struct device_attribute *att
 }
 
 /* Input routine for the sysfs max_sectors file */
-static ssize_t store_max_sectors(struct device *dev, struct device_attribute *attr, const char *buf,
+static ssize_t max_sectors_store(struct device *dev, struct device_attribute *attr, const char *buf,
 		size_t count)
 {
 	struct scsi_device *sdev = to_scsi_device(dev);
@@ -529,26 +527,25 @@ static ssize_t store_max_sectors(struct device *dev, struct device_attribute *at
 		blk_queue_max_hw_sectors(sdev->request_queue, ms);
 		return count;
 	}
-	return -EINVAL;	
+	return -EINVAL;
 }
-
-static DEVICE_ATTR(max_sectors, S_IRUGO | S_IWUSR, show_max_sectors,
-		store_max_sectors);
+static DEVICE_ATTR_RW(max_sectors);
 
 static struct device_attribute *sysfs_device_attr_list[] = {
-		&dev_attr_max_sectors,
-		NULL,
-		};
+	&dev_attr_max_sectors,
+	NULL,
+};
 
 /*
  * this defines our host template, with which we'll allocate hosts
  */
 
-struct scsi_host_template usb_stor_host_template = {
+static const struct scsi_host_template usb_stor_host_template = {
 	/* basic userland interface stuff */
 	.name =				"usb-storage",
 	.proc_name =			"usb-storage",
-	.proc_info =			proc_info,
+	.show_info =			show_info,
+	.write_info =			write_info,
 	.info =				host_info,
 
 	/* command interface -- queued only */
@@ -561,7 +558,6 @@ struct scsi_host_template usb_stor_host_template = {
 
 	/* queue commands only, only one command per LUN */
 	.can_queue =			1,
-	.cmd_per_lun =			1,
 
 	/* unknown initiator id */
 	.this_id =			-1,
@@ -594,6 +590,16 @@ struct scsi_host_template usb_stor_host_template = {
 	/* module management */
 	.module =			THIS_MODULE
 };
+
+void usb_stor_host_template_init(struct scsi_host_template *sht,
+				 const char *name, struct module *owner)
+{
+	*sht = usb_stor_host_template;
+	sht->name = name;
+	sht->proc_name = name;
+	sht->module = owner;
+}
+EXPORT_SYMBOL_GPL(usb_stor_host_template_init);
 
 /* To Report "Illegal Request: Invalid Field in CDB */
 unsigned char usb_stor_sense_invalidCDB[18] = {

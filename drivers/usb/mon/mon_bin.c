@@ -675,7 +675,8 @@ static int mon_bin_open(struct inode *inode, struct file *file)
 	int rc;
 
 	mutex_lock(&mon_lock);
-	if ((mbus = mon_bus_lookup(iminor(inode))) == NULL) {
+	mbus = mon_bus_lookup(iminor(inode));
+	if (mbus == NULL) {
 		mutex_unlock(&mon_lock);
 		return -ENODEV;
 	}
@@ -1000,7 +1001,9 @@ static long mon_bin_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 		break;
 
 	case MON_IOCQ_RING_SIZE:
+		mutex_lock(&rp->fetch_lock);
 		ret = rp->b_size;
+		mutex_unlock(&rp->fetch_lock);
 		break;
 
 	case MON_IOCT_RING_SIZE:
@@ -1018,8 +1021,8 @@ static long mon_bin_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 			return -EINVAL;
 
 		size = CHUNK_ALIGN(arg);
-		if ((vec = kzalloc(sizeof(struct mon_pgmap) * (size/CHUNK_SIZE),
-		    GFP_KERNEL)) == NULL) {
+		vec = kzalloc(sizeof(struct mon_pgmap) * (size / CHUNK_SIZE), GFP_KERNEL);
+		if (vec == NULL) {
 			ret = -ENOMEM;
 			break;
 		}
@@ -1227,12 +1230,16 @@ static int mon_bin_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	unsigned long offset, chunk_idx;
 	struct page *pageptr;
 
+	mutex_lock(&rp->fetch_lock);
 	offset = vmf->pgoff << PAGE_SHIFT;
-	if (offset >= rp->b_size)
+	if (offset >= rp->b_size) {
+		mutex_unlock(&rp->fetch_lock);
 		return VM_FAULT_SIGBUS;
+	}
 	chunk_idx = offset / CHUNK_SIZE;
 	pageptr = rp->b_vec[chunk_idx].pg;
 	get_page(pageptr);
+	mutex_unlock(&rp->fetch_lock);
 	vmf->page = pageptr;
 	return 0;
 }
@@ -1247,7 +1254,7 @@ static int mon_bin_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	/* don't do anything here: "fault" will set up page table entries */
 	vma->vm_ops = &mon_bin_vm_ops;
-	vma->vm_flags |= VM_RESERVED;
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_private_data = filp->private_data;
 	mon_bin_vma_open(vma);
 	return 0;

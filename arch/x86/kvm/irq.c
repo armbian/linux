@@ -38,47 +38,100 @@ int kvm_cpu_has_pending_timer(struct kvm_vcpu *vcpu)
 EXPORT_SYMBOL(kvm_cpu_has_pending_timer);
 
 /*
+ * check if there is a pending userspace external interrupt
+ */
+static int pending_userspace_extint(struct kvm_vcpu *v)
+{
+	return v->arch.pending_external_vector != -1;
+}
+
+/*
+ * check if there is pending interrupt from
+ * non-APIC source without intack.
+ */
+static int kvm_cpu_has_extint(struct kvm_vcpu *v)
+{
+	u8 accept = kvm_apic_accept_pic_intr(v);
+
+	if (accept) {
+		if (irqchip_split(v->kvm))
+			return pending_userspace_extint(v);
+		else
+			return pic_irqchip(v->kvm)->output;
+	} else
+		return 0;
+}
+
+/*
+ * check if there is injectable interrupt:
+ * when virtual interrupt delivery enabled,
+ * interrupt from apic will handled by hardware,
+ * we don't need to check it here.
+ */
+int kvm_cpu_has_injectable_intr(struct kvm_vcpu *v)
+{
+	if (!lapic_in_kernel(v))
+		return v->arch.interrupt.pending;
+
+	if (kvm_cpu_has_extint(v))
+		return 1;
+
+	if (kvm_vcpu_apic_vid_enabled(v))
+		return 0;
+
+	return kvm_apic_has_interrupt(v) != -1; /* LAPIC */
+}
+
+/*
  * check if there is pending interrupt without
  * intack.
  */
 int kvm_cpu_has_interrupt(struct kvm_vcpu *v)
 {
-	struct kvm_pic *s;
-
-	if (!irqchip_in_kernel(v->kvm))
+	if (!lapic_in_kernel(v))
 		return v->arch.interrupt.pending;
 
-	if (kvm_apic_has_interrupt(v) == -1) {	/* LAPIC */
-		if (kvm_apic_accept_pic_intr(v)) {
-			s = pic_irqchip(v->kvm);	/* PIC */
-			return s->output;
-		} else
-			return 0;
-	}
-	return 1;
+	if (kvm_cpu_has_extint(v))
+		return 1;
+
+	return kvm_apic_has_interrupt(v) != -1;	/* LAPIC */
 }
 EXPORT_SYMBOL_GPL(kvm_cpu_has_interrupt);
+
+/*
+ * Read pending interrupt(from non-APIC source)
+ * vector and intack.
+ */
+static int kvm_cpu_get_extint(struct kvm_vcpu *v)
+{
+	if (kvm_cpu_has_extint(v)) {
+		if (irqchip_split(v->kvm)) {
+			int vector = v->arch.pending_external_vector;
+
+			v->arch.pending_external_vector = -1;
+			return vector;
+		} else
+			return kvm_pic_read_irq(v->kvm); /* PIC */
+	} else
+		return -1;
+}
 
 /*
  * Read pending interrupt vector and intack.
  */
 int kvm_cpu_get_interrupt(struct kvm_vcpu *v)
 {
-	struct kvm_pic *s;
 	int vector;
 
-	if (!irqchip_in_kernel(v->kvm))
+	if (!lapic_in_kernel(v))
 		return v->arch.interrupt.nr;
 
-	vector = kvm_get_apic_interrupt(v);	/* APIC */
-	if (vector == -1) {
-		if (kvm_apic_accept_pic_intr(v)) {
-			s = pic_irqchip(v->kvm);
-			s->output = 0;		/* PIC */
-			vector = kvm_pic_read_irq(v->kvm);
-		}
-	}
-	return vector;
+	vector = kvm_cpu_get_extint(v);
+
+	if (vector != -1)
+		return vector;			/* PIC */
+
+	return kvm_get_apic_interrupt(v);	/* APIC */
 }
 EXPORT_SYMBOL_GPL(kvm_cpu_get_interrupt);
 

@@ -2,7 +2,7 @@
  *	w1_therm.c
  *
  * Copyright (c) 2004 Evgeniy Polyakov <zbr@ioremap.net>
- * Modified by Oleg Skydan <sov1178@gmail.com>
+ *
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the therms of the GNU General Public License as published by
@@ -27,6 +27,7 @@
 #include <linux/sched.h>
 #include <linux/device.h>
 #include <linux/types.h>
+#include <linux/slab.h>
 #include <linux/delay.h>
 
 #include "../w1.h"
@@ -34,63 +35,92 @@
 #include "../w1_family.h"
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>, Oleg Skydan <sov1178@gmail.com>");
+MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
 MODULE_DESCRIPTION("Driver for 1-wire Dallas network protocol, temperature family.");
-
-/* 20.01.2017:
- *    Added new feature ( by Oleg Skydan <sov1178@gmail.com> ):  
- *    Read sensor memory without triggering temperature conversion. Just read 'w1_read' 
- *    file instead of usual 'w1_slave' file.
- *   
- *    Using the modified 'wire' module we can now simultaneously trigger temperature 
- *    conversion on all sensors on all masters in the w1 network. Then 'w1_read' can be
- *    used to read sensors without wasting time to measure temperature.
- */
+MODULE_ALIAS("w1-family-" __stringify(W1_THERM_DS18S20));
+MODULE_ALIAS("w1-family-" __stringify(W1_THERM_DS1822));
+MODULE_ALIAS("w1-family-" __stringify(W1_THERM_DS18B20));
+MODULE_ALIAS("w1-family-" __stringify(W1_THERM_DS1825));
+MODULE_ALIAS("w1-family-" __stringify(W1_THERM_DS28EA00));
 
 /* Allow the strong pullup to be disabled, but default to enabled.
  * If it was disabled a parasite powered device might not get the require
  * current to do a temperature conversion.  If it is enabled parasite powered
  * devices have a better chance of getting the current required.
+ * In case the parasite power-detection is not working (seems to be the case
+ * for some DS18S20) the strong pullup can also be forced, regardless of the
+ * power state of the devices.
+ *
+ * Summary of options:
+ * - strong_pullup = 0	Disable strong pullup completely
+ * - strong_pullup = 1	Enable automatic strong pullup detection
+ * - strong_pullup = 2	Force strong pullup
  */
 static int w1_strong_pullup = 1;
 module_param_named(strong_pullup, w1_strong_pullup, int, 0);
 
-static u8 bad_roms[][9] = {
-				{0xaa, 0x00, 0x4b, 0x46, 0xff, 0xff, 0x0c, 0x10, 0x87},
-				{}
-			};
+struct w1_therm_family_data {
+	uint8_t rom[9];
+	atomic_t refcnt;
+};
 
-static ssize_t w1_therm_convert_and_read(struct device *device,
-	struct device_attribute *attr, char *buf);
-
-static struct device_attribute w1_therm_attr =
-	__ATTR(w1_slave, S_IRUGO, w1_therm_convert_and_read, NULL);
-
-static ssize_t w1_therm_read(struct device *device,
-   struct device_attribute *attr, char *buf);
-
-static struct device_attribute w1_therm_attr_read =
-    __ATTR(w1_read, S_IRUGO, w1_therm_read, NULL);
+/* return the address of the refcnt in the family data */
+#define THERM_REFCNT(family_data) \
+	(&((struct w1_therm_family_data*)family_data)->refcnt)
 
 static int w1_therm_add_slave(struct w1_slave *sl)
 {
-	int r;
-   r = device_create_file(&sl->dev, &w1_therm_attr);
-   if(r)
-      return r;
-   return device_create_file(&sl->dev, &w1_therm_attr_read);
+	sl->family_data = kzalloc(sizeof(struct w1_therm_family_data),
+		GFP_KERNEL);
+	if (!sl->family_data)
+		return -ENOMEM;
+	atomic_set(THERM_REFCNT(sl->family_data), 1);
+	return 0;
 }
 
 static void w1_therm_remove_slave(struct w1_slave *sl)
 {
-   device_remove_file(&sl->dev, &w1_therm_attr);
-   device_remove_file(&sl->dev, &w1_therm_attr);
-   device_remove_file(&sl->dev, &w1_therm_attr);
+	int refcnt = atomic_sub_return(1, THERM_REFCNT(sl->family_data));
+	while(refcnt) {
+		msleep(1000);
+		refcnt = atomic_read(THERM_REFCNT(sl->family_data));
+	}
+	kfree(sl->family_data);
+	sl->family_data = NULL;
 }
+
+static ssize_t w1_slave_show(struct device *device,
+	struct device_attribute *attr, char *buf);
+
+static ssize_t w1_seq_show(struct device *device,
+	struct device_attribute *attr, char *buf);
+
+static DEVICE_ATTR_RO(w1_slave);
+static DEVICE_ATTR_RO(w1_seq);
+
+static struct attribute *w1_therm_attrs[] = {
+	&dev_attr_w1_slave.attr,
+	NULL,
+};
+
+static struct attribute *w1_ds28ea00_attrs[] = {
+	&dev_attr_w1_slave.attr,
+	&dev_attr_w1_seq.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(w1_therm);
+ATTRIBUTE_GROUPS(w1_ds28ea00);
 
 static struct w1_family_ops w1_therm_fops = {
 	.add_slave	= w1_therm_add_slave,
 	.remove_slave	= w1_therm_remove_slave,
+	.groups		= w1_therm_groups,
+};
+
+static struct w1_family_ops w1_ds28ea00_fops = {
+	.add_slave	= w1_therm_add_slave,
+	.remove_slave	= w1_therm_remove_slave,
+	.groups		= w1_ds28ea00_groups,
 };
 
 static struct w1_family w1_therm_family_DS18S20 = {
@@ -110,6 +140,11 @@ static struct w1_family w1_therm_family_DS1822 = {
 
 static struct w1_family w1_therm_family_DS28EA00 = {
 	.fid = W1_THERM_DS28EA00,
+	.fops = &w1_ds28ea00_fops,
+};
+
+static struct w1_family w1_therm_family_DS1825 = {
+	.fid = W1_THERM_DS1825,
 	.fops = &w1_therm_fops,
 };
 
@@ -142,6 +177,10 @@ static struct w1_therm_family_converter w1_therm_families[] = {
 		.f		= &w1_therm_family_DS28EA00,
 		.convert	= w1_DS18B20_convert_temp
 	},
+	{
+		.f		= &w1_therm_family_DS1825,
+		.convert	= w1_DS18B20_convert_temp
+	}
 };
 
 static inline int w1_DS18B20_convert_temp(u8 rom[9])
@@ -181,36 +220,36 @@ static inline int w1_convert_temp(u8 rom[9], u8 fid)
 	return 0;
 }
 
-static int w1_therm_check_rom(u8 rom[9])
-{
-	int i;
 
-	for (i=0; i<sizeof(bad_roms)/9; ++i)
-		if (!memcmp(bad_roms[i], rom, 9))
-			return 1;
-
-	return 0;
-}
-
-static ssize_t w1_therm_convert_and_read(struct device *device,
+static ssize_t w1_slave_show(struct device *device,
 	struct device_attribute *attr, char *buf)
 {
 	struct w1_slave *sl = dev_to_w1_slave(device);
 	struct w1_master *dev = sl->master;
 	u8 rom[9], crc, verdict, external_power;
-	int i, max_trying = 10;
+	int i, ret, max_trying = 10;
 	ssize_t c = PAGE_SIZE;
+	u8 *family_data = sl->family_data;
 
-	i = mutex_lock_interruptible(&dev->mutex);
-	if (i != 0)
-		return i;
+	ret = mutex_lock_interruptible(&dev->bus_mutex);
+	if (ret != 0)
+		goto post_unlock;
 
+	if(!sl->family_data)
+	{
+		ret = -ENODEV;
+		goto pre_unlock;
+	}
+
+	/* prevent the slave from going away in sleep */
+	atomic_inc(THERM_REFCNT(family_data));
 	memset(rom, 0, sizeof(rom));
 
-	verdict = 0;
-	crc = 0;
-
 	while (max_trying--) {
+
+		verdict = 0;
+		crc = 0;
+
 		if (!w1_reset_select_slave(sl)) {
 			int count = 0;
 			unsigned int tm = 750;
@@ -223,26 +262,29 @@ static ssize_t w1_therm_convert_and_read(struct device *device,
 				continue;
 
 			/* 750ms strong pullup (or delay) after the convert */
-			if (!external_power && w1_strong_pullup)
+			if (w1_strong_pullup == 2 ||
+					(!external_power && w1_strong_pullup))
 				w1_next_pullup(dev, tm);
 
 			w1_write_8(dev, W1_CONVERT_TEMP);
 
 			if (external_power) {
-				mutex_unlock(&dev->mutex);
+				mutex_unlock(&dev->bus_mutex);
 
 				sleep_rem = msleep_interruptible(tm);
-				if (sleep_rem != 0)
-					return -EINTR;
+				if (sleep_rem != 0) {
+					ret = -EINTR;
+					goto post_unlock;
+				}
 
-				i = mutex_lock_interruptible(&dev->mutex);
-				if (i != 0)
-					return i;
+				ret = mutex_lock_interruptible(&dev->bus_mutex);
+				if (ret != 0)
+					goto post_unlock;
 			} else if (!w1_strong_pullup) {
 				sleep_rem = msleep_interruptible(tm);
 				if (sleep_rem != 0) {
-					mutex_unlock(&dev->mutex);
-					return -EINTR;
+					ret = -EINTR;
+					goto pre_unlock;
 				}
 			}
 
@@ -262,7 +304,7 @@ static ssize_t w1_therm_convert_and_read(struct device *device,
 			}
 		}
 
-		if (!w1_therm_check_rom(rom))
+		if (verdict)
 			break;
 	}
 
@@ -271,81 +313,108 @@ static ssize_t w1_therm_convert_and_read(struct device *device,
 	c -= snprintf(buf + PAGE_SIZE - c, c, ": crc=%02x %s\n",
 			   crc, (verdict) ? "YES" : "NO");
 	if (verdict)
-		memcpy(sl->rom, rom, sizeof(sl->rom));
+		memcpy(family_data, rom, sizeof(rom));
 	else
-		dev_warn(device, "18S20 doesn't respond to CONVERT_TEMP.\n");
+		dev_warn(device, "Read failed CRC check\n");
 
 	for (i = 0; i < 9; ++i)
-		c -= snprintf(buf + PAGE_SIZE - c, c, "%02x ", sl->rom[i]);
+		c -= snprintf(buf + PAGE_SIZE - c, c, "%02x ",
+			      ((u8 *)family_data)[i]);
 
 	c -= snprintf(buf + PAGE_SIZE - c, c, "t=%d\n",
 		w1_convert_temp(rom, sl->family->fid));
-	mutex_unlock(&dev->mutex);
+	ret = PAGE_SIZE - c;
 
-	return PAGE_SIZE - c;
+pre_unlock:
+	mutex_unlock(&dev->bus_mutex);
+
+post_unlock:
+	atomic_dec(THERM_REFCNT(family_data));
+	return ret;
 }
 
-static ssize_t w1_therm_read(struct device *device,
-                                         struct device_attribute *attr, char *buf)
+#define W1_42_CHAIN	0x99
+#define W1_42_CHAIN_OFF	0x3C
+#define W1_42_CHAIN_OFF_INV	0xC3
+#define W1_42_CHAIN_ON	0x5A
+#define W1_42_CHAIN_ON_INV	0xA5
+#define W1_42_CHAIN_DONE 0x96
+#define W1_42_CHAIN_DONE_INV 0x69
+#define W1_42_COND_READ	0x0F
+#define W1_42_SUCCESS_CONFIRM_BYTE 0xAA
+#define W1_42_FINISHED_BYTE 0xFF
+static ssize_t w1_seq_show(struct device *device,
+	struct device_attribute *attr, char *buf)
 {
-   struct w1_slave *sl = dev_to_w1_slave(device);
-   struct w1_master *dev = sl->master;
-   u8 rom[9], crc, verdict;
-   int i, max_trying = 10;
-   ssize_t c = PAGE_SIZE;
+	struct w1_slave *sl = dev_to_w1_slave(device);
+	ssize_t c = PAGE_SIZE;
+	int rv;
+	int i;
+	u8 ack;
+	u64 rn;
+	struct w1_reg_num *reg_num;
+	int seq = 0;
 
-   i = mutex_lock_interruptible(&dev->mutex);
-   if (i != 0)
-      return i;
+	mutex_lock(&sl->master->bus_mutex);
+	/* Place all devices in CHAIN state */
+	if (w1_reset_bus(sl->master))
+		goto error;
+	w1_write_8(sl->master, W1_SKIP_ROM);
+	w1_write_8(sl->master, W1_42_CHAIN);
+	w1_write_8(sl->master, W1_42_CHAIN_ON);
+	w1_write_8(sl->master, W1_42_CHAIN_ON_INV);
+	msleep(sl->master->pullup_duration);
 
-   memset(rom, 0, sizeof(rom));
+	/* check for acknowledgment */
+	ack = w1_read_8(sl->master);
+	if (ack != W1_42_SUCCESS_CONFIRM_BYTE)
+		goto error;
 
-   verdict = 0;
-   crc = 0;
+	/* In case the bus fails to send 0xFF, limit*/
+	for (i = 0; i <= 64; i++) {
+		if (w1_reset_bus(sl->master))
+			goto error;
 
-   while (max_trying--)
-   {
-      if (!w1_reset_select_slave(sl))
-      {
-         int count = 0;
+		w1_write_8(sl->master, W1_42_COND_READ);
+		rv = w1_read_block(sl->master, (u8 *)&rn, 8);
+		reg_num = (struct w1_reg_num *) &rn;
+		if (reg_num->family == W1_42_FINISHED_BYTE)
+			break;
+		if (sl->reg_num.id == reg_num->id)
+			seq = i;
 
-         w1_write_8(dev, W1_READ_SCRATCHPAD);
-         if ((count = w1_read_block(dev, rom, 9)) != 9)
-         {
-            dev_warn(device, "w1_read_block() "
-                              "returned %u instead of 9.\n",
-                     count);
-         }
+		w1_write_8(sl->master, W1_42_CHAIN);
+		w1_write_8(sl->master, W1_42_CHAIN_DONE);
+		w1_write_8(sl->master, W1_42_CHAIN_DONE_INV);
+		w1_read_block(sl->master, &ack, sizeof(ack));
 
-         crc = w1_calc_crc8(rom, 8);
+		/* check for acknowledgment */
+		ack = w1_read_8(sl->master);
+		if (ack != W1_42_SUCCESS_CONFIRM_BYTE)
+			goto error;
 
-         if (rom[8] == crc)
-            verdict = 1;
-      }
+	}
 
-      if (!w1_therm_check_rom(rom))
-         break;
-   }
+	/* Exit from CHAIN state */
+	if (w1_reset_bus(sl->master))
+		goto error;
+	w1_write_8(sl->master, W1_SKIP_ROM);
+	w1_write_8(sl->master, W1_42_CHAIN);
+	w1_write_8(sl->master, W1_42_CHAIN_OFF);
+	w1_write_8(sl->master, W1_42_CHAIN_OFF_INV);
 
-   for (i = 0; i < 9; ++i)
-      c -= snprintf(buf + PAGE_SIZE - c, c, "%02x ", rom[i]);
-   c -= snprintf(buf + PAGE_SIZE - c, c, ": crc=%02x %s\n",
-                 crc, (verdict) ? "YES" : "NO");
-   if (verdict)
-      memcpy(sl->rom, rom, sizeof(sl->rom));
-   else
-      dev_warn(device, "18S20 doesn't respond to CONVERT_TEMP.\n");
+	/* check for acknowledgment */
+	ack = w1_read_8(sl->master);
+	if (ack != W1_42_SUCCESS_CONFIRM_BYTE)
+		goto error;
+	mutex_unlock(&sl->master->bus_mutex);
 
-   for (i = 0; i < 9; ++i)
-      c -= snprintf(buf + PAGE_SIZE - c, c, "%02x ", sl->rom[i]);
-
-   c -= snprintf(buf + PAGE_SIZE - c, c, "t=%d\n",
-                 w1_convert_temp(rom, sl->family->fid));
-   mutex_unlock(&dev->mutex);
-
-   return PAGE_SIZE - c;
+	c -= snprintf(buf + PAGE_SIZE - c, c, "%d\n", seq);
+	return PAGE_SIZE - c;
+error:
+	mutex_unlock(&sl->master->bus_mutex);
+	return -EIO;
 }
-
 
 static int __init w1_therm_init(void)
 {

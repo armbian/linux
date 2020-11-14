@@ -2,10 +2,7 @@
 # Wireless USB Core configuration
 #
 config USB_WUSB
-	tristate "Enable Wireless USB extensions (EXPERIMENTAL)"
-	depends on EXPERIMENTAL
-	depends on USB
-	depends on PCI
+	tristate "Enable Wireless USB extensions"
 	depends on UWB
         select CRYPTO
         select CRYPTO_BLKCIPHER

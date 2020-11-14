@@ -15,7 +15,6 @@
 #include <linux/delay.h>
 #include <linux/string.h>
 #include <linux/init.h>
-#include <linux/bootmem.h>
 #include <linux/irq.h>
 
 #include <asm/sections.h>
@@ -511,6 +510,7 @@ static int __init maple_add_bridge(struct device_node *dev)
 		return -ENOMEM;
 	hose->first_busno = bus_range ? bus_range[0] : 0;
 	hose->last_busno = bus_range ? bus_range[1] : 0xff;
+	hose->controller_ops = maple_pci_controller_ops;
 
 	disp_name = NULL;
 	if (of_device_is_compatible(dev, "u3-agp")) {
@@ -543,7 +543,7 @@ static int __init maple_add_bridge(struct device_node *dev)
 }
 
 
-void __devinit maple_pci_irq_fixup(struct pci_dev *dev)
+void maple_pci_irq_fixup(struct pci_dev *dev)
 {
 	DBG(" -> maple_pci_irq_fixup\n");
 
@@ -648,7 +648,7 @@ int maple_pci_get_legacy_ide_irq(struct pci_dev *pdev, int channel)
 	return irq;
 }
 
-static void __devinit quirk_ipr_msi(struct pci_dev *dev)
+static void quirk_ipr_msi(struct pci_dev *dev)
 {
 	/* Something prevents MSIs from the IPR from working on Bimini,
 	 * and the driver has no smarts to recover. So disable MSI
@@ -661,3 +661,6 @@ static void __devinit quirk_ipr_msi(struct pci_dev *dev)
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_OBSIDIAN,
 			quirk_ipr_msi);
+
+struct pci_controller_ops maple_pci_controller_ops = {
+};

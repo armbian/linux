@@ -412,52 +412,6 @@ int ccw_device_resume(struct ccw_device *cdev)
 	return cio_resume(sch);
 }
 
-/*
- * Pass interrupt to device driver.
- */
-int
-ccw_device_call_handler(struct ccw_device *cdev)
-{
-	unsigned int stctl;
-	int ending_status;
-
-	/*
-	 * we allow for the device action handler if .
-	 *  - we received ending status
-	 *  - the action handler requested to see all interrupts
-	 *  - we received an intermediate status
-	 *  - fast notification was requested (primary status)
-	 *  - unsolicited interrupts
-	 */
-	stctl = scsw_stctl(&cdev->private->irb.scsw);
-	ending_status = (stctl & SCSW_STCTL_SEC_STATUS) ||
-		(stctl == (SCSW_STCTL_ALERT_STATUS | SCSW_STCTL_STATUS_PEND)) ||
-		(stctl == SCSW_STCTL_STATUS_PEND);
-	if (!ending_status &&
-	    !cdev->private->options.repall &&
-	    !(stctl & SCSW_STCTL_INTER_STATUS) &&
-	    !(cdev->private->options.fast &&
-	      (stctl & SCSW_STCTL_PRIM_STATUS)))
-		return 0;
-
-	/* Clear pending timers for device driver initiated I/O. */
-	if (ending_status)
-		ccw_device_set_timeout(cdev, 0);
-	/*
-	 * Now we are ready to call the device driver interrupt handler.
-	 */
-	if (cdev->handler)
-		cdev->handler(cdev, cdev->private->intparm,
-			      &cdev->private->irb);
-
-	/*
-	 * Clear the old and now useless interrupt response block.
-	 */
-	memset(&cdev->private->irb, 0, sizeof(struct irb));
-
-	return 1;
-}
-
 /**
  * ccw_device_get_ciw() - Search for CIW command in extended sense data.
  * @cdev: ccw device to inspect
@@ -502,75 +456,23 @@ __u8 ccw_device_get_path_mask(struct ccw_device *cdev)
 	return sch->lpm;
 }
 
-struct stlck_data {
-	struct completion done;
-	int rc;
-};
-
-void ccw_device_stlck_done(struct ccw_device *cdev, void *data, int rc)
-{
-	struct stlck_data *sdata = data;
-
-	sdata->rc = rc;
-	complete(&sdata->done);
-}
-
-/*
- * Perform unconditional reserve + release.
+/**
+ * chp_get_chp_desc - return newly allocated channel-path descriptor
+ * @cdev: device to obtain the descriptor for
+ * @chp_idx: index of the channel path
+ *
+ * On success return a newly allocated copy of the channel-path description
+ * data associated with the given channel path. Return %NULL on error.
  */
-int ccw_device_stlck(struct ccw_device *cdev)
-{
-	struct subchannel *sch = to_subchannel(cdev->dev.parent);
-	struct stlck_data data;
-	u8 *buffer;
-	int rc;
-
-	/* Check if steal lock operation is valid for this device. */
-	if (cdev->drv) {
-		if (!cdev->private->options.force)
-			return -EINVAL;
-	}
-	buffer = kzalloc(64, GFP_DMA | GFP_KERNEL);
-	if (!buffer)
-		return -ENOMEM;
-	init_completion(&data.done);
-	data.rc = -EIO;
-	spin_lock_irq(sch->lock);
-	rc = cio_enable_subchannel(sch, (u32) (addr_t) sch);
-	if (rc)
-		goto out_unlock;
-	/* Perform operation. */
-	cdev->private->state = DEV_STATE_STEAL_LOCK,
-	ccw_device_stlck_start(cdev, &data, &buffer[0], &buffer[32]);
-	spin_unlock_irq(sch->lock);
-	/* Wait for operation to finish. */
-	if (wait_for_completion_interruptible(&data.done)) {
-		/* Got a signal. */
-		spin_lock_irq(sch->lock);
-		ccw_request_cancel(cdev);
-		spin_unlock_irq(sch->lock);
-		wait_for_completion(&data.done);
-	}
-	rc = data.rc;
-	/* Check results. */
-	spin_lock_irq(sch->lock);
-	cio_disable_subchannel(sch);
-	cdev->private->state = DEV_STATE_BOXED;
-out_unlock:
-	spin_unlock_irq(sch->lock);
-	kfree(buffer);
-
-	return rc;
-}
-
-void *ccw_device_get_chp_desc(struct ccw_device *cdev, int chp_no)
+struct channel_path_desc *ccw_device_get_chp_desc(struct ccw_device *cdev,
+						  int chp_idx)
 {
 	struct subchannel *sch;
 	struct chp_id chpid;
 
 	sch = to_subchannel(cdev->dev.parent);
 	chp_id_init(&chpid);
-	chpid.id = sch->schib.pmcw.chpid[chp_no];
+	chpid.id = sch->schib.pmcw.chpid[chp_idx];
 	return chp_get_chp_desc(chpid);
 }
 
@@ -704,9 +606,9 @@ EXPORT_SYMBOL(ccw_device_tm_start_timeout);
 int ccw_device_get_mdc(struct ccw_device *cdev, u8 mask)
 {
 	struct subchannel *sch = to_subchannel(cdev->dev.parent);
-	struct channel_path_desc_fmt1 desc;
+	struct channel_path *chp;
 	struct chp_id chpid;
-	int mdc = 0, ret, i;
+	int mdc = 0, i;
 
 	/* Adjust requested path mask to excluded varied off paths. */
 	if (mask)
@@ -719,14 +621,20 @@ int ccw_device_get_mdc(struct ccw_device *cdev, u8 mask)
 		if (!(mask & (0x80 >> i)))
 			continue;
 		chpid.id = sch->schib.pmcw.chpid[i];
-		ret = chsc_determine_fmt1_channel_path_desc(chpid, &desc);
-		if (ret)
-			return ret;
-		if (!desc.f)
+		chp = chpid_to_chp(chpid);
+		if (!chp)
+			continue;
+
+		mutex_lock(&chp->lock);
+		if (!chp->desc_fmt1.f) {
+			mutex_unlock(&chp->lock);
 			return 0;
-		if (!desc.r)
+		}
+		if (!chp->desc_fmt1.r)
 			mdc = 1;
-		mdc = mdc ? min(mdc, (int)desc.mdc) : desc.mdc;
+		mdc = mdc ? min_t(int, mdc, chp->desc_fmt1.mdc) :
+			    chp->desc_fmt1.mdc;
+		mutex_unlock(&chp->lock);
 	}
 
 	return mdc;
@@ -755,14 +663,18 @@ int ccw_device_tm_intrg(struct ccw_device *cdev)
 }
 EXPORT_SYMBOL(ccw_device_tm_intrg);
 
-// FIXME: these have to go:
-
-int
-_ccw_device_get_subchannel_number(struct ccw_device *cdev)
+/**
+ * ccw_device_get_schid - obtain a subchannel id
+ * @cdev: device to obtain the id for
+ * @schid: where to fill in the values
+ */
+void ccw_device_get_schid(struct ccw_device *cdev, struct subchannel_id *schid)
 {
-	return cdev->private->schid.sch_no;
-}
+	struct subchannel *sch = to_subchannel(cdev->dev.parent);
 
+	*schid = sch->schid;
+}
+EXPORT_SYMBOL_GPL(ccw_device_get_schid);
 
 MODULE_LICENSE("GPL");
 EXPORT_SYMBOL(ccw_device_set_options_mask);
@@ -777,5 +689,4 @@ EXPORT_SYMBOL(ccw_device_start_timeout_key);
 EXPORT_SYMBOL(ccw_device_start_key);
 EXPORT_SYMBOL(ccw_device_get_ciw);
 EXPORT_SYMBOL(ccw_device_get_path_mask);
-EXPORT_SYMBOL(_ccw_device_get_subchannel_number);
 EXPORT_SYMBOL_GPL(ccw_device_get_chp_desc);

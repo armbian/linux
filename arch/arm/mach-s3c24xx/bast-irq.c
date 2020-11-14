@@ -27,26 +27,17 @@
 #include <linux/device.h>
 #include <linux/io.h>
 
-#include <asm/mach-types.h>
-
-#include <mach/hardware.h>
 #include <asm/irq.h>
-
+#include <asm/mach-types.h>
 #include <asm/mach/irq.h>
 
+#include <mach/hardware.h>
 #include <mach/regs-irq.h>
-#include <mach/bast-map.h>
-#include <mach/bast-irq.h>
 
-#include <plat/irq.h>
-
-#if 0
-#include <asm/debug-ll.h>
-#endif
+#include "bast.h"
 
 #define irqdbf(x...)
 #define irqdbf2(x...)
-
 
 /* handle PC104 ISA interrupts from the system CPLD */
 
@@ -87,7 +78,7 @@ bast_pc104_mask(struct irq_data *data)
 static void
 bast_pc104_maskack(struct irq_data *data)
 {
-	struct irq_desc *desc = irq_desc + IRQ_ISA;
+	struct irq_desc *desc = irq_desc + BAST_IRQ_ISA;
 
 	bast_pc104_mask(data);
 	desc->irq_data.chip->irq_ack(&desc->irq_data);
@@ -109,9 +100,7 @@ static struct irq_chip  bast_pc104_chip = {
 	.irq_ack	= bast_pc104_maskack
 };
 
-static void
-bast_irq_pc104_demux(unsigned int irq,
-		     struct irq_desc *desc)
+static void bast_irq_pc104_demux(struct irq_desc *desc)
 {
 	unsigned int stat;
 	unsigned int irqno;
@@ -122,7 +111,7 @@ bast_irq_pc104_demux(unsigned int irq,
 	if (unlikely(stat == 0)) {
 		/* ack if we get an irq with nothing (ie, startup) */
 
-		desc = irq_desc + IRQ_ISA;
+		desc = irq_desc + BAST_IRQ_ISA;
 		desc->irq_data.chip->irq_ack(&desc->irq_data);
 	} else {
 		/* handle the IRQ */
@@ -147,7 +136,7 @@ static __init int bast_irq_init(void)
 
 		__raw_writeb(0x0, BAST_VA_PC104_IRQMASK);
 
-		irq_set_chained_handler(IRQ_ISA, bast_irq_pc104_demux);
+		irq_set_chained_handler(BAST_IRQ_ISA, bast_irq_pc104_demux);
 
 		/* register our IRQs */
 
@@ -156,7 +145,7 @@ static __init int bast_irq_init(void)
 
 			irq_set_chip_and_handler(irqno, &bast_pc104_chip,
 						 handle_level_irq);
-			set_irq_flags(irqno, IRQF_VALID);
+			irq_clear_status_flags(irqno, IRQ_NOREQUEST);
 		}
 	}
 

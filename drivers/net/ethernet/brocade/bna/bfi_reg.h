@@ -1,5 +1,5 @@
 /*
- * Linux network driver for Brocade Converged Network Adapter.
+ * Linux network driver for QLogic BR-series Converged Network Adapter.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License (GPL) Version 2 as
@@ -11,13 +11,14 @@
  * General Public License for more details.
  */
 /*
- * Copyright (c) 2005-2011 Brocade Communications Systems, Inc.
+ * Copyright (c) 2005-2014 Brocade Communications Systems, Inc.
+ * Copyright (c) 2014-2015 QLogic Corporation
  * All rights reserved
- * www.brocade.com
+ * www.qlogic.com
  */
 
 /*
- * bfi_reg.h ASIC register defines for all Brocade adapter ASICs
+ * bfi_reg.h ASIC register defines for all QLogic BR-series adapter ASICs
  */
 
 #ifndef __BFI_REG_H__
@@ -221,9 +222,7 @@ enum {
 #define __PMM_1T_RESET_P		0x00000001
 #define PMM_1T_RESET_REG_P1		0x00023c1c
 
-/**
- * Brocade 1860 Adapter specific defines
- */
+/* QLogic BR-series 1860 Adapter specific defines */
 #define CT2_PCI_CPQ_BASE		0x00030000
 #define CT2_PCI_APP_BASE		0x00030100
 #define CT2_PCI_ETH_BASE		0x00030400
@@ -266,7 +265,7 @@ enum {
 #define CT2_HOSTFN_MSIX_VT_INDEX_MBOX_ERR	(CT2_PCI_APP_BASE + 0x38)
 
 /*
- * Brocade 1860 adapter CPQ block registers
+ * QLogic BR-series 1860 adapter CPQ block registers
  */
 #define CT2_HOSTFN_LPU0_MBOX0		(CT2_PCI_CPQ_BASE + 0x00)
 #define CT2_HOSTFN_LPU1_MBOX0		(CT2_PCI_CPQ_BASE + 0x20)
@@ -339,9 +338,15 @@ enum {
 #define __A2T_AHB_LOAD			0x00000800
 #define __WGN_READY			0x00000400
 #define __GLBL_PF_VF_CFG_RDY		0x00000200
+#define CT2_NFC_CSR_CLR_REG             0x00027420
 #define CT2_NFC_CSR_SET_REG		0x00027424
 #define __HALT_NFC_CONTROLLER		0x00000002
 #define __NFC_CONTROLLER_HALTED		0x00001000
+
+#define CT2_RSC_GPR15_REG		0x0002765c
+#define CT2_CSI_FW_CTL_REG              0x00027080
+#define __RESET_AND_START_SCLK_LCLK_PLLS 0x00010000
+#define CT2_CSI_FW_CTL_SET_REG          0x00027088
 
 #define CT2_CSI_MAC0_CONTROL_REG	0x000270d0
 #define __CSI_MAC_RESET			0x00000010

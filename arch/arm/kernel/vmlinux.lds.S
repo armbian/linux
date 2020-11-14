@@ -8,7 +8,10 @@
 #include <asm/thread_info.h>
 #include <asm/memory.h>
 #include <asm/page.h>
-	
+#ifdef CONFIG_ARM_KERNMEM_PERMS
+#include <asm/pgtable.h>
+#endif
+
 #define PROC_INFO							\
 	. = ALIGN(4);							\
 	VMLINUX_SYMBOL(__proc_info_begin) = .;				\
@@ -19,7 +22,11 @@
 	ALIGN_FUNCTION();						\
 	VMLINUX_SYMBOL(__idmap_text_start) = .;				\
 	*(.idmap.text)							\
-	VMLINUX_SYMBOL(__idmap_text_end) = .;
+	VMLINUX_SYMBOL(__idmap_text_end) = .;				\
+	. = ALIGN(PAGE_SIZE);						\
+	VMLINUX_SYMBOL(__hyp_idmap_text_start) = .;			\
+	*(.hyp.idmap.text)						\
+	VMLINUX_SYMBOL(__hyp_idmap_text_end) = .;
 
 #ifdef CONFIG_HOTPLUG_CPU
 #define ARM_CPU_DISCARD(x)
@@ -66,12 +73,8 @@ SECTIONS
 		ARM_EXIT_DISCARD(EXIT_TEXT)
 		ARM_EXIT_DISCARD(EXIT_DATA)
 		EXIT_CALL
-#ifndef CONFIG_HOTPLUG
-		*(.ARM.exidx.devexit.text)
-		*(.ARM.extab.devexit.text)
-#endif
 #ifndef CONFIG_MMU
-		*(.fixup)
+		*(.text.fixup)
 		*(__ex_table)
 #endif
 #ifndef CONFIG_SMP_ON_UP
@@ -90,20 +93,23 @@ SECTIONS
 		_text = .;
 		HEAD_TEXT
 	}
+
+#ifdef CONFIG_ARM_KERNMEM_PERMS
+	. = ALIGN(1<<SECTION_SHIFT);
+#endif
+
 	.text : {			/* Real text segment		*/
 		_stext = .;		/* Text and read-only data	*/
+			IDMAP_TEXT
 			__exception_text_start = .;
 			*(.exception.text)
 			__exception_text_end = .;
 			IRQENTRY_TEXT
+			SOFTIRQENTRY_TEXT
 			TEXT_TEXT
 			SCHED_TEXT
 			LOCK_TEXT
 			KPROBES_TEXT
-			IDMAP_TEXT
-#ifdef CONFIG_MMU
-			*(.fixup)
-#endif
 			*(.gnu.warning)
 			*(.glue_7)
 			*(.glue_7t)
@@ -112,7 +118,21 @@ SECTIONS
 			ARM_CPU_KEEP(PROC_INFO)
 	}
 
+#ifdef CONFIG_DEBUG_RODATA
+	. = ALIGN(1<<SECTION_SHIFT);
+#endif
+	_etext = .;			/* End of text section */
+
 	RO_DATA(PAGE_SIZE)
+
+	. = ALIGN(4);
+	__ex_table : AT(ADDR(__ex_table) - LOAD_OFFSET) {
+		__start___ex_table = .;
+#ifdef CONFIG_MMU
+		*(__ex_table)
+#endif
+		__stop___ex_table = .;
+	}
 
 #ifdef CONFIG_ARM_UNWIND
 	/*
@@ -131,12 +151,33 @@ SECTIONS
 	}
 #endif
 
-	_etext = .;			/* End of text and rodata section */
+	NOTES
 
 #ifndef CONFIG_XIP_KERNEL
+# ifdef CONFIG_ARM_KERNMEM_PERMS
+	. = ALIGN(1<<SECTION_SHIFT);
+# else
 	. = ALIGN(PAGE_SIZE);
+# endif
 	__init_begin = .;
 #endif
+	/*
+	 * The vectors and stubs are relocatable code, and the
+	 * only thing that matters is their relative offsets
+	 */
+	__vectors_start = .;
+	.vectors 0 : AT(__vectors_start) {
+		*(.vectors)
+	}
+	. = __vectors_start + SIZEOF(.vectors);
+	__vectors_end = .;
+
+	__stubs_start = .;
+	.stubs 0x1000 : AT(__stubs_start) {
+		*(.stubs)
+	}
+	. = __stubs_start + SIZEOF(.stubs);
+	__stubs_end = .;
 
 	INIT_TEXT_SECTION(8)
 	.exit.text : {
@@ -183,14 +224,20 @@ SECTIONS
 	}
 #endif
 
+#ifdef CONFIG_SMP
 	PERCPU_SECTION(L1_CACHE_BYTES)
+#endif
 
 #ifdef CONFIG_XIP_KERNEL
 	__data_loc = ALIGN(4);		/* location in binary */
 	. = PAGE_OFFSET + TEXT_OFFSET;
 #else
-	__init_end = .;
+#ifdef CONFIG_ARM_KERNMEM_PERMS
+	. = ALIGN(1<<SECTION_SHIFT);
+#else
 	. = ALIGN(THREAD_SIZE);
+#endif
+	__init_end = .;
 	__data_loc = .;
 #endif
 
@@ -200,7 +247,7 @@ SECTIONS
 
 		/*
 		 * first, the init task union, aligned
-		 * to an THREAD_SIZE byte boundary.
+		 * to an 8192 byte boundary.
 		 */
 		INIT_TASK_DATA(THREAD_SIZE)
 
@@ -216,16 +263,6 @@ SECTIONS
 		NOSAVE_DATA
 		CACHELINE_ALIGNED_DATA(L1_CACHE_BYTES)
 		READ_MOSTLY_DATA(L1_CACHE_BYTES)
-
-		/*
-		 * The exception fixup table (might need resorting at runtime)
-		 */
-		. = ALIGN(4);
-		__start___ex_table = .;
-#ifdef CONFIG_MMU
-		*(__ex_table)
-#endif
-		__stop___ex_table = .;
 
 		/*
 		 * and the usual data section
@@ -294,17 +331,10 @@ SECTIONS
 	}
 #endif
 
-#ifdef CONFIG_ARCH_SUNXI
-	SUNXI_SRAM_SECTION
-#endif
-
-	NOTES
-
 	BSS_SECTION(0, 0, 0)
 	_end = .;
 
 	STABS_DEBUG
-	.comment 0 : { *(.comment) }
 }
 
 /*
@@ -314,3 +344,11 @@ SECTIONS
  */
 ASSERT((__proc_info_end - __proc_info_begin), "missing CPU support")
 ASSERT((__arch_info_end - __arch_info_begin), "no machine record defined")
+
+/*
+ * The HYP init code can't be more than a page long,
+ * and should not cross a page boundary.
+ * The above comment applies as well.
+ */
+ASSERT(__hyp_idmap_text_end - (__hyp_idmap_text_start & PAGE_MASK) <= PAGE_SIZE,
+	"HYP init code too big or misaligned")

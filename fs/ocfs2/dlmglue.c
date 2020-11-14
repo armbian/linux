@@ -456,7 +456,7 @@ static void ocfs2_update_lock_stats(struct ocfs2_lock_res *res, int level,
 	stats->ls_gets++;
 	stats->ls_total += ktime_to_ns(kt);
 	/* overflow */
-	if (unlikely(stats->ls_gets) == 0) {
+	if (unlikely(stats->ls_gets == 0)) {
 		stats->ls_gets++;
 		stats->ls_total = ktime_to_ns(kt);
 	}
@@ -531,6 +531,7 @@ void ocfs2_lock_res_init_once(struct ocfs2_lock_res *res)
 	init_waitqueue_head(&res->l_event);
 	INIT_LIST_HEAD(&res->l_blocked_list);
 	INIT_LIST_HEAD(&res->l_mask_waiters);
+	INIT_LIST_HEAD(&res->l_holders);
 }
 
 void ocfs2_inode_lock_res_init(struct ocfs2_lock_res *res,
@@ -748,6 +749,50 @@ void ocfs2_lock_res_free(struct ocfs2_lock_res *res)
 	res->l_flags = 0UL;
 }
 
+/*
+ * Keep a list of processes who have interest in a lockres.
+ * Note: this is now only uesed for check recursive cluster locking.
+ */
+static inline void ocfs2_add_holder(struct ocfs2_lock_res *lockres,
+				   struct ocfs2_lock_holder *oh)
+{
+	INIT_LIST_HEAD(&oh->oh_list);
+	oh->oh_owner_pid = get_pid(task_pid(current));
+
+	spin_lock(&lockres->l_lock);
+	list_add_tail(&oh->oh_list, &lockres->l_holders);
+	spin_unlock(&lockres->l_lock);
+}
+
+static inline void ocfs2_remove_holder(struct ocfs2_lock_res *lockres,
+				       struct ocfs2_lock_holder *oh)
+{
+	spin_lock(&lockres->l_lock);
+	list_del(&oh->oh_list);
+	spin_unlock(&lockres->l_lock);
+
+	put_pid(oh->oh_owner_pid);
+}
+
+static inline int ocfs2_is_locked_by_me(struct ocfs2_lock_res *lockres)
+{
+	struct ocfs2_lock_holder *oh;
+	struct pid *pid;
+
+	/* look in the list of holders for one with the current task as owner */
+	spin_lock(&lockres->l_lock);
+	pid = task_pid(current);
+	list_for_each_entry(oh, &lockres->l_holders, oh_list) {
+		if (oh->oh_owner_pid == pid) {
+			spin_unlock(&lockres->l_lock);
+			return 1;
+		}
+	}
+	spin_unlock(&lockres->l_lock);
+
+	return 0;
+}
+
 static inline void ocfs2_inc_holders(struct ocfs2_lock_res *lockres,
 				     int level)
 {
@@ -861,8 +906,13 @@ static inline void ocfs2_generic_handle_convert_action(struct ocfs2_lock_res *lo
 	 * We set the OCFS2_LOCK_UPCONVERT_FINISHING flag before clearing
 	 * the OCFS2_LOCK_BUSY flag to prevent the dc thread from
 	 * downconverting the lock before the upconvert has fully completed.
+	 * Do not prevent the dc thread from downconverting if NONBLOCK lock
+	 * had already returned.
 	 */
-	lockres_or_flags(lockres, OCFS2_LOCK_UPCONVERT_FINISHING);
+	if (!(lockres->l_flags & OCFS2_LOCK_NONBLOCK_FINISHED))
+		lockres_or_flags(lockres, OCFS2_LOCK_UPCONVERT_FINISHING);
+	else
+		lockres_clear_flags(lockres, OCFS2_LOCK_NONBLOCK_FINISHED);
 
 	lockres_clear_flags(lockres, OCFS2_LOCK_BUSY);
 }
@@ -1304,7 +1354,7 @@ static int ocfs2_wait_for_mask(struct ocfs2_mask_waiter *mw)
 {
 	wait_for_completion(&mw->mw_complete);
 	/* Re-arm the completion in case we want to wait on it again */
-	INIT_COMPLETION(mw->mw_complete);
+	reinit_completion(&mw->mw_complete);
 	return mw->mw_status;
 }
 
@@ -1324,13 +1374,12 @@ static void lockres_add_mask_waiter(struct ocfs2_lock_res *lockres,
 
 /* returns 0 if the mw that was removed was already satisfied, -EBUSY
  * if the mask still hadn't reached its goal */
-static int lockres_remove_mask_waiter(struct ocfs2_lock_res *lockres,
+static int __lockres_remove_mask_waiter(struct ocfs2_lock_res *lockres,
 				      struct ocfs2_mask_waiter *mw)
 {
-	unsigned long flags;
 	int ret = 0;
 
-	spin_lock_irqsave(&lockres->l_lock, flags);
+	assert_spin_locked(&lockres->l_lock);
 	if (!list_empty(&mw->mw_item)) {
 		if ((lockres->l_flags & mw->mw_mask) != mw->mw_goal)
 			ret = -EBUSY;
@@ -1338,6 +1387,18 @@ static int lockres_remove_mask_waiter(struct ocfs2_lock_res *lockres,
 		list_del_init(&mw->mw_item);
 		init_completion(&mw->mw_complete);
 	}
+
+	return ret;
+}
+
+static int lockres_remove_mask_waiter(struct ocfs2_lock_res *lockres,
+				      struct ocfs2_mask_waiter *mw)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&lockres->l_lock, flags);
+	ret = __lockres_remove_mask_waiter(lockres, mw);
 	spin_unlock_irqrestore(&lockres->l_lock, flags);
 
 	return ret;
@@ -1355,7 +1416,7 @@ static int ocfs2_wait_for_mask_interruptible(struct ocfs2_mask_waiter *mw,
 	else
 		ret = mw->mw_status;
 	/* Re-arm the completion in case we want to wait on it again */
-	INIT_COMPLETION(mw->mw_complete);
+	reinit_completion(&mw->mw_complete);
 	return ret;
 }
 
@@ -1373,6 +1434,13 @@ static int __ocfs2_cluster_lock(struct ocfs2_super *osb,
 	unsigned long flags;
 	unsigned int gen;
 	int noqueue_attempted = 0;
+	int dlm_locked = 0;
+	int kick_dc = 0;
+
+	if (!(lockres->l_flags & OCFS2_LOCK_INITIALIZED)) {
+		mlog_errno(-EINVAL);
+		return -EINVAL;
+	}
 
 	ocfs2_init_mask_waiter(&mw);
 
@@ -1481,6 +1549,7 @@ again:
 			ocfs2_recover_from_dlm_error(lockres, 1);
 			goto out;
 		}
+		dlm_locked = 1;
 
 		mlog(0, "lock %s, successful return from ocfs2_dlm_lock\n",
 		     lockres->l_name);
@@ -1501,7 +1570,12 @@ update_holders:
 unlock:
 	lockres_clear_flags(lockres, OCFS2_LOCK_UPCONVERT_FINISHING);
 
+	/* ocfs2_unblock_lock reques on seeing OCFS2_LOCK_UPCONVERT_FINISHING */
+	kick_dc = (lockres->l_flags & OCFS2_LOCK_BLOCKED);
+
 	spin_unlock_irqrestore(&lockres->l_lock, flags);
+	if (kick_dc)
+		ocfs2_wake_downconvert_thread(osb);
 out:
 	/*
 	 * This is helping work around a lock inversion between the page lock
@@ -1514,10 +1588,17 @@ out:
 	if (wait && arg_flags & OCFS2_LOCK_NONBLOCK &&
 	    mw.mw_mask & (OCFS2_LOCK_BUSY|OCFS2_LOCK_BLOCKED)) {
 		wait = 0;
-		if (lockres_remove_mask_waiter(lockres, &mw))
+		spin_lock_irqsave(&lockres->l_lock, flags);
+		if (__lockres_remove_mask_waiter(lockres, &mw)) {
+			if (dlm_locked)
+				lockres_or_flags(lockres,
+					OCFS2_LOCK_NONBLOCK_FINISHED);
+			spin_unlock_irqrestore(&lockres->l_lock, flags);
 			ret = -EAGAIN;
-		else
+		} else {
+			spin_unlock_irqrestore(&lockres->l_lock, flags);
 			goto again;
+		}
 	}
 	if (wait) {
 		ret = ocfs2_wait_for_mask(&mw);
@@ -2045,8 +2126,8 @@ static void __ocfs2_stuff_meta_lvb(struct inode *inode)
 	lvb->lvb_version   = OCFS2_LVB_VERSION;
 	lvb->lvb_isize	   = cpu_to_be64(i_size_read(inode));
 	lvb->lvb_iclusters = cpu_to_be32(oi->ip_clusters);
-	lvb->lvb_iuid      = cpu_to_be32(inode->i_uid);
-	lvb->lvb_igid      = cpu_to_be32(inode->i_gid);
+	lvb->lvb_iuid      = cpu_to_be32(i_uid_read(inode));
+	lvb->lvb_igid      = cpu_to_be32(i_gid_read(inode));
 	lvb->lvb_imode     = cpu_to_be16(inode->i_mode);
 	lvb->lvb_inlink    = cpu_to_be16(inode->i_nlink);
 	lvb->lvb_iatime_packed  =
@@ -2095,8 +2176,8 @@ static void ocfs2_refresh_inode_from_lvb(struct inode *inode)
 	else
 		inode->i_blocks = ocfs2_inode_sector_count(inode);
 
-	inode->i_uid     = be32_to_cpu(lvb->lvb_iuid);
-	inode->i_gid     = be32_to_cpu(lvb->lvb_igid);
+	i_uid_write(inode, be32_to_cpu(lvb->lvb_iuid));
+	i_gid_write(inode, be32_to_cpu(lvb->lvb_igid));
 	inode->i_mode    = be16_to_cpu(lvb->lvb_imode);
 	set_nlink(inode, be16_to_cpu(lvb->lvb_inlink));
 	ocfs2_unpack_timespec(&inode->i_atime,
@@ -2307,8 +2388,9 @@ int ocfs2_inode_lock_full_nested(struct inode *inode,
 		goto getbh;
 	}
 
-	if (ocfs2_mount_local(osb))
-		goto local;
+	if ((arg_flags & OCFS2_META_LOCK_GETBH) ||
+	    ocfs2_mount_local(osb))
+		goto update;
 
 	if (!(arg_flags & OCFS2_META_LOCK_RECOVERY))
 		ocfs2_wait_for_recovery(osb);
@@ -2322,7 +2404,7 @@ int ocfs2_inode_lock_full_nested(struct inode *inode,
 	status = __ocfs2_cluster_lock(osb, lockres, level, dlm_flags,
 				      arg_flags, subclass, _RET_IP_);
 	if (status < 0) {
-		if (status != -EAGAIN && status != -EIOCBRETRY)
+		if (status != -EAGAIN)
 			mlog_errno(status);
 		goto bail;
 	}
@@ -2337,7 +2419,7 @@ int ocfs2_inode_lock_full_nested(struct inode *inode,
 	if (!(arg_flags & OCFS2_META_LOCK_RECOVERY))
 		ocfs2_wait_for_recovery(osb);
 
-local:
+update:
 	/*
 	 * We only see this flag if we're being called from
 	 * ocfs2_read_locked_inode(). It means we're locking an inode
@@ -2479,6 +2561,59 @@ void ocfs2_inode_unlock(struct inode *inode,
 		ocfs2_cluster_unlock(OCFS2_SB(inode->i_sb), lockres, level);
 }
 
+/*
+ * This _tracker variantes are introduced to deal with the recursive cluster
+ * locking issue. The idea is to keep track of a lock holder on the stack of
+ * the current process. If there's a lock holder on the stack, we know the
+ * task context is already protected by cluster locking. Currently, they're
+ * used in some VFS entry routines.
+ *
+ * return < 0 on error, return == 0 if there's no lock holder on the stack
+ * before this call, return == 1 if this call would be a recursive locking.
+ */
+int ocfs2_inode_lock_tracker(struct inode *inode,
+			     struct buffer_head **ret_bh,
+			     int ex,
+			     struct ocfs2_lock_holder *oh)
+{
+	int status;
+	int arg_flags = 0, has_locked;
+	struct ocfs2_lock_res *lockres;
+
+	lockres = &OCFS2_I(inode)->ip_inode_lockres;
+	has_locked = ocfs2_is_locked_by_me(lockres);
+	/* Just get buffer head if the cluster lock has been taken */
+	if (has_locked)
+		arg_flags = OCFS2_META_LOCK_GETBH;
+
+	if (likely(!has_locked || ret_bh)) {
+		status = ocfs2_inode_lock_full(inode, ret_bh, ex, arg_flags);
+		if (status < 0) {
+			if (status != -ENOENT)
+				mlog_errno(status);
+			return status;
+		}
+	}
+	if (!has_locked)
+		ocfs2_add_holder(lockres, oh);
+
+	return has_locked;
+}
+
+void ocfs2_inode_unlock_tracker(struct inode *inode,
+				int ex,
+				struct ocfs2_lock_holder *oh,
+				int had_lock)
+{
+	struct ocfs2_lock_res *lockres;
+
+	lockres = &OCFS2_I(inode)->ip_inode_lockres;
+	if (!had_lock) {
+		ocfs2_remove_holder(lockres, oh);
+		ocfs2_inode_unlock(inode, ex);
+	}
+}
+
 int ocfs2_orphan_scan_lock(struct ocfs2_super *osb, u32 *seqno)
 {
 	struct ocfs2_lock_res *lockres;
@@ -2544,11 +2679,6 @@ int ocfs2_super_lock(struct ocfs2_super *osb,
 	 * refreshed, so we do it here. Of course, making sense of
 	 * everything is up to the caller :) */
 	status = ocfs2_should_refresh_lock_res(lockres);
-	if (status < 0) {
-		ocfs2_cluster_unlock(osb, lockres, level);
-		mlog_errno(status);
-		goto bail;
-	}
 	if (status) {
 		status = ocfs2_refresh_slot_info(osb);
 
@@ -2897,37 +3027,24 @@ static int ocfs2_dlm_debug_release(struct inode *inode, struct file *file)
 
 static int ocfs2_dlm_debug_open(struct inode *inode, struct file *file)
 {
-	int ret;
 	struct ocfs2_dlm_seq_priv *priv;
-	struct seq_file *seq;
 	struct ocfs2_super *osb;
 
-	priv = kzalloc(sizeof(struct ocfs2_dlm_seq_priv), GFP_KERNEL);
+	priv = __seq_open_private(file, &ocfs2_dlm_seq_ops, sizeof(*priv));
 	if (!priv) {
-		ret = -ENOMEM;
-		mlog_errno(ret);
-		goto out;
+		mlog_errno(-ENOMEM);
+		return -ENOMEM;
 	}
+
 	osb = inode->i_private;
 	ocfs2_get_dlm_debug(osb->osb_dlm_debug);
 	priv->p_dlm_debug = osb->osb_dlm_debug;
 	INIT_LIST_HEAD(&priv->p_iter_res.l_debug_list);
 
-	ret = seq_open(file, &ocfs2_dlm_seq_ops);
-	if (ret) {
-		kfree(priv);
-		mlog_errno(ret);
-		goto out;
-	}
-
-	seq = file->private_data;
-	seq->private = priv;
-
 	ocfs2_add_lockres_tracking(&priv->p_iter_res,
 				   priv->p_dlm_debug);
 
-out:
-	return ret;
+	return 0;
 }
 
 static const struct file_operations ocfs2_dlm_debug_fops = {
@@ -2986,7 +3103,8 @@ int ocfs2_dlm_init(struct ocfs2_super *osb)
 	}
 
 	/* launch downconvert thread */
-	osb->dc_task = kthread_run(ocfs2_downconvert_thread, osb, "ocfs2dc");
+	osb->dc_task = kthread_run(ocfs2_downconvert_thread, osb, "ocfs2dc-%s",
+			osb->uuid_str);
 	if (IS_ERR(osb->dc_task)) {
 		status = PTR_ERR(osb->dc_task);
 		osb->dc_task = NULL;
@@ -2996,6 +3114,8 @@ int ocfs2_dlm_init(struct ocfs2_super *osb)
 
 	/* for now, uuid == domain */
 	status = ocfs2_cluster_connect(osb->osb_cluster_stack,
+				       osb->osb_cluster_name,
+				       strlen(osb->osb_cluster_name),
 				       osb->uuid_str,
 				       strlen(osb->uuid_str),
 				       &lproto, ocfs2_do_node_down, osb,
@@ -3005,7 +3125,7 @@ int ocfs2_dlm_init(struct ocfs2_super *osb)
 		goto bail;
 	}
 
-	status = ocfs2_cluster_this_node(&osb->node_num);
+	status = ocfs2_cluster_this_node(conn, &osb->node_num);
 	if (status < 0) {
 		mlog_errno(status);
 		mlog(ML_ERROR,
@@ -3021,8 +3141,6 @@ local:
 	ocfs2_orphan_scan_lock_res_init(&osb->osb_orphan_scan.os_lockres, osb);
 
 	osb->cconn = conn;
-
-	status = 0;
 bail:
 	if (status < 0) {
 		ocfs2_dlm_shutdown_debug(osb);
@@ -3142,22 +3260,60 @@ out:
 	return 0;
 }
 
+static void ocfs2_process_blocked_lock(struct ocfs2_super *osb,
+				       struct ocfs2_lock_res *lockres);
+
 /* Mark the lockres as being dropped. It will no longer be
  * queued if blocking, but we still may have to wait on it
  * being dequeued from the downconvert thread before we can consider
  * it safe to drop.
  *
  * You can *not* attempt to call cluster_lock on this lockres anymore. */
-void ocfs2_mark_lockres_freeing(struct ocfs2_lock_res *lockres)
+void ocfs2_mark_lockres_freeing(struct ocfs2_super *osb,
+				struct ocfs2_lock_res *lockres)
 {
 	int status;
 	struct ocfs2_mask_waiter mw;
-	unsigned long flags;
+	unsigned long flags, flags2;
 
 	ocfs2_init_mask_waiter(&mw);
 
 	spin_lock_irqsave(&lockres->l_lock, flags);
 	lockres->l_flags |= OCFS2_LOCK_FREEING;
+	if (lockres->l_flags & OCFS2_LOCK_QUEUED && current == osb->dc_task) {
+		/*
+		 * We know the downconvert is queued but not in progress
+		 * because we are the downconvert thread and processing
+		 * different lock. So we can just remove the lock from the
+		 * queue. This is not only an optimization but also a way
+		 * to avoid the following deadlock:
+		 *   ocfs2_dentry_post_unlock()
+		 *     ocfs2_dentry_lock_put()
+		 *       ocfs2_drop_dentry_lock()
+		 *         iput()
+		 *           ocfs2_evict_inode()
+		 *             ocfs2_clear_inode()
+		 *               ocfs2_mark_lockres_freeing()
+		 *                 ... blocks waiting for OCFS2_LOCK_QUEUED
+		 *                 since we are the downconvert thread which
+		 *                 should clear the flag.
+		 */
+		spin_unlock_irqrestore(&lockres->l_lock, flags);
+		spin_lock_irqsave(&osb->dc_task_lock, flags2);
+		list_del_init(&lockres->l_blocked_list);
+		osb->blocked_lock_count--;
+		spin_unlock_irqrestore(&osb->dc_task_lock, flags2);
+		/*
+		 * Warn if we recurse into another post_unlock call.  Strictly
+		 * speaking it isn't a problem but we need to be careful if
+		 * that happens (stack overflow, deadlocks, ...) so warn if
+		 * ocfs2 grows a path for which this can happen.
+		 */
+		WARN_ON_ONCE(lockres->l_ops->post_unlock);
+		/* Since the lock is freeing we don't do much in the fn below */
+		ocfs2_process_blocked_lock(osb, lockres);
+		return;
+	}
 	while (lockres->l_flags & OCFS2_LOCK_QUEUED) {
 		lockres_add_mask_waiter(lockres, &mw, OCFS2_LOCK_QUEUED, 0);
 		spin_unlock_irqrestore(&lockres->l_lock, flags);
@@ -3178,7 +3334,7 @@ void ocfs2_simple_drop_lockres(struct ocfs2_super *osb,
 {
 	int ret;
 
-	ocfs2_mark_lockres_freeing(lockres);
+	ocfs2_mark_lockres_freeing(osb, lockres);
 	ret = ocfs2_drop_lock(osb, lockres);
 	if (ret)
 		mlog_errno(ret);
@@ -3263,6 +3419,16 @@ static int ocfs2_downconvert_lock(struct ocfs2_super *osb,
 
 	mlog(ML_BASTS, "lockres %s, level %d => %d\n", lockres->l_name,
 	     lockres->l_level, new_level);
+
+	/*
+	 * On DLM_LKF_VALBLK, fsdlm behaves differently with o2cb. It always
+	 * expects DLM_LKF_VALBLK being set if the LKB has LVB, so that
+	 * we can recover correctly from node failure. Otherwise, we may get
+	 * invalid LVB in LKB, but without DLM_SBF_VALNOTVALID being set.
+	 */
+	if (!ocfs2_is_o2cb_active() &&
+	    lockres->l_ops->flags & LOCK_TYPE_USES_LVB)
+		lvb = 1;
 
 	if (lvb)
 		dlm_flags |= DLM_LKF_VALBLK;
@@ -3703,8 +3869,10 @@ static int ocfs2_dentry_convert_worker(struct ocfs2_lock_res *lockres,
 			break;
 		spin_unlock(&dentry_attach_lock);
 
-		mlog(0, "d_delete(%.*s);\n", dentry->d_name.len,
-		     dentry->d_name.name);
+		if (S_ISDIR(dl->dl_inode->i_mode))
+			shrink_dcache_parent(dentry);
+
+		mlog(0, "d_delete(%pd);\n", dentry);
 
 		/*
 		 * The following dcache calls may do an
@@ -3935,6 +4103,8 @@ unqueue:
 static void ocfs2_schedule_blocked_lock(struct ocfs2_super *osb,
 					struct ocfs2_lock_res *lockres)
 {
+	unsigned long flags;
+
 	assert_spin_locked(&lockres->l_lock);
 
 	if (lockres->l_flags & OCFS2_LOCK_FREEING) {
@@ -3948,21 +4118,22 @@ static void ocfs2_schedule_blocked_lock(struct ocfs2_super *osb,
 
 	lockres_or_flags(lockres, OCFS2_LOCK_QUEUED);
 
-	spin_lock(&osb->dc_task_lock);
+	spin_lock_irqsave(&osb->dc_task_lock, flags);
 	if (list_empty(&lockres->l_blocked_list)) {
 		list_add_tail(&lockres->l_blocked_list,
 			      &osb->blocked_lock_list);
 		osb->blocked_lock_count++;
 	}
-	spin_unlock(&osb->dc_task_lock);
+	spin_unlock_irqrestore(&osb->dc_task_lock, flags);
 }
 
 static void ocfs2_downconvert_thread_do_work(struct ocfs2_super *osb)
 {
 	unsigned long processed;
+	unsigned long flags;
 	struct ocfs2_lock_res *lockres;
 
-	spin_lock(&osb->dc_task_lock);
+	spin_lock_irqsave(&osb->dc_task_lock, flags);
 	/* grab this early so we know to try again if a state change and
 	 * wake happens part-way through our work  */
 	osb->dc_work_sequence = osb->dc_wake_sequence;
@@ -3979,38 +4150,40 @@ static void ocfs2_downconvert_thread_do_work(struct ocfs2_super *osb)
 				     struct ocfs2_lock_res, l_blocked_list);
 		list_del_init(&lockres->l_blocked_list);
 		osb->blocked_lock_count--;
-		spin_unlock(&osb->dc_task_lock);
+		spin_unlock_irqrestore(&osb->dc_task_lock, flags);
 
 		BUG_ON(!processed);
 		processed--;
 
 		ocfs2_process_blocked_lock(osb, lockres);
 
-		spin_lock(&osb->dc_task_lock);
+		spin_lock_irqsave(&osb->dc_task_lock, flags);
 	}
-	spin_unlock(&osb->dc_task_lock);
+	spin_unlock_irqrestore(&osb->dc_task_lock, flags);
 }
 
 static int ocfs2_downconvert_thread_lists_empty(struct ocfs2_super *osb)
 {
 	int empty = 0;
+	unsigned long flags;
 
-	spin_lock(&osb->dc_task_lock);
+	spin_lock_irqsave(&osb->dc_task_lock, flags);
 	if (list_empty(&osb->blocked_lock_list))
 		empty = 1;
 
-	spin_unlock(&osb->dc_task_lock);
+	spin_unlock_irqrestore(&osb->dc_task_lock, flags);
 	return empty;
 }
 
 static int ocfs2_downconvert_thread_should_wake(struct ocfs2_super *osb)
 {
 	int should_wake = 0;
+	unsigned long flags;
 
-	spin_lock(&osb->dc_task_lock);
+	spin_lock_irqsave(&osb->dc_task_lock, flags);
 	if (osb->dc_work_sequence != osb->dc_wake_sequence)
 		should_wake = 1;
-	spin_unlock(&osb->dc_task_lock);
+	spin_unlock_irqrestore(&osb->dc_task_lock, flags);
 
 	return should_wake;
 }
@@ -4040,10 +4213,12 @@ static int ocfs2_downconvert_thread(void *arg)
 
 void ocfs2_wake_downconvert_thread(struct ocfs2_super *osb)
 {
-	spin_lock(&osb->dc_task_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&osb->dc_task_lock, flags);
 	/* make sure the voting thread gets a swipe at whatever changes
 	 * the caller may have made to the voting state */
 	osb->dc_wake_sequence++;
-	spin_unlock(&osb->dc_task_lock);
+	spin_unlock_irqrestore(&osb->dc_task_lock, flags);
 	wake_up(&osb->dc_event);
 }

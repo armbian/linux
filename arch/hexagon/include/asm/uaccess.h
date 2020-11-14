@@ -1,7 +1,7 @@
 /*
  * User memory access support for Hexagon
  *
- * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -36,7 +36,8 @@
  * @addr: User space pointer to start of block to check
  * @size: Size of block to check
  *
- * Context: User context only.  This function may sleep.
+ * Context: User context only. This function may sleep if pagefaults are
+ *          enabled.
  *
  * Checks if a pointer to a block of memory in user space is valid.
  *
@@ -102,7 +103,8 @@ static inline long hexagon_strncpy_from_user(char *dst, const char __user *src,
 {
 	long res = __strnlen_user(src, n);
 
-	/* return from strnlen can't be zero -- that would be rubbish. */
+	if (unlikely(!res))
+		return -EFAULT;
 
 	if (res > n) {
 		copy_from_user(dst, src, n);

@@ -34,7 +34,6 @@
 #include <sound/emu10k1.h>
 #include "p16v.h"
 
-#ifdef CONFIG_PROC_FS
 static void snd_emu10k1_proc_spdif_status(struct snd_emu10k1 * emu,
 					  struct snd_info_buffer *buffer,
 					  char *title,
@@ -565,7 +564,7 @@ static struct snd_info_entry_ops snd_emu10k1_proc_ops_fx8010 = {
 	.read = snd_emu10k1_fx8010_read,
 };
 
-int __devinit snd_emu10k1_proc_init(struct snd_emu10k1 * emu)
+int snd_emu10k1_proc_init(struct snd_emu10k1 *emu)
 {
 	struct snd_info_entry *entry;
 #ifdef CONFIG_SND_DEBUG
@@ -656,4 +655,3 @@ int __devinit snd_emu10k1_proc_init(struct snd_emu10k1 * emu)
 	}
 	return 0;
 }
-#endif /* CONFIG_PROC_FS */

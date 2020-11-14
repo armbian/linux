@@ -51,7 +51,7 @@
  *
  * version 0.7.3
  * bugfix : The mdc800->state field gets set to READY after the
- * the diconnect function sets it to NOT_CONNECTED. This makes the
+ * the disconnect function sets it to NOT_CONNECTED. This makes the
  * driver running like the camera is connected and causes some
  * hang ups.
  *
@@ -284,18 +284,16 @@ static void mdc800_usb_irq (struct urb *urb)
 	int data_received=0, wake_up;
 	unsigned char* b=urb->transfer_buffer;
 	struct mdc800_data* mdc800=urb->context;
+	struct device *dev = &mdc800->dev->dev;
 	int status = urb->status;
 
 	if (status >= 0) {
-
-		//dbg ("%i %i %i %i %i %i %i %i \n",b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]);
-
 		if (mdc800_isBusy (b))
 		{
 			if (!mdc800->camera_busy)
 			{
 				mdc800->camera_busy=1;
-				dbg ("gets busy");
+				dev_dbg(dev, "gets busy\n");
 			}
 		}
 		else
@@ -303,13 +301,13 @@ static void mdc800_usb_irq (struct urb *urb)
 			if (mdc800->camera_busy && mdc800_isReady (b))
 			{
 				mdc800->camera_busy=0;
-				dbg ("gets ready");
+				dev_dbg(dev, "gets ready\n");
 			}
 		}
 		if (!(mdc800_isBusy (b) || mdc800_isReady (b)))
 		{
 			/* Store Data in camera_answer field */
-			dbg ("%i %i %i %i %i %i %i %i ",b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]);
+			dev_dbg(dev, "%i %i %i %i %i %i %i %i \n",b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]);
 
 			memcpy (mdc800->camera_response,b,8);
 			data_received=1;
@@ -349,7 +347,8 @@ static int mdc800_usb_waitForIRQ (int mode, int msec)
 {
 	mdc800->camera_request_ready=1+mode;
 
-	wait_event_timeout(mdc800->irq_wait, mdc800->irq_woken, msec*HZ/1000);
+	wait_event_timeout(mdc800->irq_wait, mdc800->irq_woken,
+			   msecs_to_jiffies(msec));
 	mdc800->irq_woken = 0;
 
 	if (mdc800->camera_request_ready>0)
@@ -441,7 +440,7 @@ static int mdc800_usb_probe (struct usb_interface *intf,
 	int irq_interval=0;
 	int retval;
 
-	dbg ("(mdc800_usb_probe) called.");
+	dev_dbg(&intf->dev, "(%s) called.\n", __func__);
 
 
 	if (mdc800->dev != NULL)
@@ -554,7 +553,7 @@ static void mdc800_usb_disconnect (struct usb_interface *intf)
 {
 	struct mdc800_data* mdc800 = usb_get_intfdata(intf);
 
-	dbg ("(mdc800_usb_disconnect) called");
+	dev_dbg(&intf->dev, "(%s) called\n", __func__);
 
 	if (mdc800) {
 		if (mdc800->state == NOT_CONNECTED)
@@ -656,7 +655,7 @@ static int mdc800_device_open (struct inode* inode, struct file *file)
 	}
 
 	mdc800->open=1;
-	dbg ("Mustek MDC800 device opened.");
+	dev_dbg(&mdc800->dev->dev, "Mustek MDC800 device opened.\n");
 
 error_out:
 	mutex_unlock(&mdc800->io_lock);
@@ -670,7 +669,6 @@ error_out:
 static int mdc800_device_release (struct inode* inode, struct file *file)
 {
 	int retval=0;
-	dbg ("Mustek MDC800 device closed.");
 
 	mutex_lock(&mdc800->io_lock);
 	if (mdc800->open && (mdc800->state != NOT_CONNECTED))
@@ -746,8 +744,9 @@ static ssize_t mdc800_device_read (struct file *file, char __user *buf, size_t l
 					mutex_unlock(&mdc800->io_lock);
 					return len-left;
 				}
-				wait_event_timeout(mdc800->download_wait, mdc800->downloaded,
-										TO_DOWNLOAD_GET_READY*HZ/1000);
+				wait_event_timeout(mdc800->download_wait,
+				     mdc800->downloaded,
+				     msecs_to_jiffies(TO_DOWNLOAD_GET_READY));
 				mdc800->downloaded = 0;
 				if (mdc800->download_urb->status != 0)
 				{
@@ -870,7 +869,8 @@ static ssize_t mdc800_device_write (struct file *file, const char __user *buf, s
 				mutex_unlock(&mdc800->io_lock);
 				return -EIO;
 			}
-			wait_event_timeout(mdc800->write_wait, mdc800->written, TO_WRITE_GET_READY*HZ/1000);
+			wait_event_timeout(mdc800->write_wait, mdc800->written,
+					msecs_to_jiffies(TO_WRITE_GET_READY));
 			mdc800->written = 0;
 			if (mdc800->state == WORKING)
 			{
@@ -927,7 +927,7 @@ static ssize_t mdc800_device_write (struct file *file, const char __user *buf, s
 						{
 							mdc800->pic_len=(int) 65536*(unsigned char) mdc800->camera_response[0]+256*(unsigned char) mdc800->camera_response[1]+(unsigned char) mdc800->camera_response[2];
 
-							dbg ("cached imagesize = %i",mdc800->pic_len);
+							dev_dbg(&mdc800->dev->dev, "cached imagesize = %i\n", mdc800->pic_len);
 						}
 
 					}

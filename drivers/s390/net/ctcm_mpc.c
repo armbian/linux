@@ -1,6 +1,4 @@
 /*
- *	drivers/s390/net/ctcm_mpc.c
- *
  *	Copyright IBM Corp. 2004, 2007
  *	Authors:	Belinda Thompson (belindat@us.ibm.com)
  *			Andy Richter (richtera@us.ibm.com)
@@ -132,11 +130,7 @@ void ctcmpc_dumpit(char *buf, int len)
 	__u32	ct, sw, rm, dup;
 	char	*ptr, *rptr;
 	char	tbuf[82], tdup[82];
-	#ifdef CONFIG_64BIT
 	char	addr[22];
-	#else
-	char	addr[12];
-	#endif
 	char	boff[12];
 	char	bhex[82], duphex[82];
 	char	basc[40];
@@ -149,11 +143,7 @@ void ctcmpc_dumpit(char *buf, int len)
 
 	for (ct = 0; ct < len; ct++, ptr++, rptr++) {
 		if (sw == 0) {
-			#ifdef CONFIG_64BIT
 			sprintf(addr, "%16.16llx", (__u64)rptr);
-			#else
-			sprintf(addr, "%8.8X", (__u32)rptr);
-			#endif
 
 			sprintf(boff, "%4.4X", (__u32)ct);
 			bhex[0] = '\0';
@@ -164,11 +154,7 @@ void ctcmpc_dumpit(char *buf, int len)
 		if (sw == 8)
 			strcat(bhex, "	");
 
-		#if CONFIG_64BIT
 		sprintf(tbuf, "%2.2llX", (__u64)*ptr);
-		#else
-		sprintf(tbuf, "%2.2X", (__u32)*ptr);
-		#endif
 
 		tbuf[2] = '\0';
 		strcat(bhex, tbuf);
@@ -1369,7 +1355,6 @@ static void mpc_action_go_inop(fsm_instance *fi, int event, void *arg)
 	struct mpc_group *grp;
 	struct channel *wch;
 
-	BUG_ON(dev == NULL);
 	CTCM_PR_DEBUG("Enter %s: %s\n",	__func__, dev->name);
 
 	priv  = dev->ml_priv;
@@ -1473,8 +1458,6 @@ static void mpc_action_timeout(fsm_instance *fi, int event, void *arg)
 	struct mpc_group *grp;
 	struct channel *wch;
 	struct channel *rch;
-
-	BUG_ON(dev == NULL);
 
 	priv = dev->ml_priv;
 	grp = priv->mpcg;

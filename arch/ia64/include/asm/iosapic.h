@@ -55,14 +55,10 @@
 
 #define NR_IOSAPICS			256
 
-#ifdef CONFIG_PARAVIRT_GUEST
-#include <asm/paravirt.h>
-#else
 #define iosapic_pcat_compat_init	ia64_native_iosapic_pcat_compat_init
 #define __iosapic_read			__ia64_native_iosapic_read
 #define __iosapic_write			__ia64_native_iosapic_write
 #define iosapic_get_irq_chip		ia64_native_iosapic_get_irq_chip
-#endif
 
 extern void __init ia64_native_iosapic_pcat_compat_init(void);
 extern struct irq_chip *ia64_native_iosapic_get_irq_chip(unsigned long trigger);
@@ -87,18 +83,13 @@ static inline void iosapic_eoi(char __iomem *iosapic, u32 vector)
 }
 
 extern void __init iosapic_system_init (int pcat_compat);
-extern int __devinit iosapic_init (unsigned long address,
-				    unsigned int gsi_base);
-#ifdef CONFIG_HOTPLUG
+extern int iosapic_init (unsigned long address, unsigned int gsi_base);
 extern int iosapic_remove (unsigned int gsi_base);
-#else
-#define iosapic_remove(gsi_base)				(-EINVAL)
-#endif /* CONFIG_HOTPLUG */
 extern int gsi_to_irq (unsigned int gsi);
 extern int iosapic_register_intr (unsigned int gsi, unsigned long polarity,
 				  unsigned long trigger);
 extern void iosapic_unregister_intr (unsigned int irq);
-extern void __devinit iosapic_override_isa_irq (unsigned int isa_irq, unsigned int gsi,
+extern void iosapic_override_isa_irq (unsigned int isa_irq, unsigned int gsi,
 				      unsigned long polarity,
 				      unsigned long trigger);
 extern int __init iosapic_register_platform_intr (u32 int_type,
@@ -109,7 +100,7 @@ extern int __init iosapic_register_platform_intr (u32 int_type,
 					   unsigned long trigger);
 
 #ifdef CONFIG_NUMA
-extern void __devinit map_iosapic_to_node (unsigned int, int);
+extern void map_iosapic_to_node (unsigned int, int);
 #endif
 #else
 #define iosapic_system_init(pcat_compat)			do { } while (0)

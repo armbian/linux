@@ -23,8 +23,6 @@
 #include <asm/dma.h>
 #include "pipe.h"
 
-#define	DMA_ADDR_INVALID	(~(dma_addr_t)0)
-
 struct usbhs_fifo {
 	char *name;
 	u32 port;	/* xFIFO */
@@ -40,11 +38,17 @@ struct usbhs_fifo {
 	struct sh_dmae_slave	rx_slave;
 };
 
+#define USBHS_MAX_NUM_DFIFO	4
 struct usbhs_fifo_info {
 	struct usbhs_fifo cfifo;
-	struct usbhs_fifo d0fifo;
-	struct usbhs_fifo d1fifo;
+	struct usbhs_fifo dfifo[USBHS_MAX_NUM_DFIFO];
 };
+#define usbhsf_get_dnfifo(p, n)	(&((p)->fifo_info.dfifo[n]))
+#define usbhs_for_each_dfifo(priv, dfifo, i)			\
+	for ((i) = 0;						\
+	     ((i) < USBHS_MAX_NUM_DFIFO) &&			\
+		     ((dfifo) = usbhsf_get_dnfifo(priv, (i)));	\
+	     (i)++)
 
 struct usbhs_pkt_handle;
 struct usbhs_pkt {
@@ -55,6 +59,7 @@ struct usbhs_pkt {
 		     struct usbhs_pkt *pkt);
 	struct work_struct work;
 	dma_addr_t dma;
+	dma_cookie_t cookie;
 	void *buf;
 	int length;
 	int trans;
@@ -76,6 +81,7 @@ int usbhs_fifo_probe(struct usbhs_priv *priv);
 void usbhs_fifo_remove(struct usbhs_priv *priv);
 void usbhs_fifo_init(struct usbhs_priv *priv);
 void usbhs_fifo_quit(struct usbhs_priv *priv);
+void usbhs_fifo_clear_dcp(struct usbhs_pipe *pipe);
 
 /*
  * packet info

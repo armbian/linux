@@ -84,7 +84,7 @@ unsigned int aac_response_normal(struct aac_queue * q)
 		 *	continue. The caller has already been notified that
 		 *	the fib timed out.
 		 */
-		dev->queues->queue[AdapNormCmdQueue].numpending--;
+		atomic_dec(&dev->queues->queue[AdapNormCmdQueue].numpending);
 
 		if (unlikely(fib->flags & FIB_CONTEXT_FLAG_TIMED_OUT)) {
 			spin_unlock_irqrestore(q->lock, flags);
@@ -101,6 +101,7 @@ unsigned int aac_response_normal(struct aac_queue * q)
 			 */
 			*(__le32 *)hwfib->data = cpu_to_le32(ST_OK);
 			hwfib->header.XferState |= cpu_to_le32(AdapterProcessed);
+			fib->flags |= FIB_CONTEXT_FLAG_FASTRESP;
 		}
 
 		FIB_COUNTER_INCREMENT(aac_config.FibRecved);
@@ -121,7 +122,7 @@ unsigned int aac_response_normal(struct aac_queue * q)
 			 *	NOTE:  we cannot touch the fib after this
 			 *	    call, because it may have been deallocated.
 			 */
-			fib->flags = 0;
+			fib->flags &= FIB_CONTEXT_FLAG_FASTRESP;
 			fib->callback(fib->callback_data, fib);
 		} else {
 			unsigned long flagv;
@@ -353,7 +354,7 @@ unsigned int aac_intr_normal(struct aac_dev *dev, u32 index,
 		 *	continue. The caller has already been notified that
 		 *	the fib timed out.
 		 */
-		dev->queues->queue[AdapNormCmdQueue].numpending--;
+		atomic_dec(&dev->queues->queue[AdapNormCmdQueue].numpending);
 
 		if (unlikely(fib->flags & FIB_CONTEXT_FLAG_TIMED_OUT)) {
 			aac_fib_complete(fib);
@@ -367,6 +368,7 @@ unsigned int aac_intr_normal(struct aac_dev *dev, u32 index,
 			 */
 			*(__le32 *)hwfib->data = cpu_to_le32(ST_OK);
 			hwfib->header.XferState |= cpu_to_le32(AdapterProcessed);
+			fib->flags |= FIB_CONTEXT_FLAG_FASTRESP;
 		}
 
 		FIB_COUNTER_INCREMENT(aac_config.FibRecved);
@@ -387,8 +389,13 @@ unsigned int aac_intr_normal(struct aac_dev *dev, u32 index,
 			 *	NOTE:  we cannot touch the fib after this
 			 *	    call, because it may have been deallocated.
 			 */
-			fib->flags = 0;
-			fib->callback(fib->callback_data, fib);
+			if (likely(fib->callback && fib->callback_data)) {
+				fib->flags &= FIB_CONTEXT_FLAG_FASTRESP;
+				fib->callback(fib->callback_data, fib);
+			} else {
+				aac_fib_complete(fib);
+				aac_fib_free(fib);
+			}
 		} else {
 			unsigned long flagv;
 	  		dprintk((KERN_INFO "event_wait up\n"));

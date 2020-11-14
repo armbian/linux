@@ -1,6 +1,4 @@
 /*
- *  include/asm-s390/etr.h
- *
  *  Copyright IBM Corp. 2006
  *  Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com)
  */
@@ -142,7 +140,7 @@ struct etr_ptff_qto {
 /* Inline assembly helper functions */
 static inline int etr_setr(struct etr_eacr *ctrl)
 {
-	int rc = -ENOSYS;
+	int rc = -EOPNOTSUPP;
 
 	asm volatile(
 		"	.insn	s,0xb2160000,%1\n"
@@ -156,7 +154,7 @@ static inline int etr_setr(struct etr_eacr *ctrl)
 /* Stores a format 1 aib with 64 bytes */
 static inline int etr_stetr(struct etr_aib *aib)
 {
-	int rc = -ENOSYS;
+	int rc = -EOPNOTSUPP;
 
 	asm volatile(
 		"	.insn	s,0xb2170000,%1\n"
@@ -171,7 +169,7 @@ static inline int etr_stetr(struct etr_aib *aib)
 static inline int etr_steai(struct etr_aib *aib, unsigned int func)
 {
 	register unsigned int reg0 asm("0") = func;
-	int rc = -ENOSYS;
+	int rc = -EOPNOTSUPP;
 
 	asm volatile(
 		"	.insn	s,0xb2b30000,%1\n"
@@ -192,7 +190,7 @@ static inline int etr_ptff(void *ptff_block, unsigned int func)
 {
 	register unsigned int reg0 asm("0") = func;
 	register unsigned long reg1 asm("1") = (unsigned long) ptff_block;
-	int rc = -ENOSYS;
+	int rc = -EOPNOTSUPP;
 
 	asm volatile(
 		"	.word	0x0104\n"
@@ -213,8 +211,12 @@ static inline int etr_ptff(void *ptff_block, unsigned int func)
 #define ETR_PTFF_SGS	0x43	/* set gross steering rate */
 
 /* Functions needed by the machine check handler */
-void etr_switch_to_local(void);
-void etr_sync_check(void);
+int etr_switch_to_local(void);
+int etr_sync_check(void);
+void etr_queue_work(void);
+
+/* notifier for syncs */
+extern struct atomic_notifier_head s390_epoch_delta_notifier;
 
 /* STP interruption parameter */
 struct stp_irq_parm {
@@ -252,7 +254,8 @@ struct stp_sstpi {
 } __attribute__ ((packed));
 
 /* Functions needed by the machine check handler */
-void stp_sync_check(void);
-void stp_island_check(void);
+int stp_sync_check(void);
+int stp_island_check(void);
+void stp_queue_work(void);
 
 #endif /* __S390_ETR_H */

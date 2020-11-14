@@ -49,13 +49,15 @@
 #include <linux/sunrpc/metrics.h>
 #include <linux/sunrpc/bc_xprt.h>
 
+#include <trace/events/sunrpc.h>
+
 #include "sunrpc.h"
 
 /*
  * Local variables
  */
 
-#ifdef RPC_DEBUG
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 # define RPCDBG_FACILITY	RPCDBG_XPRT
 #endif
 
@@ -71,24 +73,6 @@ static void	 xprt_destroy(struct rpc_xprt *xprt);
 
 static DEFINE_SPINLOCK(xprt_list_lock);
 static LIST_HEAD(xprt_list);
-
-/*
- * The transport code maintains an estimate on the maximum number of out-
- * standing RPC requests, using a smoothed version of the congestion
- * avoidance implemented in 44BSD. This is basically the Van Jacobson
- * congestion algorithm: If a retransmit occurs, the congestion window is
- * halved; otherwise, it is incremented by 1/cwnd when
- *
- *	-	a reply is received and
- *	-	a full number of requests are outstanding and
- *	-	the congestion window hasn't been updated recently.
- */
-#define RPC_CWNDSHIFT		(8U)
-#define RPC_CWNDSCALE		(1U << RPC_CWNDSHIFT)
-#define RPC_INITCWND		RPC_CWNDSCALE
-#define RPC_MAXCWND(xprt)	((xprt)->max_reqs << RPC_CWNDSHIFT)
-
-#define RPCXPRT_CONGESTED(xprt) ((xprt)->cong >= (xprt)->cwnd)
 
 /**
  * xprt_register_transport - register a transport implementation
@@ -206,10 +190,8 @@ int xprt_reserve_xprt(struct rpc_xprt *xprt, struct rpc_task *task)
 		goto out_sleep;
 	}
 	xprt->snd_task = task;
-	if (req != NULL) {
-		req->rq_bytes_sent = 0;
+	if (req != NULL)
 		req->rq_ntrans++;
-	}
 
 	return 1;
 
@@ -232,10 +214,10 @@ EXPORT_SYMBOL_GPL(xprt_reserve_xprt);
 static void xprt_clear_locked(struct rpc_xprt *xprt)
 {
 	xprt->snd_task = NULL;
-	if (!test_bit(XPRT_CLOSE_WAIT, &xprt->state) || xprt->shutdown) {
-		smp_mb__before_clear_bit();
+	if (!test_bit(XPRT_CLOSE_WAIT, &xprt->state)) {
+		smp_mb__before_atomic();
 		clear_bit(XPRT_LOCKED, &xprt->state);
-		smp_mb__after_clear_bit();
+		smp_mb__after_atomic();
 	} else
 		queue_work(rpciod_workqueue, &xprt->task_cleanup);
 }
@@ -264,7 +246,6 @@ int xprt_reserve_xprt_cong(struct rpc_xprt *xprt, struct rpc_task *task)
 	}
 	if (__xprt_get_cong(xprt, task)) {
 		xprt->snd_task = task;
-		req->rq_bytes_sent = 0;
 		req->rq_ntrans++;
 		return 1;
 	}
@@ -303,10 +284,8 @@ static bool __xprt_lock_write_func(struct rpc_task *task, void *data)
 
 	req = task->tk_rqstp;
 	xprt->snd_task = task;
-	if (req) {
-		req->rq_bytes_sent = 0;
+	if (req)
 		req->rq_ntrans++;
-	}
 	return true;
 }
 
@@ -332,7 +311,6 @@ static bool __xprt_lock_write_cong_func(struct rpc_task *task, void *data)
 	}
 	if (__xprt_get_cong(xprt, task)) {
 		xprt->snd_task = task;
-		req->rq_bytes_sent = 0;
 		req->rq_ntrans++;
 		return true;
 	}
@@ -351,6 +329,15 @@ out_unlock:
 	xprt_clear_locked(xprt);
 }
 
+static void xprt_task_clear_bytes_sent(struct rpc_task *task)
+{
+	if (task != NULL) {
+		struct rpc_rqst *req = task->tk_rqstp;
+		if (req != NULL)
+			req->rq_bytes_sent = 0;
+	}
+}
+
 /**
  * xprt_release_xprt - allow other requests to use a transport
  * @xprt: transport with other tasks potentially waiting
@@ -361,6 +348,7 @@ out_unlock:
 void xprt_release_xprt(struct rpc_xprt *xprt, struct rpc_task *task)
 {
 	if (xprt->snd_task == task) {
+		xprt_task_clear_bytes_sent(task);
 		xprt_clear_locked(xprt);
 		__xprt_lock_write_next(xprt);
 	}
@@ -378,6 +366,7 @@ EXPORT_SYMBOL_GPL(xprt_release_xprt);
 void xprt_release_xprt_cong(struct rpc_xprt *xprt, struct rpc_task *task)
 {
 	if (xprt->snd_task == task) {
+		xprt_task_clear_bytes_sent(task);
 		xprt_clear_locked(xprt);
 		__xprt_lock_write_next_cong(xprt);
 	}
@@ -433,21 +422,31 @@ __xprt_put_cong(struct rpc_xprt *xprt, struct rpc_rqst *req)
  */
 void xprt_release_rqst_cong(struct rpc_task *task)
 {
-	__xprt_put_cong(task->tk_xprt, task->tk_rqstp);
+	struct rpc_rqst *req = task->tk_rqstp;
+
+	__xprt_put_cong(req->rq_xprt, req);
 }
 EXPORT_SYMBOL_GPL(xprt_release_rqst_cong);
 
 /**
  * xprt_adjust_cwnd - adjust transport congestion window
+ * @xprt: pointer to xprt
  * @task: recently completed RPC request used to adjust window
  * @result: result code of completed RPC request
  *
- * We use a time-smoothed congestion estimator to avoid heavy oscillation.
+ * The transport code maintains an estimate on the maximum number of out-
+ * standing RPC requests, using a smoothed version of the congestion
+ * avoidance implemented in 44BSD. This is basically the Van Jacobson
+ * congestion algorithm: If a retransmit occurs, the congestion window is
+ * halved; otherwise, it is incremented by 1/cwnd when
+ *
+ *	-	a reply is received and
+ *	-	a full number of requests are outstanding and
+ *	-	the congestion window hasn't been updated recently.
  */
-void xprt_adjust_cwnd(struct rpc_task *task, int result)
+void xprt_adjust_cwnd(struct rpc_xprt *xprt, struct rpc_task *task, int result)
 {
 	struct rpc_rqst *req = task->tk_rqstp;
-	struct rpc_xprt *xprt = task->tk_xprt;
 	unsigned long cwnd = xprt->cwnd;
 
 	if (result >= 0 && cwnd <= xprt->cong) {
@@ -511,9 +510,6 @@ EXPORT_SYMBOL_GPL(xprt_wait_for_buffer_space);
  */
 void xprt_write_space(struct rpc_xprt *xprt)
 {
-	if (unlikely(xprt->shutdown))
-		return;
-
 	spin_lock_bh(&xprt->transport_lock);
 	if (xprt->snd_task) {
 		dprintk("RPC:       write space: waking waiting task on "
@@ -538,7 +534,7 @@ void xprt_set_retrans_timeout_def(struct rpc_task *task)
 }
 EXPORT_SYMBOL_GPL(xprt_set_retrans_timeout_def);
 
-/*
+/**
  * xprt_set_retrans_timeout_rtt - set a request's retransmit timeout
  * @task: task whose timeout is to be set
  *
@@ -615,9 +611,10 @@ static void xprt_autoclose(struct work_struct *work)
 	struct rpc_xprt *xprt =
 		container_of(work, struct rpc_xprt, task_cleanup);
 
-	xprt->ops->close(xprt);
 	clear_bit(XPRT_CLOSE_WAIT, &xprt->state);
+	xprt->ops->close(xprt);
 	xprt_release_write(xprt, NULL);
+	wake_up_bit(&xprt->state, XPRT_LOCKED);
 }
 
 /**
@@ -686,16 +683,48 @@ xprt_init_autodisconnect(unsigned long data)
 	struct rpc_xprt *xprt = (struct rpc_xprt *)data;
 
 	spin_lock(&xprt->transport_lock);
-	if (!list_empty(&xprt->recv) || xprt->shutdown)
+	if (!list_empty(&xprt->recv))
 		goto out_abort;
 	if (test_and_set_bit(XPRT_LOCKED, &xprt->state))
 		goto out_abort;
 	spin_unlock(&xprt->transport_lock);
-	set_bit(XPRT_CONNECTION_CLOSE, &xprt->state);
 	queue_work(rpciod_workqueue, &xprt->task_cleanup);
 	return;
 out_abort:
 	spin_unlock(&xprt->transport_lock);
+}
+
+bool xprt_lock_connect(struct rpc_xprt *xprt,
+		struct rpc_task *task,
+		void *cookie)
+{
+	bool ret = false;
+
+	spin_lock_bh(&xprt->transport_lock);
+	if (!test_bit(XPRT_LOCKED, &xprt->state))
+		goto out;
+	if (xprt->snd_task != task)
+		goto out;
+	xprt_task_clear_bytes_sent(task);
+	xprt->snd_task = cookie;
+	ret = true;
+out:
+	spin_unlock_bh(&xprt->transport_lock);
+	return ret;
+}
+
+void xprt_unlock_connect(struct rpc_xprt *xprt, void *cookie)
+{
+	spin_lock_bh(&xprt->transport_lock);
+	if (xprt->snd_task != cookie)
+		goto out;
+	if (!test_bit(XPRT_LOCKED, &xprt->state))
+		goto out;
+	xprt->snd_task =NULL;
+	xprt->ops->release_xprt(xprt, NULL);
+out:
+	spin_unlock_bh(&xprt->transport_lock);
+	wake_up_bit(&xprt->state, XPRT_LOCKED);
 }
 
 /**
@@ -705,7 +734,7 @@ out_abort:
  */
 void xprt_connect(struct rpc_task *task)
 {
-	struct rpc_xprt	*xprt = task->tk_xprt;
+	struct rpc_xprt	*xprt = task->tk_rqstp->rq_xprt;
 
 	dprintk("RPC: %5u xprt_connect xprt %p %s connected\n", task->tk_pid,
 			xprt, (xprt_connected(xprt) ? "is" : "is not"));
@@ -720,9 +749,7 @@ void xprt_connect(struct rpc_task *task)
 	if (test_and_clear_bit(XPRT_CLOSE_WAIT, &xprt->state))
 		xprt->ops->close(xprt);
 
-	if (xprt_connected(xprt))
-		xprt_release_write(xprt, task);
-	else {
+	if (!xprt_connected(xprt)) {
 		task->tk_rqstp->rq_bytes_sent = 0;
 		task->tk_timeout = task->tk_rqstp->rq_timeout;
 		rpc_sleep_on(&xprt->pending, task, xprt_connect_status);
@@ -732,13 +759,14 @@ void xprt_connect(struct rpc_task *task)
 		if (xprt_test_and_set_connecting(xprt))
 			return;
 		xprt->stat.connect_start = jiffies;
-		xprt->ops->connect(task);
+		xprt->ops->connect(xprt, task);
 	}
+	xprt_release_write(xprt, task);
 }
 
 static void xprt_connect_status(struct rpc_task *task)
 {
-	struct rpc_xprt	*xprt = task->tk_xprt;
+	struct rpc_xprt	*xprt = task->tk_rqstp->rq_xprt;
 
 	if (task->tk_status == 0) {
 		xprt->stat.connect_count++;
@@ -749,6 +777,12 @@ static void xprt_connect_status(struct rpc_task *task)
 	}
 
 	switch (task->tk_status) {
+	case -ECONNREFUSED:
+	case -ECONNRESET:
+	case -ECONNABORTED:
+	case -ENETUNREACH:
+	case -EHOSTUNREACH:
+	case -EPIPE:
 	case -EAGAIN:
 		dprintk("RPC: %5u xprt_connect_status: retrying\n", task->tk_pid);
 		break;
@@ -760,7 +794,6 @@ static void xprt_connect_status(struct rpc_task *task)
 		dprintk("RPC: %5u xprt_connect_status: error %d connecting to "
 				"server %s\n", task->tk_pid, -task->tk_status,
 				xprt->servername);
-		xprt_release_write(xprt, task);
 		task->tk_status = -EIO;
 	}
 }
@@ -776,11 +809,14 @@ struct rpc_rqst *xprt_lookup_rqst(struct rpc_xprt *xprt, __be32 xid)
 	struct rpc_rqst *entry;
 
 	list_for_each_entry(entry, &xprt->recv, rq_list)
-		if (entry->rq_xid == xid)
+		if (entry->rq_xid == xid) {
+			trace_xprt_lookup_rqst(xprt, xid, 0);
 			return entry;
+		}
 
 	dprintk("RPC:       xprt_lookup_rqst did not find xid %08x\n",
 			ntohl(xid));
+	trace_xprt_lookup_rqst(xprt, xid, -ENOENT);
 	xprt->stat.bad_xids++;
 	return NULL;
 }
@@ -790,7 +826,7 @@ static void xprt_update_rtt(struct rpc_task *task)
 {
 	struct rpc_rqst *req = task->tk_rqstp;
 	struct rpc_rtt *rtt = task->tk_client->cl_rtt;
-	unsigned timer = task->tk_msg.rpc_proc->p_timer;
+	unsigned int timer = task->tk_msg.rpc_proc->p_timer;
 	long m = usecs_to_jiffies(ktime_to_us(req->rq_rtt));
 
 	if (timer) {
@@ -814,6 +850,7 @@ void xprt_complete_rqst(struct rpc_task *task, int copied)
 
 	dprintk("RPC: %5u xid %08x complete (%d bytes received)\n",
 			task->tk_pid, ntohl(req->rq_xid), copied);
+	trace_xprt_complete_rqst(xprt, req->rq_xid, copied);
 
 	xprt->stat.recvs++;
 	req->rq_rtt = ktime_sub(ktime_get(), req->rq_xtime);
@@ -842,7 +879,7 @@ static void xprt_timer(struct rpc_task *task)
 	spin_lock_bh(&xprt->transport_lock);
 	if (!req->rq_reply_bytes_recvd) {
 		if (xprt->ops->timer)
-			xprt->ops->timer(task);
+			xprt->ops->timer(xprt, task);
 	} else
 		task->tk_status = 0;
 	spin_unlock_bh(&xprt->transport_lock);
@@ -858,24 +895,36 @@ static inline int xprt_has_timer(struct rpc_xprt *xprt)
  * @task: RPC task about to send a request
  *
  */
-int xprt_prepare_transmit(struct rpc_task *task)
+bool xprt_prepare_transmit(struct rpc_task *task)
 {
 	struct rpc_rqst	*req = task->tk_rqstp;
 	struct rpc_xprt	*xprt = req->rq_xprt;
-	int err = 0;
+	bool ret = false;
 
 	dprintk("RPC: %5u xprt_prepare_transmit\n", task->tk_pid);
 
 	spin_lock_bh(&xprt->transport_lock);
-	if (req->rq_reply_bytes_recvd && !req->rq_bytes_sent) {
-		err = req->rq_reply_bytes_recvd;
+	if (!req->rq_bytes_sent) {
+		if (req->rq_reply_bytes_recvd) {
+			task->tk_status = req->rq_reply_bytes_recvd;
+			goto out_unlock;
+		}
+		if ((task->tk_flags & RPC_TASK_NO_RETRANS_TIMEOUT)
+		    && xprt_connected(xprt)
+		    && req->rq_connect_cookie == xprt->connect_cookie) {
+			xprt->ops->set_retrans_timeout(task);
+			rpc_sleep_on(&xprt->pending, task, xprt_timer);
+			goto out_unlock;
+		}
+	}
+	if (!xprt->ops->reserve_xprt(xprt, task)) {
+		task->tk_status = -EAGAIN;
 		goto out_unlock;
 	}
-	if (!xprt->ops->reserve_xprt(xprt, task))
-		err = -EAGAIN;
+	ret = true;
 out_unlock:
 	spin_unlock_bh(&xprt->transport_lock);
-	return err;
+	return ret;
 }
 
 void xprt_end_transmit(struct rpc_task *task)
@@ -916,13 +965,14 @@ void xprt_transmit(struct rpc_task *task)
 	} else if (!req->rq_bytes_sent)
 		return;
 
-	req->rq_connect_cookie = xprt->connect_cookie;
 	req->rq_xtime = ktime_get();
 	status = xprt->ops->send_request(task);
+	trace_xprt_transmit(xprt, req->rq_xid, status);
 	if (status != 0) {
 		task->tk_status = status;
 		return;
 	}
+	xprt_inject_disconnect(xprt);
 
 	dprintk("RPC: %5u xmit complete\n", task->tk_pid);
 	task->tk_flags |= RPC_TASK_SENT;
@@ -942,14 +992,44 @@ void xprt_transmit(struct rpc_task *task)
 	/* Don't race with disconnect */
 	if (!xprt_connected(xprt))
 		task->tk_status = -ENOTCONN;
-	else if (!req->rq_reply_bytes_recvd && rpc_reply_expected(task)) {
+	else {
 		/*
 		 * Sleep on the pending queue since
 		 * we're expecting a reply.
 		 */
-		rpc_sleep_on(&xprt->pending, task, xprt_timer);
+		if (!req->rq_reply_bytes_recvd && rpc_reply_expected(task))
+			rpc_sleep_on(&xprt->pending, task, xprt_timer);
+		req->rq_connect_cookie = xprt->connect_cookie;
 	}
 	spin_unlock_bh(&xprt->transport_lock);
+}
+
+static void xprt_add_backlog(struct rpc_xprt *xprt, struct rpc_task *task)
+{
+	set_bit(XPRT_CONGESTED, &xprt->state);
+	rpc_sleep_on(&xprt->backlog, task, NULL);
+}
+
+static void xprt_wake_up_backlog(struct rpc_xprt *xprt)
+{
+	if (rpc_wake_up_next(&xprt->backlog) == NULL)
+		clear_bit(XPRT_CONGESTED, &xprt->state);
+}
+
+static bool xprt_throttle_congested(struct rpc_xprt *xprt, struct rpc_task *task)
+{
+	bool ret = false;
+
+	if (!test_bit(XPRT_CONGESTED, &xprt->state))
+		goto out;
+	spin_lock(&xprt->reserve_lock);
+	if (test_bit(XPRT_CONGESTED, &xprt->state)) {
+		rpc_sleep_on(&xprt->backlog, task, NULL);
+		ret = true;
+	}
+	spin_unlock(&xprt->reserve_lock);
+out:
+	return ret;
 }
 
 static struct rpc_rqst *xprt_dynamic_alloc_slot(struct rpc_xprt *xprt, gfp_t gfp_flags)
@@ -986,7 +1066,7 @@ void xprt_alloc_slot(struct rpc_xprt *xprt, struct rpc_task *task)
 		list_del(&req->rq_list);
 		goto out_init_req;
 	}
-	req = xprt_dynamic_alloc_slot(xprt, GFP_NOWAIT);
+	req = xprt_dynamic_alloc_slot(xprt, GFP_NOWAIT|__GFP_NOWARN);
 	if (!IS_ERR(req))
 		goto out_init_req;
 	switch (PTR_ERR(req)) {
@@ -996,7 +1076,7 @@ void xprt_alloc_slot(struct rpc_xprt *xprt, struct rpc_task *task)
 		task->tk_status = -ENOMEM;
 		break;
 	case -EAGAIN:
-		rpc_sleep_on(&xprt->backlog, task, NULL);
+		xprt_add_backlog(xprt, task);
 		dprintk("RPC:       waiting for request slot\n");
 	default:
 		task->tk_status = -EAGAIN;
@@ -1032,7 +1112,7 @@ static void xprt_free_slot(struct rpc_xprt *xprt, struct rpc_rqst *req)
 		memset(req, 0, sizeof(*req));	/* mark unused */
 		list_add(&req->rq_list, &xprt->free);
 	}
-	rpc_wake_up_next(&xprt->backlog);
+	xprt_wake_up_backlog(xprt);
 	spin_unlock(&xprt->reserve_lock);
 }
 
@@ -1063,11 +1143,9 @@ struct rpc_xprt *xprt_alloc(struct net *net, size_t size,
 	for (i = 0; i < num_prealloc; i++) {
 		req = kzalloc(sizeof(struct rpc_rqst), GFP_KERNEL);
 		if (!req)
-			break;
+			goto out_free;
 		list_add(&req->rq_list, &xprt->free);
 	}
-	if (i < num_prealloc)
-		goto out_free;
 	if (max_alloc > num_prealloc)
 		xprt->max_reqs = max_alloc;
 	else
@@ -1096,12 +1174,13 @@ EXPORT_SYMBOL_GPL(xprt_free);
  * xprt_reserve - allocate an RPC request slot
  * @task: RPC task requesting a slot allocation
  *
- * If no more slots are available, place the task on the transport's
+ * If the transport is marked as being congested, or if no more
+ * slots are available, place the task on the transport's
  * backlog queue.
  */
 void xprt_reserve(struct rpc_task *task)
 {
-	struct rpc_xprt	*xprt = task->tk_xprt;
+	struct rpc_xprt	*xprt;
 
 	task->tk_status = 0;
 	if (task->tk_rqstp != NULL)
@@ -1109,7 +1188,36 @@ void xprt_reserve(struct rpc_task *task)
 
 	task->tk_timeout = 0;
 	task->tk_status = -EAGAIN;
+	rcu_read_lock();
+	xprt = rcu_dereference(task->tk_client->cl_xprt);
+	if (!xprt_throttle_congested(xprt, task))
+		xprt->ops->alloc_slot(xprt, task);
+	rcu_read_unlock();
+}
+
+/**
+ * xprt_retry_reserve - allocate an RPC request slot
+ * @task: RPC task requesting a slot allocation
+ *
+ * If no more slots are available, place the task on the transport's
+ * backlog queue.
+ * Note that the only difference with xprt_reserve is that we now
+ * ignore the value of the XPRT_CONGESTED flag.
+ */
+void xprt_retry_reserve(struct rpc_task *task)
+{
+	struct rpc_xprt	*xprt;
+
+	task->tk_status = 0;
+	if (task->tk_rqstp != NULL)
+		return;
+
+	task->tk_timeout = 0;
+	task->tk_status = -EAGAIN;
+	rcu_read_lock();
+	xprt = rcu_dereference(task->tk_client->cl_xprt);
 	xprt->ops->alloc_slot(xprt, task);
+	rcu_read_unlock();
 }
 
 static inline __be32 xprt_alloc_xid(struct rpc_xprt *xprt)
@@ -1119,7 +1227,7 @@ static inline __be32 xprt_alloc_xid(struct rpc_xprt *xprt)
 
 static inline void xprt_init_xid(struct rpc_xprt *xprt)
 {
-	xprt->xid = net_random();
+	xprt->xid = prandom_u32();
 }
 
 static void xprt_request_init(struct rpc_task *task, struct rpc_xprt *xprt)
@@ -1132,6 +1240,12 @@ static void xprt_request_init(struct rpc_task *task, struct rpc_xprt *xprt)
 	req->rq_xprt    = xprt;
 	req->rq_buffer  = NULL;
 	req->rq_xid     = xprt_alloc_xid(xprt);
+	req->rq_connect_cookie = xprt->connect_cookie - 1;
+	req->rq_bytes_sent = 0;
+	req->rq_snd_buf.len = 0;
+	req->rq_snd_buf.buflen = 0;
+	req->rq_rcv_buf.len = 0;
+	req->rq_rcv_buf.buflen = 0;
 	req->rq_release_snd_buf = NULL;
 	xprt_reset_majortimeo(req);
 	dprintk("RPC: %5u reserved req %p xid %08x\n", task->tk_pid,
@@ -1177,6 +1291,7 @@ void xprt_release(struct rpc_task *task)
 	spin_unlock_bh(&xprt->transport_lock);
 	if (req->rq_buffer)
 		xprt->ops->buf_free(req->rq_buffer);
+	xprt_inject_disconnect(xprt);
 	if (req->rq_cred != NULL)
 		put_rpccred(req->rq_cred);
 	task->tk_rqstp = NULL;
@@ -1236,7 +1351,7 @@ struct rpc_xprt *xprt_create_transport(struct xprt_create *args)
 		}
 	}
 	spin_unlock(&xprt_list_lock);
-	printk(KERN_ERR "RPC: transport (%d) not supported\n", args->ident);
+	dprintk("RPC: transport (%d) not supported\n", args->ident);
 	return ERR_PTR(-EIO);
 
 found:
@@ -1246,6 +1361,8 @@ found:
 				-PTR_ERR(xprt));
 		goto out;
 	}
+	if (args->flags & XPRT_CREATE_NO_IDLE_TIMEOUT)
+		xprt->idle_timeout = 0;
 	INIT_WORK(&xprt->task_cleanup, xprt_autoclose);
 	if (xprt_has_timer(xprt))
 		setup_timer(&xprt->timer, xprt_init_autodisconnect,
@@ -1263,6 +1380,8 @@ found:
 		return ERR_PTR(-ENOMEM);
 	}
 
+	rpc_xprt_debugfs_register(xprt);
+
 	dprintk("RPC:       created transport %p with %u slots\n", xprt,
 			xprt->max_reqs);
 out:
@@ -1277,9 +1396,13 @@ out:
 static void xprt_destroy(struct rpc_xprt *xprt)
 {
 	dprintk("RPC:       destroying transport %p\n", xprt);
-	xprt->shutdown = 1;
+
+	/* Exclude transport connect/disconnect handlers */
+	wait_on_bit_lock(&xprt->state, XPRT_LOCKED, TASK_UNINTERRUPTIBLE);
+
 	del_timer_sync(&xprt->timer);
 
+	rpc_xprt_debugfs_unregister(xprt);
 	rpc_destroy_wait_queue(&xprt->binding);
 	rpc_destroy_wait_queue(&xprt->pending);
 	rpc_destroy_wait_queue(&xprt->sending);
@@ -1301,16 +1424,4 @@ void xprt_put(struct rpc_xprt *xprt)
 {
 	if (atomic_dec_and_test(&xprt->count))
 		xprt_destroy(xprt);
-}
-
-/**
- * xprt_get - return a reference to an RPC transport.
- * @xprt: pointer to the transport
- *
- */
-struct rpc_xprt *xprt_get(struct rpc_xprt *xprt)
-{
-	if (atomic_inc_not_zero(&xprt->count))
-		return xprt;
-	return NULL;
 }

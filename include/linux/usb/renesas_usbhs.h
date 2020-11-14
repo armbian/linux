@@ -62,14 +62,14 @@ struct renesas_usbhs_platform_callback {
 	 * Hardware exit function for platform.
 	 * it is called when driver was removed
 	 */
-	void (*hardware_exit)(struct platform_device *pdev);
+	int (*hardware_exit)(struct platform_device *pdev);
 
 	/*
 	 * option:
 	 *
 	 * for board specific clock control
 	 */
-	void (*power_ctrl)(struct platform_device *pdev,
+	int (*power_ctrl)(struct platform_device *pdev,
 			   void __iomem *base, int enable);
 
 	/*
@@ -77,7 +77,7 @@ struct renesas_usbhs_platform_callback {
 	 *
 	 * Phy reset for platform
 	 */
-	void (*phy_reset)(struct platform_device *pdev);
+	int (*phy_reset)(struct platform_device *pdev);
 
 	/*
 	 * get USB ID function
@@ -132,11 +132,23 @@ struct renesas_usbhs_driver_param {
 	 * option:
 	 *
 	 * dma id for dmaengine
+	 * The data transfer direction on D0FIFO/D1FIFO should be
+	 * fixed for keeping consistency.
+	 * So, the platform id settings will be..
+	 *	.d0_tx_id = xx_TX,
+	 *	.d1_rx_id = xx_RX,
+	 * or
+	 *	.d1_tx_id = xx_TX,
+	 *	.d0_rx_id = xx_RX,
 	 */
 	int d0_tx_id;
 	int d0_rx_id;
 	int d1_tx_id;
 	int d1_rx_id;
+	int d2_tx_id;
+	int d2_rx_id;
+	int d3_tx_id;
+	int d3_rx_id;
 
 	/*
 	 * option:
@@ -145,12 +157,19 @@ struct renesas_usbhs_driver_param {
 	 */
 	int pio_dma_border; /* default is 64byte */
 
+	uintptr_t type;
+	u32 enable_gpio;
+
 	/*
 	 * option:
 	 */
 	u32 has_otg:1; /* for controlling PWEN/EXTLP */
 	u32 has_sudmac:1; /* for SUDMAC */
+	u32 has_usb_dmac:1; /* for USB-DMAC */
+#define USBHS_USB_DMAC_XFER_SIZE	32	/* hardcode the xfer size */
 };
+
+#define USBHS_TYPE_RCAR_GEN2	1
 
 /*
  * option:

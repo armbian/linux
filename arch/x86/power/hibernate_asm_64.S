@@ -78,9 +78,9 @@ ENTRY(restore_image)
 
 	/* code below has been relocated to a safe page */
 ENTRY(core_restore_code)
-loop:
+.Lloop:
 	testq	%rdx, %rdx
-	jz	done
+	jz	.Ldone
 
 	/* get addresses from the pbe and copy the page */
 	movq	pbe_address(%rdx), %rsi
@@ -91,8 +91,8 @@ loop:
 
 	/* progress to the next pbe */
 	movq	pbe_next(%rdx), %rdx
-	jmp	loop
-done:
+	jmp	.Lloop
+.Ldone:
 	/* jump to the restore_registers address from the image header */
 	jmpq	*%rax
 	/*
@@ -138,6 +138,9 @@ ENTRY(restore_registers)
 	movq	pt_regs_r15(%rax), %r15
 	pushq	pt_regs_flags(%rax)
 	popfq
+
+	/* Saved in save_processor_state. */
+	lgdt	saved_context_gdt_desc(%rax)
 
 	xorq	%rax, %rax
 

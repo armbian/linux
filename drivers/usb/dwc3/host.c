@@ -5,59 +5,72 @@
  *
  * Authors: Felipe Balbi <balbi@ti.com>,
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- * 3. The names of the above-listed copyright holders may not be used
- *    to endorse or promote products derived from this software without
- *    specific prior written permission.
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2  of
+ * the License as published by the Free Software Foundation.
  *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2, as published by the Free
- * Software Foundation.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
- * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
- * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
- * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/platform_device.h>
+#include <linux/usb/xhci_pdriver.h>
 
 #include "core.h"
-
-static struct resource generic_resources[] = {
-	{
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.flags = IORESOURCE_MEM,
-	},
-};
 
 int dwc3_host_init(struct dwc3 *dwc)
 {
 	struct platform_device	*xhci;
-	int			ret;
+	struct usb_xhci_pdata	pdata;
+	int			ret, irq;
+	struct resource		*res;
+	struct platform_device	*dwc3_pdev = to_platform_device(dwc->dev);
 
-	xhci = platform_device_alloc("xhci-hcd", -1);
+	irq = platform_get_irq_byname(dwc3_pdev, "host");
+	if (irq == -EPROBE_DEFER)
+		return irq;
+
+	if (irq <= 0) {
+		irq = platform_get_irq_byname(dwc3_pdev, "dwc_usb3");
+		if (irq == -EPROBE_DEFER)
+			return irq;
+
+		if (irq <= 0) {
+			irq = platform_get_irq(dwc3_pdev, 0);
+			if (irq <= 0) {
+				if (irq != -EPROBE_DEFER) {
+					dev_err(dwc->dev,
+						"missing host IRQ\n");
+				}
+				if (!irq)
+					irq = -EINVAL;
+				return irq;
+			} else {
+				res = platform_get_resource(dwc3_pdev,
+							    IORESOURCE_IRQ, 0);
+			}
+		} else {
+			res = platform_get_resource_byname(dwc3_pdev,
+							   IORESOURCE_IRQ,
+							   "dwc_usb3");
+		}
+
+	} else {
+		res = platform_get_resource_byname(dwc3_pdev, IORESOURCE_IRQ,
+						   "host");
+	}
+
+	dwc->xhci_resources[1].start = irq;
+	dwc->xhci_resources[1].end = irq;
+	dwc->xhci_resources[1].flags = res->flags;
+	dwc->xhci_resources[1].name = res->name;
+
+	xhci = platform_device_alloc("xhci-hcd", PLATFORM_DEVID_AUTO);
 	if (!xhci) {
 		dev_err(dwc->dev, "couldn't allocate xHCI device\n");
-		ret = -ENOMEM;
-		goto err0;
+		return -ENOMEM;
 	}
 
 	dma_set_coherent_mask(&xhci->dev, dwc->dev->coherent_dma_mask);
@@ -65,38 +78,57 @@ int dwc3_host_init(struct dwc3 *dwc)
 	xhci->dev.parent	= dwc->dev;
 	xhci->dev.dma_mask	= dwc->dev->dma_mask;
 	xhci->dev.dma_parms	= dwc->dev->dma_parms;
+	xhci->dev.archdata      = dwc->dev->archdata;
 
 	dwc->xhci = xhci;
 
-	/* setup resources */
-	generic_resources[0].start = dwc->irq;
-
-	generic_resources[1].start = dwc->res->start;
-	generic_resources[1].end = dwc->res->start + 0x7fff;
-
-	ret = platform_device_add_resources(xhci, generic_resources,
-			ARRAY_SIZE(generic_resources));
+	ret = platform_device_add_resources(xhci, dwc->xhci_resources,
+						DWC3_XHCI_RESOURCES_NUM);
 	if (ret) {
 		dev_err(dwc->dev, "couldn't add resources to xHCI device\n");
 		goto err1;
 	}
 
-	ret = platform_device_add(xhci);
+	memset(&pdata, 0, sizeof(pdata));
+
+	pdata.usb3_disable_autosuspend = dwc->dis_u3_autosuspend_quirk;
+	pdata.usb3_lpm_capable = dwc->usb3_lpm_capable;
+	pdata.xhci_slow_suspend = dwc->xhci_slow_suspend_quirk;
+	pdata.usb3_warm_reset_on_resume = dwc->usb3_warm_reset_on_resume_quirk;
+
+	ret = platform_device_add_data(xhci, &pdata, sizeof(pdata));
 	if (ret) {
-		dev_err(dwc->dev, "failed to register xHCI device\n");
+		dev_err(dwc->dev, "couldn't add platform data to xHCI device\n");
 		goto err1;
 	}
 
-	return 0;
+	phy_create_lookup(dwc->usb2_generic_phy, "usb2-phy",
+			  dev_name(&xhci->dev));
+	phy_create_lookup(dwc->usb3_generic_phy, "usb3-phy",
+			  dev_name(&xhci->dev));
 
+	ret = platform_device_add(xhci);
+	if (ret) {
+		dev_err(dwc->dev, "failed to register xHCI device\n");
+		goto err2;
+	}
+
+	return 0;
+err2:
+	phy_remove_lookup(dwc->usb2_generic_phy, "usb2-phy",
+			  dev_name(&xhci->dev));
+	phy_remove_lookup(dwc->usb3_generic_phy, "usb3-phy",
+			  dev_name(&xhci->dev));
 err1:
 	platform_device_put(xhci);
-
-err0:
 	return ret;
 }
 
 void dwc3_host_exit(struct dwc3 *dwc)
 {
+	phy_remove_lookup(dwc->usb2_generic_phy, "usb2-phy",
+			  dev_name(&dwc->xhci->dev));
+	phy_remove_lookup(dwc->usb3_generic_phy, "usb3-phy",
+			  dev_name(&dwc->xhci->dev));
 	platform_device_unregister(dwc->xhci);
 }

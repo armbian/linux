@@ -45,15 +45,6 @@ int iommu_detected __read_mostly = 0;
  */
 int iommu_pass_through __read_mostly;
 
-/*
- * Group multi-function PCI devices into a single device-group for the
- * iommu_device_group interface.  This tells the iommu driver to pretend
- * it cannot distinguish between functions of a device, exposing only one
- * group for the device.  Useful for disallowing use of individual PCI
- * functions from userspace drivers.
- */
-int iommu_group_mf __read_mostly;
-
 extern struct iommu_table_entry __iommu_table[], __iommu_table_end[];
 
 /* Dummy device used for NULL arguments (normally ISA). */
@@ -65,18 +56,7 @@ struct device x86_dma_fallback_dev = {
 EXPORT_SYMBOL(x86_dma_fallback_dev);
 
 /* Number of entries preallocated for DMA-API debugging */
-#define PREALLOC_DMA_DEBUG_ENTRIES       32768
-
-int dma_set_mask(struct device *dev, u64 mask)
-{
-	if (!dev->dma_mask || !dma_supported(dev, mask))
-		return -EIO;
-
-	*dev->dma_mask = mask;
-
-	return 0;
-}
-EXPORT_SYMBOL(dma_set_mask);
+#define PREALLOC_DMA_DEBUG_ENTRIES       65536
 
 void __init pci_iommu_alloc(void)
 {
@@ -106,11 +86,18 @@ void *dma_generic_alloc_coherent(struct device *dev, size_t size,
 
 	dma_mask = dma_alloc_coherent_mask(dev, flag);
 
-	flag |= __GFP_ZERO;
+	flag &= ~__GFP_ZERO;
 again:
 	page = NULL;
-	if (!(flag & GFP_ATOMIC))
+	/* CMA can be used only in the context which permits sleeping */
+	if (gfpflags_allow_blocking(flag)) {
 		page = dma_alloc_from_contiguous(dev, count, get_order(size));
+		if (page && page_to_phys(page) + size > dma_mask) {
+			dma_release_from_contiguous(dev, page, count);
+			page = NULL;
+		}
+	}
+	/* fallback */
 	if (!page)
 		page = alloc_pages_node(dev_to_node(dev), flag, get_order(size));
 	if (!page)
@@ -127,7 +114,7 @@ again:
 
 		return NULL;
 	}
-
+	memset(page_address(page), 0, size);
 	*dma_addr = addr;
 	return page_address(page);
 }
@@ -141,6 +128,21 @@ void dma_generic_free_coherent(struct device *dev, size_t size, void *vaddr,
 	if (!dma_release_from_contiguous(dev, page, count))
 		free_pages((unsigned long)vaddr, get_order(size));
 }
+
+bool arch_dma_alloc_attrs(struct device **dev, gfp_t *gfp)
+{
+	if (!*dev)
+		*dev = &x86_dma_fallback_dev;
+
+	*gfp &= ~(__GFP_DMA | __GFP_HIGHMEM | __GFP_DMA32);
+	*gfp = dma_alloc_coherent_gfp_flags(*dev, *gfp);
+
+	if (!is_device_dma_capable(*dev))
+		return false;
+	return true;
+
+}
+EXPORT_SYMBOL(arch_dma_alloc_attrs);
 
 /*
  * See <Documentation/x86/x86_64/boot-options.txt> for the iommu kernel
@@ -194,8 +196,6 @@ static __init int iommu_setup(char *p)
 #endif
 		if (!strncmp(p, "pt", 2))
 			iommu_pass_through = 1;
-		if (!strncmp(p, "group_mf", 8))
-			iommu_group_mf = 1;
 
 		gart_parse_options(p);
 
@@ -276,7 +276,7 @@ rootfs_initcall(pci_iommu_init);
 #ifdef CONFIG_PCI
 /* Many VIA bridges seem to corrupt data for DAC. Disable it here */
 
-static __devinit void via_no_dac(struct pci_dev *dev)
+static void via_no_dac(struct pci_dev *dev)
 {
 	if (forbid_dac == 0) {
 		dev_info(&dev->dev, "disabling DAC on VIA PCI bridge\n");

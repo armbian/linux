@@ -1,7 +1,5 @@
 #include "dm.h"
 
-#include <linux/export.h>
-
 /*
  * The kobject release method must not be placed in the module itself,
  * otherwise we are subject to module unload races.

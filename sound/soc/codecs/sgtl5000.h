@@ -12,7 +12,7 @@
 #define _SGTL5000_H
 
 /*
- * Register values.
+ * Registers addresses
  */
 #define SGTL5000_CHIP_ID			0x0000
 #define SGTL5000_CHIP_DIG_POWER			0x0002
@@ -275,7 +275,7 @@
 #define SGTL5000_BIAS_CTRL_MASK			0x000e
 #define SGTL5000_BIAS_CTRL_SHIFT		1
 #define SGTL5000_BIAS_CTRL_WIDTH		3
-#define SGTL5000_SMALL_POP			0
+#define SGTL5000_SMALL_POP			1
 
 /*
  * SGTL5000_CHIP_MIC_CTRL

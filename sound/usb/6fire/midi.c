@@ -41,8 +41,9 @@ static void usb6fire_midi_out_handler(struct urb *urb)
 
 			ret = usb_submit_urb(urb, GFP_ATOMIC);
 			if (ret < 0)
-				snd_printk(KERN_ERR PREFIX "midi out urb "
-						"submit failed: %d\n", ret);
+				dev_err(&urb->dev->dev,
+					"midi out urb submit failed: %d\n",
+					ret);
 		} else /* no more data to transmit */
 			rt->out = NULL;
 	}
@@ -94,8 +95,9 @@ static void usb6fire_midi_out_trigger(
 
 			ret = usb_submit_urb(urb, GFP_ATOMIC);
 			if (ret < 0)
-				snd_printk(KERN_ERR PREFIX "midi out urb "
-						"submit failed: %d\n", ret);
+				dev_err(&urb->dev->dev,
+					"midi out urb submit failed: %d\n",
+					ret);
 			else
 				rt->out = alsa_sub;
 		}
@@ -150,7 +152,7 @@ static struct snd_rawmidi_ops in_ops = {
 	.trigger = usb6fire_midi_in_trigger
 };
 
-int __devinit usb6fire_midi_init(struct sfire_chip *chip)
+int usb6fire_midi_init(struct sfire_chip *chip)
 {
 	int ret;
 	struct midi_runtime *rt = kzalloc(sizeof(struct midi_runtime),
@@ -181,7 +183,7 @@ int __devinit usb6fire_midi_init(struct sfire_chip *chip)
 	if (ret < 0) {
 		kfree(rt->out_buffer);
 		kfree(rt);
-		snd_printk(KERN_ERR PREFIX "unable to create midi.\n");
+		dev_err(&chip->dev->dev, "unable to create midi.\n");
 		return ret;
 	}
 	rt->instance->private_data = rt;

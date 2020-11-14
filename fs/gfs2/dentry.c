@@ -25,7 +25,7 @@
 /**
  * gfs2_drevalidate - Check directory lookup consistency
  * @dentry: the mapping to check
- * @nd:
+ * @flags: lookup flags
  *
  * Check to make sure the lookup necessary to arrive at this inode from its
  * parent is still good.
@@ -33,7 +33,7 @@
  * Returns: 1 if the dentry is ok, 0 if it isn't
  */
 
-static int gfs2_drevalidate(struct dentry *dentry, struct nameidata *nd)
+static int gfs2_drevalidate(struct dentry *dentry, unsigned int flags)
 {
 	struct dentry *parent;
 	struct gfs2_sbd *sdp;
@@ -44,13 +44,13 @@ static int gfs2_drevalidate(struct dentry *dentry, struct nameidata *nd)
 	int error;
 	int had_lock = 0;
 
-	if (nd && nd->flags & LOOKUP_RCU)
+	if (flags & LOOKUP_RCU)
 		return -ECHILD;
 
 	parent = dget_parent(dentry);
-	sdp = GFS2_SB(parent->d_inode);
-	dip = GFS2_I(parent->d_inode);
-	inode = dentry->d_inode;
+	sdp = GFS2_SB(d_inode(parent));
+	dip = GFS2_I(d_inode(parent));
+	inode = d_inode(dentry);
 
 	if (inode) {
 		if (is_bad_inode(inode))
@@ -68,7 +68,7 @@ static int gfs2_drevalidate(struct dentry *dentry, struct nameidata *nd)
 			goto fail;
 	} 
 
-	error = gfs2_dir_check(parent->d_inode, &dentry->d_name, ip);
+	error = gfs2_dir_check(d_inode(parent), &dentry->d_name, ip);
 	switch (error) {
 	case 0:
 		if (!inode)
@@ -93,12 +93,6 @@ invalid_gunlock:
 	if (!had_lock)
 		gfs2_glock_dq_uninit(&d_gh);
 invalid:
-	if (inode && S_ISDIR(inode->i_mode)) {
-		if (have_submounts(dentry))
-			goto valid;
-		shrink_dcache_parent(dentry);
-	}
-	d_drop(dentry);
 	dput(parent);
 	return 0;
 
@@ -109,8 +103,7 @@ fail:
 	return 0;
 }
 
-static int gfs2_dhash(const struct dentry *dentry, const struct inode *inode,
-		struct qstr *str)
+static int gfs2_dhash(const struct dentry *dentry, struct qstr *str)
 {
 	str->hash = gfs2_disk_hash(str->name, str->len);
 	return 0;
@@ -120,10 +113,10 @@ static int gfs2_dentry_delete(const struct dentry *dentry)
 {
 	struct gfs2_inode *ginode;
 
-	if (!dentry->d_inode)
+	if (d_really_is_negative(dentry))
 		return 0;
 
-	ginode = GFS2_I(dentry->d_inode);
+	ginode = GFS2_I(d_inode(dentry));
 	if (!ginode->i_iopen_gh.gh_gl)
 		return 0;
 

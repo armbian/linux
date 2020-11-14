@@ -34,7 +34,6 @@
 #include <linux/ipc.h>
 #include <linux/utsname.h>
 #include <linux/file.h>
-#include <linux/init.h>
 #include <linux/personality.h>
 
 #include <asm/uaccess.h>
@@ -107,11 +106,11 @@ long ppc64_personality(unsigned long personality)
 	long ret;
 
 	if (personality(current->personality) == PER_LINUX32
-	    && personality == PER_LINUX)
-		personality = PER_LINUX32;
+	    && personality(personality) == PER_LINUX)
+		personality = (personality & ~PER_MASK) | PER_LINUX32;
 	ret = sys_personality(personality);
-	if (ret == PER_LINUX32)
-		ret = PER_LINUX;
+	if (personality(ret) == PER_LINUX32)
+		ret = (ret & ~PER_MASK) | PER_LINUX;
 	return ret;
 }
 #endif
@@ -123,16 +122,19 @@ long ppc_fadvise64_64(int fd, int advice, u32 offset_high, u32 offset_low,
 			     (u64)len_high << 32 | len_low, advice);
 }
 
-void do_show_syscall(unsigned long r3, unsigned long r4, unsigned long r5,
-		     unsigned long r6, unsigned long r7, unsigned long r8,
-		     struct pt_regs *regs)
+long sys_switch_endian(void)
 {
-	printk("syscall %ld(%lx, %lx, %lx, %lx, %lx, %lx) regs=%p current=%p"
-	       " cpu=%d\n", regs->gpr[0], r3, r4, r5, r6, r7, r8, regs,
-	       current, smp_processor_id());
-}
+	struct thread_info *ti;
 
-void do_show_syscall_exit(unsigned long r3)
-{
-	printk(" -> %lx, current=%p cpu=%d\n", r3, current, smp_processor_id());
+	current->thread.regs->msr ^= MSR_LE;
+
+	/*
+	 * Set TIF_RESTOREALL so that r3 isn't clobbered on return to
+	 * userspace. That also has the effect of restoring the non-volatile
+	 * GPRs, so we saved them on the way in here.
+	 */
+	ti = current_thread_info();
+	ti->flags |= _TIF_RESTOREALL;
+
+	return 0;
 }

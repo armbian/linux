@@ -25,6 +25,7 @@
 #include <linux/console.h>
 #include <linux/consolemap.h>
 #include <linux/signal.h>
+#include <linux/suspend.h>
 #include <linux/timex.h>
 
 #include <asm/io.h>
@@ -282,6 +283,48 @@ do_unimap_ioctl(int cmd, struct unimapdesc __user *user_ud, int perm, struct vc_
 	return 0;
 }
 
+/* deallocate a single console, if possible (leave 0) */
+static int vt_disallocate(unsigned int vc_num)
+{
+	struct vc_data *vc = NULL;
+	int ret = 0;
+
+	console_lock();
+	if (VT_BUSY(vc_num))
+		ret = -EBUSY;
+	else if (vc_num)
+		vc = vc_deallocate(vc_num);
+	console_unlock();
+
+	if (vc && vc_num >= MIN_NR_CONSOLES) {
+		tty_port_destroy(&vc->port);
+		kfree(vc);
+	}
+
+	return ret;
+}
+
+/* deallocate all unused consoles, but leave 0 */
+static void vt_disallocate_all(void)
+{
+	struct vc_data *vc[MAX_NR_CONSOLES];
+	int i;
+
+	console_lock();
+	for (i = 1; i < MAX_NR_CONSOLES; i++)
+		if (!VT_BUSY(i))
+			vc[i] = vc_deallocate(i);
+		else
+			vc[i] = NULL;
+	console_unlock();
+
+	for (i = 1; i < MAX_NR_CONSOLES; i++) {
+		if (vc[i] && i >= MIN_NR_CONSOLES) {
+			tty_port_destroy(&vc[i]->port);
+			kfree(vc[i]);
+		}
+	}
+}
 
 
 /*
@@ -345,7 +388,7 @@ int vt_ioctl(struct tty_struct *tty,
 		 * Generate the tone for the appropriate number of ticks.
 		 * If the time is zero, turn off sound ourselves.
 		 */
-		ticks = HZ * ((arg >> 16) & 0xffff) / 1000;
+		ticks = msecs_to_jiffies((arg >> 16) & 0xffff);
 		count = ticks ? (arg & 0xffff) : 0;
 		if (count)
 			count = PIT_TICK_RATE / count;
@@ -768,24 +811,10 @@ int vt_ioctl(struct tty_struct *tty,
 			ret = -ENXIO;
 			break;
 		}
-		if (arg == 0) {
-		    /* deallocate all unused consoles, but leave 0 */
-			console_lock();
-			for (i=1; i<MAX_NR_CONSOLES; i++)
-				if (! VT_BUSY(i))
-					vc_deallocate(i);
-			console_unlock();
-		} else {
-			/* deallocate a single console, if possible */
-			arg--;
-			if (VT_BUSY(arg))
-				ret = -EBUSY;
-			else if (arg) {			      /* leave 0 */
-				console_lock();
-				vc_deallocate(arg);
-				console_unlock();
-			}
-		}
+		if (arg == 0)
+			vt_disallocate_all();
+		else
+			ret = vt_disallocate(--arg);
 		break;
 
 	case VT_RESIZE:
@@ -931,7 +960,9 @@ int vt_ioctl(struct tty_struct *tty,
 		ret = con_font_op(vc_cons[fg_console].d, &op);
 		if (ret)
 			break;
+		console_lock();
 		con_set_default_unimap(vc_cons[fg_console].d);
+		console_unlock();
 		break;
 		}
 #endif
@@ -955,33 +986,23 @@ int vt_ioctl(struct tty_struct *tty,
 	case PIO_SCRNMAP:
 		if (!perm)
 			ret = -EPERM;
-		else {
-			tty_lock();
+		else
 			ret = con_set_trans_old(up);
-			tty_unlock();
-		}
 		break;
 
 	case GIO_SCRNMAP:
-		tty_lock();
 		ret = con_get_trans_old(up);
-		tty_unlock();
 		break;
 
 	case PIO_UNISCRNMAP:
 		if (!perm)
 			ret = -EPERM;
-		else {
-			tty_lock();
+		else
 			ret = con_set_trans_new(up);
-			tty_unlock();
-		}
 		break;
 
 	case GIO_UNISCRNMAP:
-		tty_lock();
 		ret = con_get_trans_new(up);
-		tty_unlock();
 		break;
 
 	case PIO_UNIMAPCLR:
@@ -991,19 +1012,14 @@ int vt_ioctl(struct tty_struct *tty,
 		ret = copy_from_user(&ui, up, sizeof(struct unimapinit));
 		if (ret)
 			ret = -EFAULT;
-		else {
-			tty_lock();
+		else
 			con_clear_unimap(vc, &ui);
-			tty_unlock();
-		}
 		break;
 	      }
 
 	case PIO_UNIMAP:
 	case GIO_UNIMAP:
-		tty_lock();
 		ret = do_unimap_ioctl(cmd, up, perm, vc);
-		tty_unlock();
 		break;
 
 	case VT_LOCKSWITCH:
@@ -1217,9 +1233,7 @@ long vt_compat_ioctl(struct tty_struct *tty,
 
 	case PIO_UNIMAP:
 	case GIO_UNIMAP:
-		tty_lock();
 		ret = compat_unimap_ioctl(cmd, up, perm, vc);
-		tty_unlock();
 		break;
 
 	/*

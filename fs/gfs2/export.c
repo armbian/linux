@@ -28,20 +28,19 @@
 #define GFS2_LARGE_FH_SIZE 8
 #define GFS2_OLD_FH_SIZE 10
 
-static int gfs2_encode_fh(struct dentry *dentry, __u32 *p, int *len,
-			  int connectable)
+static int gfs2_encode_fh(struct inode *inode, __u32 *p, int *len,
+			  struct inode *parent)
 {
 	__be32 *fh = (__force __be32 *)p;
-	struct inode *inode = dentry->d_inode;
 	struct super_block *sb = inode->i_sb;
 	struct gfs2_inode *ip = GFS2_I(inode);
 
-	if (connectable && (*len < GFS2_LARGE_FH_SIZE)) {
+	if (parent && (*len < GFS2_LARGE_FH_SIZE)) {
 		*len = GFS2_LARGE_FH_SIZE;
-		return 255;
+		return FILEID_INVALID;
 	} else if (*len < GFS2_SMALL_FH_SIZE) {
 		*len = GFS2_SMALL_FH_SIZE;
-		return 255;
+		return FILEID_INVALID;
 	}
 
 	fh[0] = cpu_to_be32(ip->i_no_formal_ino >> 32);
@@ -50,14 +49,10 @@ static int gfs2_encode_fh(struct dentry *dentry, __u32 *p, int *len,
 	fh[3] = cpu_to_be32(ip->i_no_addr & 0xFFFFFFFF);
 	*len = GFS2_SMALL_FH_SIZE;
 
-	if (!connectable || inode == sb->s_root->d_inode)
+	if (!parent || inode == d_inode(sb->s_root))
 		return *len;
 
-	spin_lock(&dentry->d_lock);
-	inode = dentry->d_parent->d_inode;
-	ip = GFS2_I(inode);
-	igrab(inode);
-	spin_unlock(&dentry->d_lock);
+	ip = GFS2_I(parent);
 
 	fh[4] = cpu_to_be32(ip->i_no_formal_ino >> 32);
 	fh[5] = cpu_to_be32(ip->i_no_formal_ino & 0xFFFFFFFF);
@@ -65,20 +60,21 @@ static int gfs2_encode_fh(struct dentry *dentry, __u32 *p, int *len,
 	fh[7] = cpu_to_be32(ip->i_no_addr & 0xFFFFFFFF);
 	*len = GFS2_LARGE_FH_SIZE;
 
-	iput(inode);
-
 	return *len;
 }
 
 struct get_name_filldir {
+	struct dir_context ctx;
 	struct gfs2_inum_host inum;
 	char *name;
 };
 
-static int get_name_filldir(void *opaque, const char *name, int length,
-			    loff_t offset, u64 inum, unsigned int type)
+static int get_name_filldir(struct dir_context *ctx, const char *name,
+			    int length, loff_t offset, u64 inum,
+			    unsigned int type)
 {
-	struct get_name_filldir *gnfd = opaque;
+	struct get_name_filldir *gnfd =
+		container_of(ctx, struct get_name_filldir, ctx);
 
 	if (inum != gnfd->inum.no_addr)
 		return 0;
@@ -92,12 +88,14 @@ static int get_name_filldir(void *opaque, const char *name, int length,
 static int gfs2_get_name(struct dentry *parent, char *name,
 			 struct dentry *child)
 {
-	struct inode *dir = parent->d_inode;
-	struct inode *inode = child->d_inode;
+	struct inode *dir = d_inode(parent);
+	struct inode *inode = d_inode(child);
 	struct gfs2_inode *dip, *ip;
-	struct get_name_filldir gnfd;
+	struct get_name_filldir gnfd = {
+		.ctx.actor = get_name_filldir,
+		.name = name
+	};
 	struct gfs2_holder gh;
-	u64 offset = 0;
 	int error;
 	struct file_ra_state f_ra = { .start = 0 };
 
@@ -113,13 +111,12 @@ static int gfs2_get_name(struct dentry *parent, char *name,
 	*name = 0;
 	gnfd.inum.no_addr = ip->i_no_addr;
 	gnfd.inum.no_formal_ino = ip->i_no_formal_ino;
-	gnfd.name = name;
 
 	error = gfs2_glock_nq_init(dip->i_gl, LM_ST_SHARED, 0, &gh);
 	if (error)
 		return error;
 
-	error = gfs2_dir_read(dir, &offset, &gnfd, get_name_filldir, &f_ra);
+	error = gfs2_dir_read(dir, &gnfd.ctx, &f_ra);
 
 	gfs2_glock_dq_uninit(&gh);
 
@@ -131,7 +128,7 @@ static int gfs2_get_name(struct dentry *parent, char *name,
 
 static struct dentry *gfs2_get_parent(struct dentry *child)
 {
-	return d_obtain_alias(gfs2_lookupi(child->d_inode, &gfs2_qdotdot, 1));
+	return d_obtain_alias(gfs2_lookupi(d_inode(child), &gfs2_qdotdot, 1));
 }
 
 static struct dentry *gfs2_get_dentry(struct super_block *sb,

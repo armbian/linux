@@ -103,61 +103,55 @@ axon_ram_irq_handler(int irq, void *dev)
  * axon_ram_make_request - make_request() method for block device
  * @queue, @bio: see blk_queue_make_request()
  */
-static void
+static blk_qc_t
 axon_ram_make_request(struct request_queue *queue, struct bio *bio)
 {
 	struct axon_ram_bank *bank = bio->bi_bdev->bd_disk->private_data;
 	unsigned long phys_mem, phys_end;
 	void *user_mem;
-	struct bio_vec *vec;
+	struct bio_vec vec;
 	unsigned int transfered;
-	unsigned short idx;
+	struct bvec_iter iter;
 
-	phys_mem = bank->io_addr + (bio->bi_sector << AXON_RAM_SECTOR_SHIFT);
+	phys_mem = bank->io_addr + (bio->bi_iter.bi_sector <<
+				    AXON_RAM_SECTOR_SHIFT);
 	phys_end = bank->io_addr + bank->size;
 	transfered = 0;
-	bio_for_each_segment(vec, bio, idx) {
-		if (unlikely(phys_mem + vec->bv_len > phys_end)) {
+	bio_for_each_segment(vec, bio, iter) {
+		if (unlikely(phys_mem + vec.bv_len > phys_end)) {
 			bio_io_error(bio);
-			return;
+			return BLK_QC_T_NONE;
 		}
 
-		user_mem = page_address(vec->bv_page) + vec->bv_offset;
+		user_mem = page_address(vec.bv_page) + vec.bv_offset;
 		if (bio_data_dir(bio) == READ)
-			memcpy(user_mem, (void *) phys_mem, vec->bv_len);
+			memcpy(user_mem, (void *) phys_mem, vec.bv_len);
 		else
-			memcpy((void *) phys_mem, user_mem, vec->bv_len);
+			memcpy((void *) phys_mem, user_mem, vec.bv_len);
 
-		phys_mem += vec->bv_len;
-		transfered += vec->bv_len;
+		phys_mem += vec.bv_len;
+		transfered += vec.bv_len;
 	}
-	bio_endio(bio, 0);
+	bio_endio(bio);
+	return BLK_QC_T_NONE;
 }
 
 /**
  * axon_ram_direct_access - direct_access() method for block device
  * @device, @sector, @data: see block_device_operations method
  */
-static int
+static long
 axon_ram_direct_access(struct block_device *device, sector_t sector,
-		       void **kaddr, unsigned long *pfn)
+		       void __pmem **kaddr, unsigned long *pfn)
 {
 	struct axon_ram_bank *bank = device->bd_disk->private_data;
-	loff_t offset;
+	loff_t offset = (loff_t)sector << AXON_RAM_SECTOR_SHIFT;
+	void *addr = (void *)(bank->ph_addr + offset);
 
-	offset = sector;
-	if (device->bd_part != NULL)
-		offset += device->bd_part->start_sect;
-	offset <<= AXON_RAM_SECTOR_SHIFT;
-	if (offset >= bank->size) {
-		dev_err(&bank->device->dev, "Access outside of address space\n");
-		return -ERANGE;
-	}
+	*kaddr = (void __pmem *)addr;
+	*pfn = virt_to_phys(addr) >> PAGE_SHIFT;
 
-	*kaddr = (void *)(bank->ph_addr + offset);
-	*pfn = virt_to_phys(*kaddr) >> PAGE_SHIFT;
-
-	return 0;
+	return bank->size - offset;
 }
 
 static const struct block_device_operations axon_ram_devops = {
@@ -282,7 +276,9 @@ failed:
 			if (bank->disk->major > 0)
 				unregister_blkdev(bank->disk->major,
 						bank->disk->disk_name);
-			del_gendisk(bank->disk);
+			if (bank->disk->flags & GENHD_FL_UP)
+				del_gendisk(bank->disk);
+			put_disk(bank->disk);
 		}
 		device->dev.platform_data = NULL;
 		if (bank->io_addr != 0)
@@ -307,13 +303,14 @@ axon_ram_remove(struct platform_device *device)
 	device_remove_file(&device->dev, &dev_attr_ecc);
 	free_irq(bank->irq_id, device);
 	del_gendisk(bank->disk);
+	put_disk(bank->disk);
 	iounmap((void __iomem *) bank->io_addr);
 	kfree(bank);
 
 	return 0;
 }
 
-static struct of_device_id axon_ram_device_id[] = {
+static const struct of_device_id axon_ram_device_id[] = {
 	{
 		.type	= "dma-memory"
 	},
@@ -325,7 +322,6 @@ static struct platform_driver axon_ram_driver = {
 	.remove		= axon_ram_remove,
 	.driver = {
 		.name = AXON_RAM_MODULE_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = axon_ram_device_id,
 	},
 };

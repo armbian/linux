@@ -67,6 +67,93 @@ EXPORT_SYMBOL(pci_bus_write_config_byte);
 EXPORT_SYMBOL(pci_bus_write_config_word);
 EXPORT_SYMBOL(pci_bus_write_config_dword);
 
+int pci_generic_config_read(struct pci_bus *bus, unsigned int devfn,
+			    int where, int size, u32 *val)
+{
+	void __iomem *addr;
+
+	addr = bus->ops->map_bus(bus, devfn, where);
+	if (!addr) {
+		*val = ~0;
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
+
+	if (size == 1)
+		*val = readb(addr);
+	else if (size == 2)
+		*val = readw(addr);
+	else
+		*val = readl(addr);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+EXPORT_SYMBOL_GPL(pci_generic_config_read);
+
+int pci_generic_config_write(struct pci_bus *bus, unsigned int devfn,
+			     int where, int size, u32 val)
+{
+	void __iomem *addr;
+
+	addr = bus->ops->map_bus(bus, devfn, where);
+	if (!addr)
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
+	if (size == 1)
+		writeb(val, addr);
+	else if (size == 2)
+		writew(val, addr);
+	else
+		writel(val, addr);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+EXPORT_SYMBOL_GPL(pci_generic_config_write);
+
+int pci_generic_config_read32(struct pci_bus *bus, unsigned int devfn,
+			      int where, int size, u32 *val)
+{
+	void __iomem *addr;
+
+	addr = bus->ops->map_bus(bus, devfn, where & ~0x3);
+	if (!addr) {
+		*val = ~0;
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
+
+	*val = readl(addr);
+
+	if (size <= 2)
+		*val = (*val >> (8 * (where & 3))) & ((1 << (size * 8)) - 1);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+EXPORT_SYMBOL_GPL(pci_generic_config_read32);
+
+int pci_generic_config_write32(struct pci_bus *bus, unsigned int devfn,
+			       int where, int size, u32 val)
+{
+	void __iomem *addr;
+	u32 mask, tmp;
+
+	addr = bus->ops->map_bus(bus, devfn, where & ~0x3);
+	if (!addr)
+		return PCIBIOS_DEVICE_NOT_FOUND;
+
+	if (size == 4) {
+		writel(val, addr);
+		return PCIBIOS_SUCCESSFUL;
+	} else {
+		mask = ~(((1 << (size * 8)) - 1) << ((where & 0x3) * 8));
+	}
+
+	tmp = readl(addr) & mask;
+	tmp |= val << ((where & 0x3) * 8);
+	writel(tmp, addr);
+
+	return PCIBIOS_SUCCESSFUL;
+}
+EXPORT_SYMBOL_GPL(pci_generic_config_write32);
+
 /**
  * pci_bus_set_ops - Set raw operations of pci bus
  * @bus:	pci bus struct
@@ -148,7 +235,7 @@ static noinline void pci_wait_cfg(struct pci_dev *dev)
 int pci_user_read_config_##size						\
 	(struct pci_dev *dev, int pos, type *val)			\
 {									\
-	int ret = 0;							\
+	int ret = PCIBIOS_SUCCESSFUL;					\
 	u32 data = -1;							\
 	if (PCI_##size##_BAD)						\
 		return -EINVAL;						\
@@ -159,17 +246,16 @@ int pci_user_read_config_##size						\
 					pos, sizeof(type), &data);	\
 	raw_spin_unlock_irq(&pci_lock);				\
 	*val = (type)data;						\
-	if (ret > 0)							\
-		ret = -EINVAL;						\
-	return ret;							\
-}
+	return pcibios_err_to_errno(ret);				\
+}									\
+EXPORT_SYMBOL_GPL(pci_user_read_config_##size);
 
 /* Returns 0 on success, negative values indicate error. */
 #define PCI_USER_WRITE_CONFIG(size,type)				\
 int pci_user_write_config_##size					\
 	(struct pci_dev *dev, int pos, type val)			\
 {									\
-	int ret = -EIO;							\
+	int ret = PCIBIOS_SUCCESSFUL;					\
 	if (PCI_##size##_BAD)						\
 		return -EINVAL;						\
 	raw_spin_lock_irq(&pci_lock);				\
@@ -178,10 +264,9 @@ int pci_user_write_config_##size					\
 	ret = dev->bus->ops->write(dev->bus, dev->devfn,		\
 					pos, sizeof(type), val);	\
 	raw_spin_unlock_irq(&pci_lock);				\
-	if (ret > 0)							\
-		ret = -EINVAL;						\
-	return ret;							\
-}
+	return pcibios_err_to_errno(ret);				\
+}									\
+EXPORT_SYMBOL_GPL(pci_user_write_config_##size);
 
 PCI_USER_READ_CONFIG(byte, u8)
 PCI_USER_READ_CONFIG(word, u16)
@@ -233,10 +318,7 @@ static int pci_vpd_pci22_wait(struct pci_dev *dev)
 		}
 
 		if (time_after(jiffies, timeout)) {
-			dev_printk(KERN_DEBUG, &dev->dev,
-				   "vpd r/w failed.  This is likely a firmware "
-				   "bug on this device.  Contact the card "
-				   "vendor for a firmware update.");
+			dev_printk(KERN_DEBUG, &dev->dev, "vpd r/w failed.  This is likely a firmware bug on this device.  Contact the card vendor for a firmware update\n");
 			return -ETIMEDOUT;
 		}
 		if (fatal_signal_pending(current))
@@ -360,7 +442,8 @@ static const struct pci_vpd_ops pci_vpd_pci22_ops = {
 static ssize_t pci_vpd_f0_read(struct pci_dev *dev, loff_t pos, size_t count,
 			       void *arg)
 {
-	struct pci_dev *tdev = pci_get_slot(dev->bus, PCI_SLOT(dev->devfn));
+	struct pci_dev *tdev = pci_get_slot(dev->bus,
+					    PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
 	ssize_t ret;
 
 	if (!tdev)
@@ -374,7 +457,8 @@ static ssize_t pci_vpd_f0_read(struct pci_dev *dev, loff_t pos, size_t count,
 static ssize_t pci_vpd_f0_write(struct pci_dev *dev, loff_t pos, size_t count,
 				const void *arg)
 {
-	struct pci_dev *tdev = pci_get_slot(dev->bus, PCI_SLOT(dev->devfn));
+	struct pci_dev *tdev = pci_get_slot(dev->bus,
+					    PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
 	ssize_t ret;
 
 	if (!tdev)
@@ -391,22 +475,6 @@ static const struct pci_vpd_ops pci_vpd_f0_ops = {
 	.release = pci_vpd_pci22_release,
 };
 
-static int pci_vpd_f0_dev_check(struct pci_dev *dev)
-{
-	struct pci_dev *tdev = pci_get_slot(dev->bus, PCI_SLOT(dev->devfn));
-	int ret = 0;
-
-	if (!tdev)
-		return -ENODEV;
-	if (!tdev->vpd || !tdev->multifunction ||
-	    dev->class != tdev->class || dev->vendor != tdev->vendor ||
-	    dev->device != tdev->device)
-		ret = -ENODEV;
-
-	pci_dev_put(tdev);
-	return ret;
-}
-
 int pci_vpd_pci22_init(struct pci_dev *dev)
 {
 	struct pci_vpd_pci22 *vpd;
@@ -415,12 +483,7 @@ int pci_vpd_pci22_init(struct pci_dev *dev)
 	cap = pci_find_capability(dev, PCI_CAP_ID_VPD);
 	if (!cap)
 		return -ENODEV;
-	if (dev->dev_flags & PCI_DEV_FLAGS_VPD_REF_F0) {
-		int ret = pci_vpd_f0_dev_check(dev);
 
-		if (ret)
-			return ret;
-	}
 	vpd = kzalloc(sizeof(*vpd), GFP_ATOMIC);
 	if (!vpd)
 		return -ENOMEM;
@@ -436,30 +499,6 @@ int pci_vpd_pci22_init(struct pci_dev *dev)
 	dev->vpd = &vpd->base;
 	return 0;
 }
-
-/**
- * pci_vpd_truncate - Set available Vital Product Data size
- * @dev:	pci device struct
- * @size:	available memory in bytes
- *
- * Adjust size of available VPD area.
- */
-int pci_vpd_truncate(struct pci_dev *dev, size_t size)
-{
-	if (!dev->vpd)
-		return -EINVAL;
-
-	/* limited by the access method */
-	if (size > dev->vpd->len)
-		return -EINVAL;
-
-	dev->vpd->len = size;
-	if (dev->vpd->attr)
-		dev->vpd->attr->size = size;
-
-	return 0;
-}
-EXPORT_SYMBOL(pci_vpd_truncate);
 
 /**
  * pci_cfg_access_lock - Lock PCI config reads/writes
@@ -526,3 +565,204 @@ void pci_cfg_access_unlock(struct pci_dev *dev)
 	raw_spin_unlock_irqrestore(&pci_lock, flags);
 }
 EXPORT_SYMBOL_GPL(pci_cfg_access_unlock);
+
+static inline int pcie_cap_version(const struct pci_dev *dev)
+{
+	return pcie_caps_reg(dev) & PCI_EXP_FLAGS_VERS;
+}
+
+static bool pcie_downstream_port(const struct pci_dev *dev)
+{
+	int type = pci_pcie_type(dev);
+
+	return type == PCI_EXP_TYPE_ROOT_PORT ||
+	       type == PCI_EXP_TYPE_DOWNSTREAM;
+}
+
+bool pcie_cap_has_lnkctl(const struct pci_dev *dev)
+{
+	int type = pci_pcie_type(dev);
+
+	return type == PCI_EXP_TYPE_ENDPOINT ||
+	       type == PCI_EXP_TYPE_LEG_END ||
+	       type == PCI_EXP_TYPE_ROOT_PORT ||
+	       type == PCI_EXP_TYPE_UPSTREAM ||
+	       type == PCI_EXP_TYPE_DOWNSTREAM ||
+	       type == PCI_EXP_TYPE_PCI_BRIDGE ||
+	       type == PCI_EXP_TYPE_PCIE_BRIDGE;
+}
+
+static inline bool pcie_cap_has_sltctl(const struct pci_dev *dev)
+{
+	return pcie_downstream_port(dev) &&
+	       pcie_caps_reg(dev) & PCI_EXP_FLAGS_SLOT;
+}
+
+static inline bool pcie_cap_has_rtctl(const struct pci_dev *dev)
+{
+	int type = pci_pcie_type(dev);
+
+	return type == PCI_EXP_TYPE_ROOT_PORT ||
+	       type == PCI_EXP_TYPE_RC_EC;
+}
+
+static bool pcie_capability_reg_implemented(struct pci_dev *dev, int pos)
+{
+	if (!pci_is_pcie(dev))
+		return false;
+
+	switch (pos) {
+	case PCI_EXP_FLAGS:
+		return true;
+	case PCI_EXP_DEVCAP:
+	case PCI_EXP_DEVCTL:
+	case PCI_EXP_DEVSTA:
+		return true;
+	case PCI_EXP_LNKCAP:
+	case PCI_EXP_LNKCTL:
+	case PCI_EXP_LNKSTA:
+		return pcie_cap_has_lnkctl(dev);
+	case PCI_EXP_SLTCAP:
+	case PCI_EXP_SLTCTL:
+	case PCI_EXP_SLTSTA:
+		return pcie_cap_has_sltctl(dev);
+	case PCI_EXP_RTCTL:
+	case PCI_EXP_RTCAP:
+	case PCI_EXP_RTSTA:
+		return pcie_cap_has_rtctl(dev);
+	case PCI_EXP_DEVCAP2:
+	case PCI_EXP_DEVCTL2:
+	case PCI_EXP_LNKCAP2:
+	case PCI_EXP_LNKCTL2:
+	case PCI_EXP_LNKSTA2:
+		return pcie_cap_version(dev) > 1;
+	default:
+		return false;
+	}
+}
+
+/*
+ * Note that these accessor functions are only for the "PCI Express
+ * Capability" (see PCIe spec r3.0, sec 7.8).  They do not apply to the
+ * other "PCI Express Extended Capabilities" (AER, VC, ACS, MFVC, etc.)
+ */
+int pcie_capability_read_word(struct pci_dev *dev, int pos, u16 *val)
+{
+	int ret;
+
+	*val = 0;
+	if (pos & 1)
+		return -EINVAL;
+
+	if (pcie_capability_reg_implemented(dev, pos)) {
+		ret = pci_read_config_word(dev, pci_pcie_cap(dev) + pos, val);
+		/*
+		 * Reset *val to 0 if pci_read_config_word() fails, it may
+		 * have been written as 0xFFFF if hardware error happens
+		 * during pci_read_config_word().
+		 */
+		if (ret)
+			*val = 0;
+		return ret;
+	}
+
+	/*
+	 * For Functions that do not implement the Slot Capabilities,
+	 * Slot Status, and Slot Control registers, these spaces must
+	 * be hardwired to 0b, with the exception of the Presence Detect
+	 * State bit in the Slot Status register of Downstream Ports,
+	 * which must be hardwired to 1b.  (PCIe Base Spec 3.0, sec 7.8)
+	 */
+	if (pci_is_pcie(dev) && pcie_downstream_port(dev) &&
+	    pos == PCI_EXP_SLTSTA)
+		*val = PCI_EXP_SLTSTA_PDS;
+
+	return 0;
+}
+EXPORT_SYMBOL(pcie_capability_read_word);
+
+int pcie_capability_read_dword(struct pci_dev *dev, int pos, u32 *val)
+{
+	int ret;
+
+	*val = 0;
+	if (pos & 3)
+		return -EINVAL;
+
+	if (pcie_capability_reg_implemented(dev, pos)) {
+		ret = pci_read_config_dword(dev, pci_pcie_cap(dev) + pos, val);
+		/*
+		 * Reset *val to 0 if pci_read_config_dword() fails, it may
+		 * have been written as 0xFFFFFFFF if hardware error happens
+		 * during pci_read_config_dword().
+		 */
+		if (ret)
+			*val = 0;
+		return ret;
+	}
+
+	if (pci_is_pcie(dev) && pcie_downstream_port(dev) &&
+	    pos == PCI_EXP_SLTSTA)
+		*val = PCI_EXP_SLTSTA_PDS;
+
+	return 0;
+}
+EXPORT_SYMBOL(pcie_capability_read_dword);
+
+int pcie_capability_write_word(struct pci_dev *dev, int pos, u16 val)
+{
+	if (pos & 1)
+		return -EINVAL;
+
+	if (!pcie_capability_reg_implemented(dev, pos))
+		return 0;
+
+	return pci_write_config_word(dev, pci_pcie_cap(dev) + pos, val);
+}
+EXPORT_SYMBOL(pcie_capability_write_word);
+
+int pcie_capability_write_dword(struct pci_dev *dev, int pos, u32 val)
+{
+	if (pos & 3)
+		return -EINVAL;
+
+	if (!pcie_capability_reg_implemented(dev, pos))
+		return 0;
+
+	return pci_write_config_dword(dev, pci_pcie_cap(dev) + pos, val);
+}
+EXPORT_SYMBOL(pcie_capability_write_dword);
+
+int pcie_capability_clear_and_set_word(struct pci_dev *dev, int pos,
+				       u16 clear, u16 set)
+{
+	int ret;
+	u16 val;
+
+	ret = pcie_capability_read_word(dev, pos, &val);
+	if (!ret) {
+		val &= ~clear;
+		val |= set;
+		ret = pcie_capability_write_word(dev, pos, val);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(pcie_capability_clear_and_set_word);
+
+int pcie_capability_clear_and_set_dword(struct pci_dev *dev, int pos,
+					u32 clear, u32 set)
+{
+	int ret;
+	u32 val;
+
+	ret = pcie_capability_read_dword(dev, pos, &val);
+	if (!ret) {
+		val &= ~clear;
+		val |= set;
+		ret = pcie_capability_write_dword(dev, pos, val);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(pcie_capability_clear_and_set_dword);

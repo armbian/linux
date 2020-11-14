@@ -95,7 +95,7 @@ static int qib_make_rc_ack(struct qib_ibdev *dev, struct qib_qp *qp,
 	case OP(RDMA_READ_RESPONSE_ONLY):
 		e = &qp->s_ack_queue[qp->s_tail_ack_queue];
 		if (e->rdma_sge.mr) {
-			atomic_dec(&e->rdma_sge.mr->refcount);
+			qib_put_mr(e->rdma_sge.mr);
 			e->rdma_sge.mr = NULL;
 		}
 		/* FALLTHROUGH */
@@ -133,7 +133,7 @@ static int qib_make_rc_ack(struct qib_ibdev *dev, struct qib_qp *qp,
 			/* Copy SGE state in case we need to resend */
 			qp->s_rdma_mr = e->rdma_sge.mr;
 			if (qp->s_rdma_mr)
-				atomic_inc(&qp->s_rdma_mr->refcount);
+				qib_get_mr(qp->s_rdma_mr);
 			qp->s_ack_rdma_sge.sge = e->rdma_sge;
 			qp->s_ack_rdma_sge.num_sge = 1;
 			qp->s_cur_sge = &qp->s_ack_rdma_sge;
@@ -172,7 +172,7 @@ static int qib_make_rc_ack(struct qib_ibdev *dev, struct qib_qp *qp,
 		qp->s_cur_sge = &qp->s_ack_rdma_sge;
 		qp->s_rdma_mr = qp->s_ack_rdma_sge.sge.mr;
 		if (qp->s_rdma_mr)
-			atomic_inc(&qp->s_rdma_mr->refcount);
+			qib_get_mr(qp->s_rdma_mr);
 		len = qp->s_ack_rdma_sge.sge.sge_length;
 		if (len > pmtu)
 			len = pmtu;
@@ -244,9 +244,9 @@ int qib_make_rc_req(struct qib_qp *qp)
 	int ret = 0;
 	int delta;
 
-	ohdr = &qp->s_hdr.u.oth;
+	ohdr = &qp->s_hdr->u.oth;
 	if (qp->remote_ah_attr.ah_flags & IB_AH_GRH)
-		ohdr = &qp->s_hdr.u.l.oth;
+		ohdr = &qp->s_hdr->u.l.oth;
 
 	/*
 	 * The lock is needed to synchronize between the sending tasklet,
@@ -373,10 +373,11 @@ int qib_make_rc_req(struct qib_qp *qp)
 				qp->s_flags |= QIB_S_WAIT_SSN_CREDIT;
 				goto bail;
 			}
+
 			ohdr->u.rc.reth.vaddr =
-				cpu_to_be64(wqe->wr.wr.rdma.remote_addr);
+				cpu_to_be64(wqe->rdma_wr.remote_addr);
 			ohdr->u.rc.reth.rkey =
-				cpu_to_be32(wqe->wr.wr.rdma.rkey);
+				cpu_to_be32(wqe->rdma_wr.rkey);
 			ohdr->u.rc.reth.length = cpu_to_be32(len);
 			hwords += sizeof(struct ib_reth) / sizeof(u32);
 			wqe->lpsn = wqe->psn;
@@ -386,15 +387,15 @@ int qib_make_rc_req(struct qib_qp *qp)
 				len = pmtu;
 				break;
 			}
-			if (wqe->wr.opcode == IB_WR_RDMA_WRITE)
+			if (wqe->rdma_wr.wr.opcode == IB_WR_RDMA_WRITE)
 				qp->s_state = OP(RDMA_WRITE_ONLY);
 			else {
-				qp->s_state =
-					OP(RDMA_WRITE_ONLY_WITH_IMMEDIATE);
+				qp->s_state = OP(RDMA_WRITE_ONLY_WITH_IMMEDIATE);
 				/* Immediate data comes after RETH */
-				ohdr->u.rc.imm_data = wqe->wr.ex.imm_data;
+				ohdr->u.rc.imm_data =
+					wqe->rdma_wr.wr.ex.imm_data;
 				hwords += 1;
-				if (wqe->wr.send_flags & IB_SEND_SOLICITED)
+				if (wqe->rdma_wr.wr.send_flags & IB_SEND_SOLICITED)
 					bth0 |= IB_BTH_SOLICITED;
 			}
 			bth2 |= IB_BTH_REQ_ACK;
@@ -424,10 +425,11 @@ int qib_make_rc_req(struct qib_qp *qp)
 					qp->s_next_psn += (len - 1) / pmtu;
 				wqe->lpsn = qp->s_next_psn++;
 			}
+
 			ohdr->u.rc.reth.vaddr =
-				cpu_to_be64(wqe->wr.wr.rdma.remote_addr);
+				cpu_to_be64(wqe->rdma_wr.remote_addr);
 			ohdr->u.rc.reth.rkey =
-				cpu_to_be32(wqe->wr.wr.rdma.rkey);
+				cpu_to_be32(wqe->rdma_wr.rkey);
 			ohdr->u.rc.reth.length = cpu_to_be32(len);
 			qp->s_state = OP(RDMA_READ_REQUEST);
 			hwords += sizeof(ohdr->u.rc.reth) / sizeof(u32);
@@ -455,24 +457,24 @@ int qib_make_rc_req(struct qib_qp *qp)
 					qp->s_lsn++;
 				wqe->lpsn = wqe->psn;
 			}
-			if (wqe->wr.opcode == IB_WR_ATOMIC_CMP_AND_SWP) {
+			if (wqe->atomic_wr.wr.opcode == IB_WR_ATOMIC_CMP_AND_SWP) {
 				qp->s_state = OP(COMPARE_SWAP);
 				ohdr->u.atomic_eth.swap_data = cpu_to_be64(
-					wqe->wr.wr.atomic.swap);
+					wqe->atomic_wr.swap);
 				ohdr->u.atomic_eth.compare_data = cpu_to_be64(
-					wqe->wr.wr.atomic.compare_add);
+					wqe->atomic_wr.compare_add);
 			} else {
 				qp->s_state = OP(FETCH_ADD);
 				ohdr->u.atomic_eth.swap_data = cpu_to_be64(
-					wqe->wr.wr.atomic.compare_add);
+					wqe->atomic_wr.compare_add);
 				ohdr->u.atomic_eth.compare_data = 0;
 			}
 			ohdr->u.atomic_eth.vaddr[0] = cpu_to_be32(
-				wqe->wr.wr.atomic.remote_addr >> 32);
+				wqe->atomic_wr.remote_addr >> 32);
 			ohdr->u.atomic_eth.vaddr[1] = cpu_to_be32(
-				wqe->wr.wr.atomic.remote_addr);
+				wqe->atomic_wr.remote_addr);
 			ohdr->u.atomic_eth.rkey = cpu_to_be32(
-				wqe->wr.wr.atomic.rkey);
+				wqe->atomic_wr.rkey);
 			hwords += sizeof(struct ib_atomic_eth) / sizeof(u32);
 			ss = NULL;
 			len = 0;
@@ -597,9 +599,9 @@ int qib_make_rc_req(struct qib_qp *qp)
 		 */
 		len = ((qp->s_psn - wqe->psn) & QIB_PSN_MASK) * pmtu;
 		ohdr->u.rc.reth.vaddr =
-			cpu_to_be64(wqe->wr.wr.rdma.remote_addr + len);
+			cpu_to_be64(wqe->rdma_wr.remote_addr + len);
 		ohdr->u.rc.reth.rkey =
-			cpu_to_be32(wqe->wr.wr.rdma.rkey);
+			cpu_to_be32(wqe->rdma_wr.rkey);
 		ohdr->u.rc.reth.length = cpu_to_be32(wqe->length - len);
 		qp->s_state = OP(RDMA_READ_REQUEST);
 		hwords += sizeof(ohdr->u.rc.reth) / sizeof(u32);
@@ -752,7 +754,7 @@ void qib_send_rc_ack(struct qib_qp *qp)
 	qib_flush_wc();
 	qib_sendbuf_done(dd, pbufn);
 
-	ibp->n_unicast_xmit++;
+	this_cpu_inc(ibp->pmastats->n_unicast_xmit);
 	goto done;
 
 queue_ack:
@@ -1012,12 +1014,12 @@ void qib_rc_send_complete(struct qib_qp *qp, struct qib_ib_header *hdr)
 		for (i = 0; i < wqe->wr.num_sge; i++) {
 			struct qib_sge *sge = &wqe->sg_list[i];
 
-			atomic_dec(&sge->mr->refcount);
+			qib_put_mr(sge->mr);
 		}
 		/* Post a send completion queue entry if requested. */
 		if (!(qp->s_flags & QIB_S_SIGNAL_REQ_WR) ||
 		    (wqe->wr.send_flags & IB_SEND_SIGNALED)) {
-			memset(&wc, 0, sizeof wc);
+			memset(&wc, 0, sizeof(wc));
 			wc.wr_id = wqe->wr.wr_id;
 			wc.status = IB_WC_SUCCESS;
 			wc.opcode = ib_qib_wc_opcode[wqe->wr.opcode];
@@ -1068,12 +1070,12 @@ static struct qib_swqe *do_rc_completion(struct qib_qp *qp,
 		for (i = 0; i < wqe->wr.num_sge; i++) {
 			struct qib_sge *sge = &wqe->sg_list[i];
 
-			atomic_dec(&sge->mr->refcount);
+			qib_put_mr(sge->mr);
 		}
 		/* Post a send completion queue entry if requested. */
 		if (!(qp->s_flags & QIB_S_SIGNAL_REQ_WR) ||
 		    (wqe->wr.send_flags & IB_SEND_SIGNALED)) {
-			memset(&wc, 0, sizeof wc);
+			memset(&wc, 0, sizeof(wc));
 			wc.wr_id = wqe->wr.wr_id;
 			wc.status = IB_WC_SUCCESS;
 			wc.opcode = ib_qib_wc_opcode[wqe->wr.opcode];
@@ -1730,7 +1732,7 @@ static int qib_rc_rcv_error(struct qib_other_headers *ohdr,
 		if (unlikely(offset + len != e->rdma_sge.sge_length))
 			goto unlock_done;
 		if (e->rdma_sge.mr) {
-			atomic_dec(&e->rdma_sge.mr->refcount);
+			qib_put_mr(e->rdma_sge.mr);
 			e->rdma_sge.mr = NULL;
 		}
 		if (len != 0) {
@@ -2024,11 +2026,7 @@ send_last:
 		if (unlikely(wc.byte_len > qp->r_len))
 			goto nack_inv;
 		qib_copy_sge(&qp->r_sge, data, tlen, 1);
-		while (qp->r_sge.num_sge) {
-			atomic_dec(&qp->r_sge.sge.mr->refcount);
-			if (--qp->r_sge.num_sge)
-				qp->r_sge.sge = *qp->r_sge.sg_list++;
-		}
+		qib_put_ss(&qp->r_sge);
 		qp->r_msn++;
 		if (!test_and_clear_bit(QIB_R_WRID_VALID, &qp->r_aflags))
 			break;
@@ -2090,8 +2088,10 @@ send_last:
 		ret = qib_get_rwqe(qp, 1);
 		if (ret < 0)
 			goto nack_op_err;
-		if (!ret)
+		if (!ret) {
+			qib_put_ss(&qp->r_sge);
 			goto rnr_nak;
+		}
 		wc.ex.imm_data = ohdr->u.rc.imm_data;
 		hdrsize += 4;
 		wc.wc_flags = IB_WC_WITH_IMM;
@@ -2116,7 +2116,7 @@ send_last:
 		}
 		e = &qp->s_ack_queue[qp->r_head_ack_queue];
 		if (e->opcode == OP(RDMA_READ_REQUEST) && e->rdma_sge.mr) {
-			atomic_dec(&e->rdma_sge.mr->refcount);
+			qib_put_mr(e->rdma_sge.mr);
 			e->rdma_sge.mr = NULL;
 		}
 		reth = &ohdr->u.rc.reth;
@@ -2188,7 +2188,7 @@ send_last:
 		}
 		e = &qp->s_ack_queue[qp->r_head_ack_queue];
 		if (e->opcode == OP(RDMA_READ_REQUEST) && e->rdma_sge.mr) {
-			atomic_dec(&e->rdma_sge.mr->refcount);
+			qib_put_mr(e->rdma_sge.mr);
 			e->rdma_sge.mr = NULL;
 		}
 		ateth = &ohdr->u.atomic_eth;
@@ -2210,7 +2210,7 @@ send_last:
 			(u64) cmpxchg((u64 *) qp->r_sge.sge.vaddr,
 				      be64_to_cpu(ateth->compare_data),
 				      sdata);
-		atomic_dec(&qp->r_sge.sge.mr->refcount);
+		qib_put_mr(qp->r_sge.sge.mr);
 		qp->r_sge.num_sge = 0;
 		e->opcode = opcode;
 		e->sent = 0;

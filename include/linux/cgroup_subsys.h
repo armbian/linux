@@ -1,74 +1,90 @@
-/* Add subsystem definitions of the form SUBSYS(<name>) in this
- * file. Surround each one by a line of comment markers so that
- * patches don't collide
+/*
+ * List of cgroup subsystems.
+ *
+ * DO NOT ADD ANY SUBSYSTEM WITHOUT EXPLICIT ACKS FROM CGROUP MAINTAINERS.
  */
 
-/* */
+/*
+ * This file *must* be included with SUBSYS() defined.
+ * SUBSYS_TAG() is a noop if undefined.
+ */
 
-/* */
+#ifndef SUBSYS_TAG
+#define __TMP_SUBSYS_TAG
+#define SUBSYS_TAG(_x)
+#endif
 
-#ifdef CONFIG_CPUSETS
+#if IS_ENABLED(CONFIG_CPUSETS)
 SUBSYS(cpuset)
 #endif
 
-/* */
-
-#ifdef CONFIG_CGROUP_DEBUG
-SUBSYS(debug)
+#if IS_ENABLED(CONFIG_CGROUP_SCHED)
+SUBSYS(cpu)
 #endif
 
-/* */
-
-#ifdef CONFIG_CGROUP_SCHED
-SUBSYS(cpu_cgroup)
-#endif
-
-/* */
-
-#ifdef CONFIG_CGROUP_CPUACCT
+#if IS_ENABLED(CONFIG_CGROUP_CPUACCT)
 SUBSYS(cpuacct)
 #endif
 
-/* */
-
-#ifdef CONFIG_CGROUP_MEM_RES_CTLR
-SUBSYS(mem_cgroup)
+#if IS_ENABLED(CONFIG_CGROUP_SCHEDTUNE)
+SUBSYS(schedtune)
 #endif
 
-/* */
+#if IS_ENABLED(CONFIG_BLK_CGROUP)
+SUBSYS(io)
+#endif
 
-#ifdef CONFIG_CGROUP_DEVICE
+#if IS_ENABLED(CONFIG_MEMCG)
+SUBSYS(memory)
+#endif
+
+#if IS_ENABLED(CONFIG_CGROUP_DEVICE)
 SUBSYS(devices)
 #endif
 
-/* */
-
-#ifdef CONFIG_CGROUP_FREEZER
+#if IS_ENABLED(CONFIG_CGROUP_FREEZER)
 SUBSYS(freezer)
 #endif
 
-/* */
-
-#ifdef CONFIG_NET_CLS_CGROUP
+#if IS_ENABLED(CONFIG_CGROUP_NET_CLASSID)
 SUBSYS(net_cls)
 #endif
 
-/* */
-
-#ifdef CONFIG_BLK_CGROUP
-SUBSYS(blkio)
+#if IS_ENABLED(CONFIG_CGROUP_PERF)
+SUBSYS(perf_event)
 #endif
 
-/* */
-
-#ifdef CONFIG_CGROUP_PERF
-SUBSYS(perf)
-#endif
-
-/* */
-
-#ifdef CONFIG_NETPRIO_CGROUP
+#if IS_ENABLED(CONFIG_CGROUP_NET_PRIO)
 SUBSYS(net_prio)
 #endif
 
-/* */
+#if IS_ENABLED(CONFIG_CGROUP_HUGETLB)
+SUBSYS(hugetlb)
+#endif
+
+/*
+ * Subsystems that implement the can_fork() family of callbacks.
+ */
+SUBSYS_TAG(CANFORK_START)
+
+#if IS_ENABLED(CONFIG_CGROUP_PIDS)
+SUBSYS(pids)
+#endif
+
+SUBSYS_TAG(CANFORK_END)
+
+/*
+ * The following subsystems are not supported on the default hierarchy.
+ */
+#if IS_ENABLED(CONFIG_CGROUP_DEBUG)
+SUBSYS(debug)
+#endif
+
+#ifdef __TMP_SUBSYS_TAG
+#undef __TMP_SUBSYS_TAG
+#undef SUBSYS_TAG
+#endif
+
+/*
+ * DO NOT ADD ANY SUBSYSTEM WITHOUT EXPLICIT ACKS FROM CGROUP MAINTAINERS.
+ */

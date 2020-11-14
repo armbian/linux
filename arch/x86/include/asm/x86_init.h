@@ -1,7 +1,6 @@
 #ifndef _ASM_X86_PLATFORM_H
 #define _ASM_X86_PLATFORM_H
 
-#include <asm/pgtable_types.h>
 #include <asm/bootparam.h>
 
 struct mpc_bus;
@@ -69,24 +68,14 @@ struct x86_init_oem {
 };
 
 /**
- * struct x86_init_mapping - platform specific initial kernel pagetable setup
- * @pagetable_reserve:	reserve a range of addresses for kernel pagetable usage
- *
- * For more details on the purpose of this hook, look in
- * init_memory_mapping and the commit that added it.
- */
-struct x86_init_mapping {
-	void (*pagetable_reserve)(u64 start, u64 end);
-};
-
-/**
  * struct x86_init_paging - platform specific paging functions
- * @pagetable_setup_start:	platform specific pre paging_init() call
- * @pagetable_setup_done:	platform specific post paging_init() call
+ * @pagetable_init:	platform specific paging initialization call to setup
+ *			the kernel pagetables and prepare accessors functions.
+ *			Callback must call paging_init(). Called once after the
+ *			direct mapping for phys memory is available.
  */
 struct x86_init_paging {
-	void (*pagetable_setup_start)(pgd_t *base);
-	void (*pagetable_setup_done)(pgd_t *base);
+	void (*pagetable_init)(void);
 };
 
 /**
@@ -135,7 +124,6 @@ struct x86_init_ops {
 	struct x86_init_mpparse		mpparse;
 	struct x86_init_irqs		irqs;
 	struct x86_init_oem		oem;
-	struct x86_init_mapping		mapping;
 	struct x86_init_paging		paging;
 	struct x86_init_timers		timers;
 	struct x86_init_iommu		iommu;
@@ -153,10 +141,11 @@ struct x86_cpuinit_ops {
 	void (*fixup_cpu_id)(struct cpuinfo_x86 *c, int node);
 };
 
+struct timespec;
+
 /**
  * struct x86_platform_ops - platform specific runtime functions
  * @calibrate_tsc:		calibrate TSC
- * @wallclock_init:		init the wallclock device
  * @get_wallclock:		get time from HW clock like RTC etc.
  * @set_wallclock:		set time back to HW clock
  * @is_untracked_pat_range	exclude from PAT logic
@@ -164,12 +153,12 @@ struct x86_cpuinit_ops {
  * @i8042_detect		pre-detect if i8042 controller exists
  * @save_sched_clock_state:	save state for sched_clock() on suspend
  * @restore_sched_clock_state:	restore state for sched_clock() on resume
+ * @apic_post_init:		adjust apic if neeeded
  */
 struct x86_platform_ops {
 	unsigned long (*calibrate_tsc)(void);
-	void (*wallclock_init)(void);
-	unsigned long (*get_wallclock)(void);
-	int (*set_wallclock)(unsigned long nowtime);
+	void (*get_wallclock)(struct timespec *ts);
+	int (*set_wallclock)(const struct timespec *ts);
 	void (*iommu_shutdown)(void);
 	bool (*is_untracked_pat_range)(u64 start, u64 end);
 	void (*nmi_init)(void);
@@ -177,6 +166,7 @@ struct x86_platform_ops {
 	int (*i8042_detect)(void);
 	void (*save_sched_clock_state)(void);
 	void (*restore_sched_clock_state)(void);
+	void (*apic_post_init)(void);
 };
 
 struct pci_dev;
@@ -185,14 +175,19 @@ struct x86_msi_ops {
 	int (*setup_msi_irqs)(struct pci_dev *dev, int nvec, int type);
 	void (*teardown_msi_irq)(unsigned int irq);
 	void (*teardown_msi_irqs)(struct pci_dev *dev);
-	void (*restore_msi_irqs)(struct pci_dev *dev, int irq);
+	void (*restore_msi_irqs)(struct pci_dev *dev);
+};
+
+struct x86_io_apic_ops {
+	unsigned int	(*read)   (unsigned int apic, unsigned int reg);
+	void		(*disable)(void);
 };
 
 extern struct x86_init_ops x86_init;
 extern struct x86_cpuinit_ops x86_cpuinit;
 extern struct x86_platform_ops x86_platform;
 extern struct x86_msi_ops x86_msi;
-
+extern struct x86_io_apic_ops x86_io_apic_ops;
 extern void x86_init_noop(void);
 extern void x86_init_uint_noop(unsigned int unused);
 

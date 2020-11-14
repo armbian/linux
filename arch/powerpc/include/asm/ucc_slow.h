@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2006 Freescale Semicondutor, Inc. All rights reserved.
+ * Copyright (C) 2006 Freescale Semiconductor, Inc. All rights reserved.
  *
  * Authors: 	Shlomi Gridish <gridish@freescale.com>
  * 		Li Yang <leoli@freescale.com>
@@ -20,7 +20,7 @@
 #include <asm/immap_qe.h>
 #include <asm/qe.h>
 
-#include "ucc.h"
+#include <asm/ucc.h>
 
 /* transmit BD's status */
 #define T_R	0x80000000	/* ready bit */
@@ -250,19 +250,6 @@ void ucc_slow_enable(struct ucc_slow_private * uccs, enum comm_dir mode);
  * mode - (In) TX, RX, or both.
  */
 void ucc_slow_disable(struct ucc_slow_private * uccs, enum comm_dir mode);
-
-/* ucc_slow_poll_transmitter_now
- * Immediately forces a poll of the transmitter for data to be sent.
- * Typically, the hardware performs a periodic poll for data that the
- * transmit routine has set up to be transmitted. In cases where
- * this polling cycle is not soon enough, this optional routine can
- * be invoked to force a poll right away, instead. Proper use for
- * each transmission for which this functionality is desired is to
- * call the transmit routine and then this routine right after.
- *
- * uccs - (In) pointer to the slow UCC structure.
- */
-void ucc_slow_poll_transmitter_now(struct ucc_slow_private * uccs);
 
 /* ucc_slow_graceful_stop_tx
  * Smoothly stops transmission on a specified slow UCC.

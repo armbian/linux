@@ -57,7 +57,6 @@ void ufs_free_inode (struct inode * inode)
 {
 	struct super_block * sb;
 	struct ufs_sb_private_info * uspi;
-	struct ufs_super_block_first * usb1;
 	struct ufs_cg_private_info * ucpi;
 	struct ufs_cylinder_group * ucg;
 	int is_directory;
@@ -67,15 +66,14 @@ void ufs_free_inode (struct inode * inode)
 
 	sb = inode->i_sb;
 	uspi = UFS_SB(sb)->s_uspi;
-	usb1 = ubh_get_usb_first(uspi);
 	
 	ino = inode->i_ino;
 
-	lock_super (sb);
+	mutex_lock(&UFS_SB(sb)->s_lock);
 
 	if (!((ino > 1) && (ino < (uspi->s_ncg * uspi->s_ipg )))) {
 		ufs_warning(sb, "ufs_free_inode", "reserved inode or nonexistent inode %u\n", ino);
-		unlock_super (sb);
+		mutex_unlock(&UFS_SB(sb)->s_lock);
 		return;
 	}
 	
@@ -83,7 +81,7 @@ void ufs_free_inode (struct inode * inode)
 	bit = ufs_inotocgoff (ino);
 	ucpi = ufs_load_cylinder (sb, cg);
 	if (!ucpi) {
-		unlock_super (sb);
+		mutex_unlock(&UFS_SB(sb)->s_lock);
 		return;
 	}
 	ucg = ubh_get_ucg(UCPI_UBH(ucpi));
@@ -116,8 +114,8 @@ void ufs_free_inode (struct inode * inode)
 	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 	
-	sb->s_dirt = 1;
-	unlock_super (sb);
+	ufs_mark_sb_dirty(sb);
+	mutex_unlock(&UFS_SB(sb)->s_lock);
 	UFSD("EXIT\n");
 }
 
@@ -175,7 +173,6 @@ struct inode *ufs_new_inode(struct inode *dir, umode_t mode)
 	struct super_block * sb;
 	struct ufs_sb_info * sbi;
 	struct ufs_sb_private_info * uspi;
-	struct ufs_super_block_first * usb1;
 	struct ufs_cg_private_info * ucpi;
 	struct ufs_cylinder_group * ucg;
 	struct inode * inode;
@@ -195,9 +192,8 @@ struct inode *ufs_new_inode(struct inode *dir, umode_t mode)
 	ufsi = UFS_I(inode);
 	sbi = UFS_SB(sb);
 	uspi = sbi->s_uspi;
-	usb1 = ubh_get_usb_first(uspi);
 
-	lock_super (sb);
+	mutex_lock(&sbi->s_lock);
 
 	/*
 	 * Try to place the inode in its parent directory
@@ -288,7 +284,7 @@ cg_found:
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
 	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
-	sb->s_dirt = 1;
+	ufs_mark_sb_dirty(sb);
 
 	inode->i_ino = cg * uspi->s_ipg + bit;
 	inode_init_owner(inode, dir, mode);
@@ -302,7 +298,10 @@ cg_found:
 	ufsi->i_oeftflag = 0;
 	ufsi->i_dir_start_lookup = 0;
 	memset(&ufsi->i_u1, 0, sizeof(ufsi->i_u1));
-	insert_inode_hash(inode);
+	if (insert_inode_locked(inode) < 0) {
+		err = -EIO;
+		goto failed;
+	}
 	mark_inode_dirty(inode);
 
 	if (uspi->fs_magic == UFS2_MAGIC) {
@@ -332,21 +331,21 @@ cg_found:
 			sync_dirty_buffer(bh);
 		brelse(bh);
 	}
-
-	unlock_super (sb);
+	mutex_unlock(&sbi->s_lock);
 
 	UFSD("allocating inode %lu\n", inode->i_ino);
 	UFSD("EXIT\n");
 	return inode;
 
 fail_remove_inode:
-	unlock_super(sb);
+	mutex_unlock(&sbi->s_lock);
 	clear_nlink(inode);
+	unlock_new_inode(inode);
 	iput(inode);
 	UFSD("EXIT (FAILED): err %d\n", err);
 	return ERR_PTR(err);
 failed:
-	unlock_super (sb);
+	mutex_unlock(&sbi->s_lock);
 	make_bad_inode(inode);
 	iput (inode);
 	UFSD("EXIT (FAILED): err %d\n", err);

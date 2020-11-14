@@ -15,6 +15,7 @@
 #include <linux/notifier.h>
 #include <linux/module.h>
 #include <linux/random.h>
+#include <linux/ftrace.h>
 #include <linux/reboot.h>
 #include <linux/delay.h>
 #include <linux/kexec.h>
@@ -22,23 +23,19 @@
 #include <linux/sysrq.h>
 #include <linux/init.h>
 #include <linux/nmi.h>
-#include <linux/dmi.h>
+#include <linux/console.h>
 
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
 
-/* Machine specific panic information string */
-char *mach_panic_string;
-
-int panic_on_oops;
+int panic_on_oops = CONFIG_PANIC_ON_OOPS_VALUE;
 static unsigned long tainted_mask;
 static int pause_on_oops;
 static int pause_on_oops_flag;
 static DEFINE_SPINLOCK(pause_on_oops_lock);
+bool crash_kexec_post_notifiers;
+int panic_on_warn __read_mostly;
 
-#ifndef CONFIG_PANIC_TIMEOUT
-#define CONFIG_PANIC_TIMEOUT 0
-#endif
 int panic_timeout = CONFIG_PANIC_TIMEOUT;
 EXPORT_SYMBOL_GPL(panic_timeout);
 
@@ -106,7 +103,7 @@ void panic(const char *fmt, ...)
 	va_start(args, fmt);
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
-	printk(KERN_EMERG "Kernel panic - not syncing: %s\n",buf);
+	pr_emerg("Kernel panic - not syncing: %s\n", buf);
 #ifdef CONFIG_DEBUG_BUGVERBOSE
 	/*
 	 * Avoid nested stack-dumping if a panic occurs during oops processing
@@ -118,9 +115,11 @@ void panic(const char *fmt, ...)
 	/*
 	 * If we have crashed and we have a crash kernel loaded let it handle
 	 * everything else.
-	 * Do we want to call this before we try to display a message?
+	 * If we want to run this after calling panic_notifiers, pass
+	 * the "crash_kexec_post_notifiers" option to the kernel.
 	 */
-	crash_kexec(NULL);
+	if (!crash_kexec_post_notifiers)
+		crash_kexec(NULL);
 
 	/*
 	 * Note smp_send_stop is the usual smp shutdown function, which
@@ -129,11 +128,36 @@ void panic(const char *fmt, ...)
 	 */
 	smp_send_stop();
 
-	kmsg_dump(KMSG_DUMP_PANIC);
-
+	/*
+	 * Run any panic handlers, including those that might need to
+	 * add information to the kmsg dump output.
+	 */
 	atomic_notifier_call_chain(&panic_notifier_list, 0, buf);
 
+	kmsg_dump(KMSG_DUMP_PANIC);
+
+	/*
+	 * If you doubt kdump always works fine in any situation,
+	 * "crash_kexec_post_notifiers" offers you a chance to run
+	 * panic_notifiers and dumping kmsg before kdump.
+	 * Note: since some panic_notifiers can make crashed kernel
+	 * more unstable, it can increase risks of the kdump failure too.
+	 */
+	if (crash_kexec_post_notifiers)
+		crash_kexec(NULL);
+
 	bust_spinlocks(0);
+
+	/*
+	 * We may have ended up stopping the CPU holding the lock (in
+	 * smp_send_stop()) while still having some valuable data in the console
+	 * buffer.  Try to acquire the lock then release it regardless of the
+	 * result.  The release will also print the buffers out.  Locks debug
+	 * should be disabled to avoid reporting bad unlock balance when
+	 * panic() is not being callled from OOPS.
+	 */
+	debug_locks_off();
+	console_flush_on_panic();
 
 	if (!panic_blink)
 		panic_blink = no_blink;
@@ -143,7 +167,7 @@ void panic(const char *fmt, ...)
 		 * Delay timeout seconds before rebooting the machine.
 		 * We can't use the "normal" timers since we just panicked.
 		 */
-		printk(KERN_EMERG "Rebooting in %d seconds..", panic_timeout);
+		pr_emerg("Rebooting in %d seconds..\n", panic_timeout);
 
 		for (i = 0; i < panic_timeout * 1000; i += PANIC_TIMER_STEP) {
 			touch_nmi_watchdog();
@@ -167,7 +191,7 @@ void panic(const char *fmt, ...)
 		extern int stop_a_enabled;
 		/* Make sure the user can actually press Stop-A (L1-A) */
 		stop_a_enabled = 1;
-		printk(KERN_EMERG "Press Stop-A (L1-A) to return to the boot prom\n");
+		pr_emerg("Press Stop-A (L1-A) to return to the boot prom\n");
 	}
 #endif
 #if defined(CONFIG_S390)
@@ -178,6 +202,7 @@ void panic(const char *fmt, ...)
 		disabled_wait(caller);
 	}
 #endif
+	pr_emerg("---[ end Kernel panic - not syncing: %s\n", buf);
 	local_irq_enable();
 	for (i = 0; ; i += PANIC_TIMER_STEP) {
 		touch_softlockup_watchdog();
@@ -201,7 +226,7 @@ struct tnt {
 static const struct tnt tnts[] = {
 	{ TAINT_PROPRIETARY_MODULE,	'P', 'G' },
 	{ TAINT_FORCED_MODULE,		'F', ' ' },
-	{ TAINT_UNSAFE_SMP,		'S', ' ' },
+	{ TAINT_CPU_OUT_OF_SPEC,	'S', ' ' },
 	{ TAINT_FORCED_RMMOD,		'R', ' ' },
 	{ TAINT_MACHINE_CHECK,		'M', ' ' },
 	{ TAINT_BAD_PAGE,		'B', ' ' },
@@ -212,6 +237,9 @@ static const struct tnt tnts[] = {
 	{ TAINT_CRAP,			'C', ' ' },
 	{ TAINT_FIRMWARE_WORKAROUND,	'I', ' ' },
 	{ TAINT_OOT_MODULE,		'O', ' ' },
+	{ TAINT_UNSIGNED_MODULE,	'E', ' ' },
+	{ TAINT_SOFTLOCKUP,		'L', ' ' },
+	{ TAINT_LIVEPATCH,		'K', ' ' },
 };
 
 /**
@@ -230,12 +258,15 @@ static const struct tnt tnts[] = {
  *  'C' - modules from drivers/staging are loaded.
  *  'I' - Working around severe firmware bug.
  *  'O' - Out-of-tree module has been loaded.
+ *  'E' - Unsigned module has been loaded.
+ *  'L' - A soft lockup has previously occurred.
+ *  'K' - Kernel has been live patched.
  *
  *	The string is overwritten by the next call to print_tainted().
  */
 const char *print_tainted(void)
 {
-	static char buf[ARRAY_SIZE(tnts) + sizeof("Tainted: ") + 1];
+	static char buf[ARRAY_SIZE(tnts) + sizeof("Tainted: ")];
 
 	if (tainted_mask) {
 		char *s;
@@ -265,26 +296,18 @@ unsigned long get_taint(void)
 	return tainted_mask;
 }
 
-void add_taint(unsigned flag)
+/**
+ * add_taint: add a taint flag if not already set.
+ * @flag: one of the TAINT_* constants.
+ * @lockdep_ok: whether lock debugging is still OK.
+ *
+ * If something bad has gone wrong, you'll want @lockdebug_ok = false, but for
+ * some notewortht-but-not-corrupting cases, it can be set to true.
+ */
+void add_taint(unsigned flag, enum lockdep_ok lockdep_ok)
 {
-	/*
-	 * Can't trust the integrity of the kernel anymore.
-	 * We don't call directly debug_locks_off() because the issue
-	 * is not necessarily serious enough to set oops_in_progress to 1
-	 * Also we want to keep up lockdep for staging/out-of-tree
-	 * development and post-warning case.
-	 */
-	switch (flag) {
-	case TAINT_CRAP:
-	case TAINT_OOT_MODULE:
-	case TAINT_WARN:
-	case TAINT_FIRMWARE_WORKAROUND:
-		break;
-
-	default:
-		if (__debug_locks_off())
-			printk(KERN_WARNING "Disabling lock debugging due to kernel taint\n");
-	}
+	if (lockdep_ok == LOCKDEP_NOW_UNRELIABLE && __debug_locks_off())
+		pr_warn("Disabling lock debugging due to kernel taint\n");
 
 	set_bit(flag, &tainted_mask);
 }
@@ -389,13 +412,7 @@ late_initcall(init_oops_id);
 void print_oops_end_marker(void)
 {
 	init_oops_id();
-
-	if (mach_panic_string)
-		printk(KERN_WARNING "Board Information: %s\n",
-		       mach_panic_string);
-
-	printk(KERN_WARNING "---[ end trace %016llx ]---\n",
-		(unsigned long long)oops_id);
+	pr_warn("---[ end trace %016llx ]---\n", (unsigned long long)oops_id);
 }
 
 /*
@@ -418,21 +435,31 @@ struct slowpath_args {
 static void warn_slowpath_common(const char *file, int line, void *caller,
 				 unsigned taint, struct slowpath_args *args)
 {
-	const char *board;
+	disable_trace_on_warning();
 
-	printk(KERN_WARNING "------------[ cut here ]------------\n");
-	printk(KERN_WARNING "WARNING: at %s:%d %pS()\n", file, line, caller);
-	board = dmi_get_system_info(DMI_PRODUCT_NAME);
-	if (board)
-		printk(KERN_WARNING "Hardware name: %s\n", board);
+	pr_warn("------------[ cut here ]------------\n");
+	pr_warn("WARNING: CPU: %d PID: %d at %s:%d %pS()\n",
+		raw_smp_processor_id(), current->pid, file, line, caller);
 
 	if (args)
 		vprintk(args->fmt, args->args);
 
+	if (panic_on_warn) {
+		/*
+		 * This thread may hit another WARN() in the panic path.
+		 * Resetting this prevents additional WARN() from panicking the
+		 * system on this thread.  Other threads are blocked by the
+		 * panic_mutex in panic().
+		 */
+		panic_on_warn = 0;
+		panic("panic_on_warn set ...\n");
+	}
+
 	print_modules();
 	dump_stack();
 	print_oops_end_marker();
-	add_taint(taint);
+	/* Just a warning, don't kill lockdep. */
+	add_taint(taint, LOCKDEP_STILL_OK);
 }
 
 void warn_slowpath_fmt(const char *file, int line, const char *fmt, ...)
@@ -474,7 +501,7 @@ EXPORT_SYMBOL(warn_slowpath_null);
  * Called when gcc's -fstack-protector feature is used, and
  * gcc detects corruption of the on-stack canary value
  */
-void __stack_chk_fail(void)
+__visible void __stack_chk_fail(void)
 {
 	panic("stack-protector: Kernel stack is corrupted in: %p\n",
 		__builtin_return_address(0));
@@ -485,6 +512,14 @@ EXPORT_SYMBOL(__stack_chk_fail);
 
 core_param(panic, panic_timeout, int, 0644);
 core_param(pause_on_oops, pause_on_oops, int, 0644);
+core_param(panic_on_warn, panic_on_warn, int, 0644);
+
+static int __init setup_crash_kexec_post_notifiers(char *s)
+{
+	crash_kexec_post_notifiers = true;
+	return 0;
+}
+early_param("crash_kexec_post_notifiers", setup_crash_kexec_post_notifiers);
 
 static int __init oops_setup(char *s)
 {

@@ -35,6 +35,8 @@
  *					response
  */
 
+#define pr_fmt(fmt) "X25: " fmt
+
 #include <linux/module.h>
 #include <linux/capability.h>
 #include <linux/errno.h>
@@ -208,11 +210,10 @@ static void x25_remove_socket(struct sock *sk)
 static void x25_kill_by_device(struct net_device *dev)
 {
 	struct sock *s;
-	struct hlist_node *node;
 
 	write_lock_bh(&x25_list_lock);
 
-	sk_for_each(s, node, &x25_list)
+	sk_for_each(s, &x25_list)
 		if (x25_sk(s)->neighbour && x25_sk(s)->neighbour->dev == dev)
 			x25_disconnect(s, ENETUNREACH, 0, 0);
 
@@ -225,7 +226,7 @@ static void x25_kill_by_device(struct net_device *dev)
 static int x25_device_event(struct notifier_block *this, unsigned long event,
 			    void *ptr)
 {
-	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct x25_neigh *nb;
 
 	if (!net_eq(dev_net(dev), &init_net))
@@ -280,12 +281,11 @@ static struct sock *x25_find_listener(struct x25_address *addr,
 {
 	struct sock *s;
 	struct sock *next_best;
-	struct hlist_node *node;
 
 	read_lock_bh(&x25_list_lock);
 	next_best = NULL;
 
-	sk_for_each(s, node, &x25_list)
+	sk_for_each(s, &x25_list)
 		if ((!strcmp(addr->x25_addr,
 			x25_sk(s)->source_addr.x25_addr) ||
 				!strcmp(addr->x25_addr,
@@ -323,9 +323,8 @@ found:
 static struct sock *__x25_find_socket(unsigned int lci, struct x25_neigh *nb)
 {
 	struct sock *s;
-	struct hlist_node *node;
 
-	sk_for_each(s, node, &x25_list)
+	sk_for_each(s, &x25_list)
 		if (x25_sk(s)->lci == lci && x25_sk(s)->neighbour == nb) {
 			sock_hold(s);
 			goto found;
@@ -516,10 +515,10 @@ static struct proto x25_proto = {
 	.obj_size = sizeof(struct x25_sock),
 };
 
-static struct sock *x25_alloc_socket(struct net *net)
+static struct sock *x25_alloc_socket(struct net *net, int kern)
 {
 	struct x25_sock *x25;
-	struct sock *sk = sk_alloc(net, AF_X25, GFP_ATOMIC, &x25_proto);
+	struct sock *sk = sk_alloc(net, AF_X25, GFP_ATOMIC, &x25_proto, kern);
 
 	if (!sk)
 		goto out;
@@ -554,7 +553,7 @@ static int x25_create(struct net *net, struct socket *sock, int protocol,
 		goto out;
 
 	rc = -ENOBUFS;
-	if ((sk = x25_alloc_socket(net)) == NULL)
+	if ((sk = x25_alloc_socket(net, kern)) == NULL)
 		goto out;
 
 	x25 = x25_sk(sk);
@@ -603,7 +602,7 @@ static struct sock *x25_make_new(struct sock *osk)
 	if (osk->sk_type != SOCK_SEQPACKET)
 		goto out;
 
-	if ((sk = x25_alloc_socket(sock_net(osk))) == NULL)
+	if ((sk = x25_alloc_socket(sock_net(osk), 0)) == NULL)
 		goto out;
 
 	x25 = x25_sk(sk);
@@ -1065,7 +1064,7 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 	x25_start_heartbeat(make);
 
 	if (!sock_flag(sk, SOCK_DEAD))
-		sk->sk_data_ready(sk, skb->len);
+		sk->sk_data_ready(sk);
 	rc = 1;
 	sock_put(sk);
 out:
@@ -1078,12 +1077,11 @@ out_clear_request:
 	goto out;
 }
 
-static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
-		       struct msghdr *msg, size_t len)
+static int x25_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 {
 	struct sock *sk = sock->sk;
 	struct x25_sock *x25 = x25_sk(sk);
-	struct sockaddr_x25 *usx25 = (struct sockaddr_x25 *)msg->msg_name;
+	DECLARE_SOCKADDR(struct sockaddr_x25 *, usx25, msg->msg_name);
 	struct sockaddr_x25 sx25;
 	struct sk_buff *skb;
 	unsigned char *asmptr;
@@ -1171,7 +1169,7 @@ static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
 	skb_reset_transport_header(skb);
 	skb_put(skb, len);
 
-	rc = memcpy_fromiovec(skb_transport_header(skb), msg->msg_iov, len);
+	rc = memcpy_from_msg(skb_transport_header(skb), msg, len);
 	if (rc)
 		goto out_kfree_skb;
 
@@ -1253,13 +1251,12 @@ out_kfree_skb:
 }
 
 
-static int x25_recvmsg(struct kiocb *iocb, struct socket *sock,
-		       struct msghdr *msg, size_t size,
+static int x25_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		       int flags)
 {
 	struct sock *sk = sock->sk;
 	struct x25_sock *x25 = x25_sk(sk);
-	struct sockaddr_x25 *sx25 = (struct sockaddr_x25 *)msg->msg_name;
+	DECLARE_SOCKADDR(struct sockaddr_x25 *, sx25, msg->msg_name);
 	size_t copied;
 	int qbit, header_len;
 	struct sk_buff *skb;
@@ -1336,7 +1333,7 @@ static int x25_recvmsg(struct kiocb *iocb, struct socket *sock,
 	/* Currently, each datagram always contains a complete record */
 	msg->msg_flags |= MSG_EOR;
 
-	rc = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	rc = skb_copy_datagram_msg(skb, 0, msg, copied);
 	if (rc)
 		goto out_free_dgram;
 
@@ -1782,11 +1779,10 @@ static struct notifier_block x25_dev_notifier = {
 void x25_kill_by_neigh(struct x25_neigh *nb)
 {
 	struct sock *s;
-	struct hlist_node *node;
 
 	write_lock_bh(&x25_list_lock);
 
-	sk_for_each(s, node, &x25_list)
+	sk_for_each(s, &x25_list)
 		if (x25_sk(s)->neighbour == nb)
 			x25_disconnect(s, ENETUNREACH, 0, 0);
 
@@ -1798,32 +1794,40 @@ void x25_kill_by_neigh(struct x25_neigh *nb)
 
 static int __init x25_init(void)
 {
-	int rc = proto_register(&x25_proto, 0);
+	int rc;
 
-	if (rc != 0)
+	rc = proto_register(&x25_proto, 0);
+	if (rc)
 		goto out;
 
 	rc = sock_register(&x25_family_ops);
-	if (rc != 0)
+	if (rc)
 		goto out_proto;
 
 	dev_add_pack(&x25_packet_type);
 
 	rc = register_netdevice_notifier(&x25_dev_notifier);
-	if (rc != 0)
+	if (rc)
 		goto out_sock;
 
-	printk(KERN_INFO "X.25 for Linux Version 0.2\n");
-
-	x25_register_sysctl();
-	rc = x25_proc_init();
-	if (rc != 0)
+	rc = x25_register_sysctl();
+	if (rc)
 		goto out_dev;
+
+	rc = x25_proc_init();
+	if (rc)
+		goto out_sysctl;
+
+	pr_info("Linux Version 0.2\n");
+
 out:
 	return rc;
+out_sysctl:
+	x25_unregister_sysctl();
 out_dev:
 	unregister_netdevice_notifier(&x25_dev_notifier);
 out_sock:
+	dev_remove_pack(&x25_packet_type);
 	sock_unregister(AF_X25);
 out_proto:
 	proto_unregister(&x25_proto);

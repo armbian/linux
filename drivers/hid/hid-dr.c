@@ -29,14 +29,12 @@
 
 #include <linux/input.h>
 #include <linux/slab.h>
-#include <linux/usb.h>
 #include <linux/hid.h>
 #include <linux/module.h>
 
 #include "hid-ids.h"
 
 #ifdef CONFIG_DRAGONRISE_FF
-#include "usbhid/usbhid.h"
 
 struct drff_device {
 	struct hid_report *report;
@@ -68,7 +66,7 @@ static int drff_play(struct input_dev *dev, void *data,
 		drff->report->field[0]->value[1] = 0x00;
 		drff->report->field[0]->value[2] = weak;
 		drff->report->field[0]->value[4] = strong;
-		usbhid_submit_report(hid, drff->report, USB_DIR_OUT);
+		hid_hw_request(hid, drff->report, HID_REQ_SET_REPORT);
 
 		drff->report->field[0]->value[0] = 0xfa;
 		drff->report->field[0]->value[1] = 0xfe;
@@ -80,7 +78,7 @@ static int drff_play(struct input_dev *dev, void *data,
 	drff->report->field[0]->value[2] = 0x00;
 	drff->report->field[0]->value[4] = 0x00;
 	dbg_hid("running with 0x%02x 0x%02x", strong, weak);
-	usbhid_submit_report(hid, drff->report, USB_DIR_OUT);
+	hid_hw_request(hid, drff->report, HID_REQ_SET_REPORT);
 
 	return 0;
 }
@@ -132,7 +130,7 @@ static int drff_init(struct hid_device *hid)
 	drff->report->field[0]->value[4] = 0x00;
 	drff->report->field[0]->value[5] = 0x00;
 	drff->report->field[0]->value[6] = 0x00;
-	usbhid_submit_report(hid, drff->report, USB_DIR_OUT);
+	hid_hw_request(hid, drff->report, HID_REQ_SET_REPORT);
 
 	hid_info(hid, "Force Feedback for DragonRise Inc. "
 		 "game controllers by Richard Walmsley <richwalm@gmail.com>\n");
@@ -236,6 +234,58 @@ static __u8 pid0011_rdesc_fixed[] = {
 	0xC0                /*  End Collection                  */
 };
 
+static __u8 pid0006_rdesc_fixed[] = {
+	0x05, 0x01,        /* Usage Page (Generic Desktop)	*/
+	0x09, 0x04,        /* Usage (Joystick)			*/
+	0xA1, 0x01,        /* Collection (Application)		*/
+	0xA1, 0x02,        /*   Collection (Logical)		*/
+	0x75, 0x08,        /*     Report Size (8)		*/
+	0x95, 0x05,        /*     Report Count (5)		*/
+	0x15, 0x00,        /*     Logical Minimum (0)		*/
+	0x26, 0xFF, 0x00,  /*     Logical Maximum (255)		*/
+	0x35, 0x00,        /*     Physical Minimum (0)		*/
+	0x46, 0xFF, 0x00,  /*     Physical Maximum (255)	*/
+	0x09, 0x30,        /*     Usage (X)			*/
+	0x09, 0x33,        /*     Usage (Ry)			*/
+	0x09, 0x32,        /*     Usage (Z)			*/
+	0x09, 0x31,        /*     Usage (Y)			*/
+	0x09, 0x34,        /*     Usage (Ry)			*/
+	0x81, 0x02,        /*     Input (Variable)		*/
+	0x75, 0x04,        /*     Report Size (4)		*/
+	0x95, 0x01,        /*     Report Count (1)		*/
+	0x25, 0x07,        /*     Logical Maximum (7)		*/
+	0x46, 0x3B, 0x01,  /*     Physical Maximum (315)	*/
+	0x65, 0x14,        /*     Unit (Centimeter)		*/
+	0x09, 0x39,        /*     Usage (Hat switch)		*/
+	0x81, 0x42,        /*     Input (Variable)		*/
+	0x65, 0x00,        /*     Unit (None)			*/
+	0x75, 0x01,        /*     Report Size (1)		*/
+	0x95, 0x0C,        /*     Report Count (12)		*/
+	0x25, 0x01,        /*     Logical Maximum (1)		*/
+	0x45, 0x01,        /*     Physical Maximum (1)		*/
+	0x05, 0x09,        /*     Usage Page (Button)		*/
+	0x19, 0x01,        /*     Usage Minimum (0x01)		*/
+	0x29, 0x0C,        /*     Usage Maximum (0x0C)		*/
+	0x81, 0x02,        /*     Input (Variable)		*/
+	0x06, 0x00, 0xFF,  /*     Usage Page (Vendor Defined)	*/
+	0x75, 0x01,        /*     Report Size (1)		*/
+	0x95, 0x08,        /*     Report Count (8)		*/
+	0x25, 0x01,        /*     Logical Maximum (1)		*/
+	0x45, 0x01,        /*     Physical Maximum (1)		*/
+	0x09, 0x01,        /*     Usage (0x01)			*/
+	0x81, 0x02,        /*     Input (Variable)		*/
+	0xC0,              /*   End Collection			*/
+	0xA1, 0x02,        /*   Collection (Logical)		*/
+	0x75, 0x08,        /*     Report Size (8)		*/
+	0x95, 0x07,        /*     Report Count (7)		*/
+	0x46, 0xFF, 0x00,  /*     Physical Maximum (255)	*/
+	0x26, 0xFF, 0x00,  /*     Logical Maximum (255)		*/
+	0x09, 0x02,        /*     Usage (0x02)			*/
+	0x91, 0x02,        /*     Output (Variable)		*/
+	0xC0,              /*   End Collection			*/
+	0xC0               /* End Collection			*/
+};
+
 static __u8 *dr_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 				unsigned int *rsize)
 {
@@ -244,6 +294,12 @@ static __u8 *dr_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 		if (*rsize == PID0011_RDESC_ORIG_SIZE) {
 			rdesc = pid0011_rdesc_fixed;
 			*rsize = sizeof(pid0011_rdesc_fixed);
+		}
+		break;
+	case 0x0006:
+		if (*rsize == sizeof(pid0006_rdesc_fixed)) {
+			rdesc = pid0006_rdesc_fixed;
+			*rsize = sizeof(pid0006_rdesc_fixed);
 		}
 		break;
 	}
@@ -297,17 +353,6 @@ static struct hid_driver dr_driver = {
 	.report_fixup = dr_report_fixup,
 	.probe = dr_probe,
 };
+module_hid_driver(dr_driver);
 
-static int __init dr_init(void)
-{
-	return hid_register_driver(&dr_driver);
-}
-
-static void __exit dr_exit(void)
-{
-	hid_unregister_driver(&dr_driver);
-}
-
-module_init(dr_init);
-module_exit(dr_exit);
 MODULE_LICENSE("GPL");

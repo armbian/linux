@@ -14121,7 +14121,7 @@ static u8 ant_sw_ctrl_tbl_rev8_2057v7_core1[] = {
 
 bool wlc_phy_bist_check_phy(struct brcms_phy_pub *pih)
 {
-	struct brcms_phy *pi = (struct brcms_phy *) pih;
+	struct brcms_phy *pi = container_of(pih, struct brcms_phy, pubpi_ro);
 	u32 phybist0, phybist1, phybist2, phybist3, phybist4;
 
 	if (NREV_GE(pi->pubpi.phy_rev, 16))
@@ -14358,7 +14358,7 @@ void wlc_phy_nphy_tkip_rifs_war(struct brcms_phy *pi, u8 rifs)
 
 	wlc_phy_write_txmacreg_nphy(pi, holdoff, delay);
 
-	if (pi && pi->sh && (pi->sh->_rifs_phy != rifs))
+	if (pi->sh && (pi->sh->_rifs_phy != rifs))
 		pi->sh->_rifs_phy = rifs;
 }
 
@@ -14386,30 +14386,30 @@ static void wlc_phy_txpwr_srom_read_ppr_nphy(struct brcms_phy *pi)
 {
 	u16 bw40po, cddpo, stbcpo, bwduppo;
 	uint band_num;
-	struct phy_shim_info *shim = pi->sh->physhim;
+	struct ssb_sprom *sprom = &pi->d11core->bus->sprom;
 
 	if (pi->sh->sromrev >= 9)
 		return;
 
-	bw40po = (u16) wlapi_getintvar(shim, BRCMS_SROM_BW40PO);
+	bw40po = sprom->bw40po;
 	pi->bw402gpo = bw40po & 0xf;
 	pi->bw405gpo = (bw40po & 0xf0) >> 4;
 	pi->bw405glpo = (bw40po & 0xf00) >> 8;
 	pi->bw405ghpo = (bw40po & 0xf000) >> 12;
 
-	cddpo = (u16) wlapi_getintvar(shim, BRCMS_SROM_CDDPO);
+	cddpo = sprom->cddpo;
 	pi->cdd2gpo = cddpo & 0xf;
 	pi->cdd5gpo = (cddpo & 0xf0) >> 4;
 	pi->cdd5glpo = (cddpo & 0xf00) >> 8;
 	pi->cdd5ghpo = (cddpo & 0xf000) >> 12;
 
-	stbcpo = (u16) wlapi_getintvar(shim, BRCMS_SROM_STBCPO);
+	stbcpo = sprom->stbcpo;
 	pi->stbc2gpo = stbcpo & 0xf;
 	pi->stbc5gpo = (stbcpo & 0xf0) >> 4;
 	pi->stbc5glpo = (stbcpo & 0xf00) >> 8;
 	pi->stbc5ghpo = (stbcpo & 0xf000) >> 12;
 
-	bwduppo = (u16) wlapi_getintvar(shim, BRCMS_SROM_BWDUPPO);
+	bwduppo = sprom->bwduppo;
 	pi->bwdup2gpo = bwduppo & 0xf;
 	pi->bwdup5gpo = (bwduppo & 0xf0) >> 4;
 	pi->bwdup5glpo = (bwduppo & 0xf00) >> 8;
@@ -14419,242 +14419,137 @@ static void wlc_phy_txpwr_srom_read_ppr_nphy(struct brcms_phy *pi)
 	     band_num++) {
 		switch (band_num) {
 		case 0:
-
 			pi->nphy_pwrctrl_info[PHY_CORE_0].max_pwr_2g =
-				(s8) wlapi_getintvar(shim,
-						     BRCMS_SROM_MAXP2GA0);
+				sprom->core_pwr_info[0].maxpwr_2g;
 			pi->nphy_pwrctrl_info[PHY_CORE_1].max_pwr_2g =
-				(s8) wlapi_getintvar(shim,
-						     BRCMS_SROM_MAXP2GA1);
+				sprom->core_pwr_info[1].maxpwr_2g;
 			pi->nphy_pwrctrl_info[PHY_CORE_0].pwrdet_2g_a1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA2GW0A0);
+				sprom->core_pwr_info[0].pa_2g[0];
 			pi->nphy_pwrctrl_info[PHY_CORE_1].pwrdet_2g_a1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA2GW0A1);
+				sprom->core_pwr_info[1].pa_2g[0];
 			pi->nphy_pwrctrl_info[PHY_CORE_0].pwrdet_2g_b0 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA2GW1A0);
+				sprom->core_pwr_info[0].pa_2g[1];
 			pi->nphy_pwrctrl_info[PHY_CORE_1].pwrdet_2g_b0 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA2GW1A1);
+				sprom->core_pwr_info[1].pa_2g[1];
 			pi->nphy_pwrctrl_info[PHY_CORE_0].pwrdet_2g_b1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA2GW2A0);
+				sprom->core_pwr_info[0].pa_2g[2];
 			pi->nphy_pwrctrl_info[PHY_CORE_1].pwrdet_2g_b1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA2GW2A1);
+				sprom->core_pwr_info[1].pa_2g[2];
 			pi->nphy_pwrctrl_info[PHY_CORE_0].idle_targ_2g =
-				(s8) wlapi_getintvar(shim, BRCMS_SROM_ITT2GA0);
+				sprom->core_pwr_info[0].itssi_2g;
 			pi->nphy_pwrctrl_info[PHY_CORE_1].idle_targ_2g =
-				(s8) wlapi_getintvar(shim, BRCMS_SROM_ITT2GA1);
+				sprom->core_pwr_info[1].itssi_2g;
 
-			pi->cck2gpo = (u16) wlapi_getintvar(shim,
-							    BRCMS_SROM_CCK2GPO);
+			pi->cck2gpo = sprom->cck2gpo;
 
-			pi->ofdm2gpo =
-				(u32) wlapi_getintvar(shim,
-						      BRCMS_SROM_OFDM2GPO);
+			pi->ofdm2gpo = sprom->ofdm2gpo;
 
-			pi->mcs2gpo[0] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS2GPO0);
-			pi->mcs2gpo[1] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS2GPO1);
-			pi->mcs2gpo[2] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS2GPO2);
-			pi->mcs2gpo[3] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS2GPO3);
-			pi->mcs2gpo[4] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS2GPO4);
-			pi->mcs2gpo[5] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS2GPO5);
-			pi->mcs2gpo[6] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS2GPO6);
-			pi->mcs2gpo[7] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS2GPO7);
+			pi->mcs2gpo[0] = sprom->mcs2gpo[0];
+			pi->mcs2gpo[1] = sprom->mcs2gpo[1];
+			pi->mcs2gpo[2] = sprom->mcs2gpo[2];
+			pi->mcs2gpo[3] = sprom->mcs2gpo[3];
+			pi->mcs2gpo[4] = sprom->mcs2gpo[4];
+			pi->mcs2gpo[5] = sprom->mcs2gpo[5];
+			pi->mcs2gpo[6] = sprom->mcs2gpo[6];
+			pi->mcs2gpo[7] = sprom->mcs2gpo[7];
 			break;
 		case 1:
 
 			pi->nphy_pwrctrl_info[PHY_CORE_0].max_pwr_5gm =
-				(s8) wlapi_getintvar(shim, BRCMS_SROM_MAXP5GA0);
+				sprom->core_pwr_info[0].maxpwr_5g;
 			pi->nphy_pwrctrl_info[PHY_CORE_1].max_pwr_5gm =
-				(s8) wlapi_getintvar(shim,
-						     BRCMS_SROM_MAXP5GA1);
+				sprom->core_pwr_info[1].maxpwr_5g;
 			pi->nphy_pwrctrl_info[PHY_CORE_0].pwrdet_5gm_a1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GW0A0);
+				sprom->core_pwr_info[0].pa_5g[0];
 			pi->nphy_pwrctrl_info[PHY_CORE_1].pwrdet_5gm_a1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GW0A1);
+				sprom->core_pwr_info[1].pa_5g[0];
 			pi->nphy_pwrctrl_info[PHY_CORE_0].pwrdet_5gm_b0 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GW1A0);
+				sprom->core_pwr_info[0].pa_5g[1];
 			pi->nphy_pwrctrl_info[PHY_CORE_1].pwrdet_5gm_b0 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GW1A1);
+				sprom->core_pwr_info[1].pa_5g[1];
 			pi->nphy_pwrctrl_info[PHY_CORE_0].pwrdet_5gm_b1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GW2A0);
+				sprom->core_pwr_info[0].pa_5g[2];
 			pi->nphy_pwrctrl_info[PHY_CORE_1].pwrdet_5gm_b1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GW2A1);
+				sprom->core_pwr_info[1].pa_5g[2];
 			pi->nphy_pwrctrl_info[PHY_CORE_0].idle_targ_5gm =
-				(s8) wlapi_getintvar(shim, BRCMS_SROM_ITT5GA0);
+				sprom->core_pwr_info[0].itssi_5g;
 			pi->nphy_pwrctrl_info[PHY_CORE_1].idle_targ_5gm =
-				(s8) wlapi_getintvar(shim, BRCMS_SROM_ITT5GA1);
+				sprom->core_pwr_info[1].itssi_5g;
 
-			pi->ofdm5gpo =
-				(u32) wlapi_getintvar(shim,
-						      BRCMS_SROM_OFDM5GPO);
+			pi->ofdm5gpo = sprom->ofdm5gpo;
 
-			pi->mcs5gpo[0] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GPO0);
-			pi->mcs5gpo[1] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GPO1);
-			pi->mcs5gpo[2] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GPO2);
-			pi->mcs5gpo[3] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GPO3);
-			pi->mcs5gpo[4] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GPO4);
-			pi->mcs5gpo[5] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GPO5);
-			pi->mcs5gpo[6] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GPO6);
-			pi->mcs5gpo[7] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GPO7);
+			pi->mcs5gpo[0] = sprom->mcs5gpo[0];
+			pi->mcs5gpo[1] = sprom->mcs5gpo[1];
+			pi->mcs5gpo[2] = sprom->mcs5gpo[2];
+			pi->mcs5gpo[3] = sprom->mcs5gpo[3];
+			pi->mcs5gpo[4] = sprom->mcs5gpo[4];
+			pi->mcs5gpo[5] = sprom->mcs5gpo[5];
+			pi->mcs5gpo[6] = sprom->mcs5gpo[6];
+			pi->mcs5gpo[7] = sprom->mcs5gpo[7];
 			break;
 		case 2:
 
 			pi->nphy_pwrctrl_info[0].max_pwr_5gl =
-				(s8) wlapi_getintvar(shim,
-						     BRCMS_SROM_MAXP5GLA0);
+				sprom->core_pwr_info[0].maxpwr_5gl;
 			pi->nphy_pwrctrl_info[1].max_pwr_5gl =
-				(s8) wlapi_getintvar(shim,
-						     BRCMS_SROM_MAXP5GLA1);
+				sprom->core_pwr_info[1].maxpwr_5gl;
 			pi->nphy_pwrctrl_info[0].pwrdet_5gl_a1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GLW0A0);
+				sprom->core_pwr_info[0].pa_5gl[0];
 			pi->nphy_pwrctrl_info[1].pwrdet_5gl_a1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GLW0A1);
+				sprom->core_pwr_info[1].pa_5gl[0];
 			pi->nphy_pwrctrl_info[0].pwrdet_5gl_b0 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GLW1A0);
+				sprom->core_pwr_info[0].pa_5gl[1];
 			pi->nphy_pwrctrl_info[1].pwrdet_5gl_b0 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GLW1A1);
+				sprom->core_pwr_info[1].pa_5gl[1];
 			pi->nphy_pwrctrl_info[0].pwrdet_5gl_b1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GLW2A0);
+				sprom->core_pwr_info[0].pa_5gl[2];
 			pi->nphy_pwrctrl_info[1].pwrdet_5gl_b1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GLW2A1);
+				sprom->core_pwr_info[1].pa_5gl[2];
 			pi->nphy_pwrctrl_info[0].idle_targ_5gl = 0;
 			pi->nphy_pwrctrl_info[1].idle_targ_5gl = 0;
 
-			pi->ofdm5glpo =
-				(u32) wlapi_getintvar(shim,
-						      BRCMS_SROM_OFDM5GLPO);
+			pi->ofdm5glpo = sprom->ofdm5glpo;
 
-			pi->mcs5glpo[0] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GLPO0);
-			pi->mcs5glpo[1] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GLPO1);
-			pi->mcs5glpo[2] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GLPO2);
-			pi->mcs5glpo[3] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GLPO3);
-			pi->mcs5glpo[4] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GLPO4);
-			pi->mcs5glpo[5] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GLPO5);
-			pi->mcs5glpo[6] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GLPO6);
-			pi->mcs5glpo[7] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GLPO7);
+			pi->mcs5glpo[0] = sprom->mcs5glpo[0];
+			pi->mcs5glpo[1] = sprom->mcs5glpo[1];
+			pi->mcs5glpo[2] = sprom->mcs5glpo[2];
+			pi->mcs5glpo[3] = sprom->mcs5glpo[3];
+			pi->mcs5glpo[4] = sprom->mcs5glpo[4];
+			pi->mcs5glpo[5] = sprom->mcs5glpo[5];
+			pi->mcs5glpo[6] = sprom->mcs5glpo[6];
+			pi->mcs5glpo[7] = sprom->mcs5glpo[7];
 			break;
 		case 3:
 
 			pi->nphy_pwrctrl_info[0].max_pwr_5gh =
-				(s8) wlapi_getintvar(shim,
-						     BRCMS_SROM_MAXP5GHA0);
+				sprom->core_pwr_info[0].maxpwr_5gh;
 			pi->nphy_pwrctrl_info[1].max_pwr_5gh =
-				(s8) wlapi_getintvar(shim,
-						     BRCMS_SROM_MAXP5GHA1);
+				sprom->core_pwr_info[1].maxpwr_5gh;
 			pi->nphy_pwrctrl_info[0].pwrdet_5gh_a1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GHW0A0);
+				sprom->core_pwr_info[0].pa_5gh[0];
 			pi->nphy_pwrctrl_info[1].pwrdet_5gh_a1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GHW0A1);
+				sprom->core_pwr_info[1].pa_5gh[0];
 			pi->nphy_pwrctrl_info[0].pwrdet_5gh_b0 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GHW1A0);
+				sprom->core_pwr_info[0].pa_5gh[1];
 			pi->nphy_pwrctrl_info[1].pwrdet_5gh_b0 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GHW1A1);
+				sprom->core_pwr_info[1].pa_5gh[1];
 			pi->nphy_pwrctrl_info[0].pwrdet_5gh_b1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GHW2A0);
+				sprom->core_pwr_info[0].pa_5gh[2];
 			pi->nphy_pwrctrl_info[1].pwrdet_5gh_b1 =
-				(s16) wlapi_getintvar(shim,
-						      BRCMS_SROM_PA5GHW2A1);
+				sprom->core_pwr_info[1].pa_5gh[2];
 			pi->nphy_pwrctrl_info[0].idle_targ_5gh = 0;
 			pi->nphy_pwrctrl_info[1].idle_targ_5gh = 0;
 
-			pi->ofdm5ghpo =
-				(u32) wlapi_getintvar(shim,
-						      BRCMS_SROM_OFDM5GHPO);
+			pi->ofdm5ghpo = sprom->ofdm5ghpo;
 
-			pi->mcs5ghpo[0] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GHPO0);
-			pi->mcs5ghpo[1] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GHPO1);
-			pi->mcs5ghpo[2] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GHPO2);
-			pi->mcs5ghpo[3] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GHPO3);
-			pi->mcs5ghpo[4] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GHPO4);
-			pi->mcs5ghpo[5] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GHPO5);
-			pi->mcs5ghpo[6] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GHPO6);
-			pi->mcs5ghpo[7] =
-				(u16) wlapi_getintvar(shim,
-						      BRCMS_SROM_MCS5GHPO7);
+			pi->mcs5ghpo[0] = sprom->mcs5ghpo[0];
+			pi->mcs5ghpo[1] = sprom->mcs5ghpo[1];
+			pi->mcs5ghpo[2] = sprom->mcs5ghpo[2];
+			pi->mcs5ghpo[3] = sprom->mcs5ghpo[3];
+			pi->mcs5ghpo[4] = sprom->mcs5ghpo[4];
+			pi->mcs5ghpo[5] = sprom->mcs5ghpo[5];
+			pi->mcs5ghpo[6] = sprom->mcs5ghpo[6];
+			pi->mcs5ghpo[7] = sprom->mcs5ghpo[7];
 			break;
 		}
 	}
@@ -14664,45 +14559,34 @@ static void wlc_phy_txpwr_srom_read_ppr_nphy(struct brcms_phy *pi)
 
 static bool wlc_phy_txpwr_srom_read_nphy(struct brcms_phy *pi)
 {
-	struct phy_shim_info *shim = pi->sh->physhim;
+	struct ssb_sprom *sprom = &pi->d11core->bus->sprom;
 
-	pi->antswitch = (u8) wlapi_getintvar(shim, BRCMS_SROM_ANTSWITCH);
-	pi->aa2g = (u8) wlapi_getintvar(shim, BRCMS_SROM_AA2G);
-	pi->aa5g = (u8) wlapi_getintvar(shim, BRCMS_SROM_AA5G);
+	pi->antswitch = sprom->antswitch;
+	pi->aa2g = sprom->ant_available_bg;
+	pi->aa5g = sprom->ant_available_a;
 
-	pi->srom_fem2g.tssipos = (u8) wlapi_getintvar(shim,
-						      BRCMS_SROM_TSSIPOS2G);
-	pi->srom_fem2g.extpagain = (u8) wlapi_getintvar(shim,
-							BRCMS_SROM_EXTPAGAIN2G);
-	pi->srom_fem2g.pdetrange = (u8) wlapi_getintvar(shim,
-							BRCMS_SROM_PDETRANGE2G);
-	pi->srom_fem2g.triso = (u8) wlapi_getintvar(shim, BRCMS_SROM_TRISO2G);
-	pi->srom_fem2g.antswctrllut =
-			(u8) wlapi_getintvar(shim, BRCMS_SROM_ANTSWCTL2G);
+	pi->srom_fem2g.tssipos = sprom->fem.ghz2.tssipos;
+	pi->srom_fem2g.extpagain = sprom->fem.ghz2.extpa_gain;
+	pi->srom_fem2g.pdetrange = sprom->fem.ghz2.pdet_range;
+	pi->srom_fem2g.triso = sprom->fem.ghz2.tr_iso;
+	pi->srom_fem2g.antswctrllut = sprom->fem.ghz2.antswlut;
 
-	pi->srom_fem5g.tssipos = (u8) wlapi_getintvar(shim,
-						      BRCMS_SROM_TSSIPOS5G);
-	pi->srom_fem5g.extpagain = (u8) wlapi_getintvar(shim,
-							BRCMS_SROM_EXTPAGAIN5G);
-	pi->srom_fem5g.pdetrange = (u8) wlapi_getintvar(shim,
-							BRCMS_SROM_PDETRANGE5G);
-	pi->srom_fem5g.triso = (u8) wlapi_getintvar(shim, BRCMS_SROM_TRISO5G);
-	if (wlapi_getvar(shim, BRCMS_SROM_ANTSWCTL5G))
-		pi->srom_fem5g.antswctrllut =
-			(u8) wlapi_getintvar(shim, BRCMS_SROM_ANTSWCTL5G);
+	pi->srom_fem5g.tssipos = sprom->fem.ghz5.tssipos;
+	pi->srom_fem5g.extpagain = sprom->fem.ghz5.extpa_gain;
+	pi->srom_fem5g.pdetrange = sprom->fem.ghz5.pdet_range;
+	pi->srom_fem5g.triso = sprom->fem.ghz5.tr_iso;
+	if (sprom->fem.ghz5.antswlut)
+		pi->srom_fem5g.antswctrllut = sprom->fem.ghz5.antswlut;
 	else
-		pi->srom_fem5g.antswctrllut =
-			(u8) wlapi_getintvar(shim, BRCMS_SROM_ANTSWCTL2G);
+		pi->srom_fem5g.antswctrllut = sprom->fem.ghz2.antswlut;
 
 	wlc_phy_txpower_ipa_upd(pi);
 
-	pi->phy_txcore_disable_temp =
-			(s16) wlapi_getintvar(shim, BRCMS_SROM_TEMPTHRESH);
+	pi->phy_txcore_disable_temp = sprom->tempthresh;
 	if (pi->phy_txcore_disable_temp == 0)
 		pi->phy_txcore_disable_temp = PHY_CHAIN_TX_DISABLE_TEMP;
 
-	pi->phy_tempsense_offset = (s8) wlapi_getintvar(shim,
-							BRCMS_SROM_TEMPOFFSET);
+	pi->phy_tempsense_offset = sprom->tempoffset;
 	if (pi->phy_tempsense_offset != 0) {
 		if (pi->phy_tempsense_offset >
 		    (NPHY_SROM_TEMPSHIFT + NPHY_SROM_MAXTEMPOFFSET))
@@ -14717,8 +14601,7 @@ static bool wlc_phy_txpwr_srom_read_nphy(struct brcms_phy *pi)
 	pi->phy_txcore_enable_temp =
 		pi->phy_txcore_disable_temp - PHY_HYSTERESIS_DELTATEMP;
 
-	pi->phycal_tempdelta =
-			(u8) wlapi_getintvar(shim, BRCMS_SROM_PHYCAL_TEMPDELTA);
+	pi->phycal_tempdelta = sprom->phycal_tempdelta;
 	if (pi->phycal_tempdelta > NPHY_CAL_MAXTEMPDELTA)
 		pi->phycal_tempdelta = 0;
 
@@ -14881,8 +14764,8 @@ static void wlc_phy_ipa_restore_tx_digi_filts_nphy(struct brcms_phy *pi)
 }
 
 static void
-wlc_phy_set_rfseq_nphy(struct brcms_phy *pi, u8 cmd, u8 *events, u8 *dlys,
-		       u8 len)
+wlc_phy_set_rfseq_nphy(struct brcms_phy *pi, u8 cmd, const u8 *events,
+		       const u8 *dlys, u8 len)
 {
 	u32 t1_offset, t2_offset;
 	u8 ctr;
@@ -15357,16 +15240,16 @@ static void wlc_phy_workarounds_nphy_gainctrl_2057_rev5(struct brcms_phy *pi)
 static void wlc_phy_workarounds_nphy_gainctrl_2057_rev6(struct brcms_phy *pi)
 {
 	u16 currband;
-	s8 lna1G_gain_db_rev7[] = { 9, 14, 19, 24 };
-	s8 *lna1_gain_db = NULL;
-	s8 *lna1_gain_db_2 = NULL;
-	s8 *lna2_gain_db = NULL;
-	s8 tiaA_gain_db_rev7[] = { -9, -6, -3, 0, 3, 3, 3, 3, 3, 3 };
-	s8 *tia_gain_db;
-	s8 tiaA_gainbits_rev7[] = { 0, 1, 2, 3, 4, 4, 4, 4, 4, 4 };
-	s8 *tia_gainbits;
-	u16 rfseqA_init_gain_rev7[] = { 0x624f, 0x624f };
-	u16 *rfseq_init_gain;
+	static const s8 lna1G_gain_db_rev7[] = { 9, 14, 19, 24 };
+	const s8 *lna1_gain_db = NULL;
+	const s8 *lna1_gain_db_2 = NULL;
+	const s8 *lna2_gain_db = NULL;
+	static const s8 tiaA_gain_db_rev7[] = { -9, -6, -3, 0, 3, 3, 3, 3, 3, 3 };
+	const s8 *tia_gain_db;
+	static const s8 tiaA_gainbits_rev7[] = { 0, 1, 2, 3, 4, 4, 4, 4, 4, 4 };
+	const s8 *tia_gainbits;
+	static const u16 rfseqA_init_gain_rev7[] = { 0x624f, 0x624f };
+	const u16 *rfseq_init_gain;
 	u16 init_gaincode;
 	u16 clip1hi_gaincode;
 	u16 clip1md_gaincode = 0;
@@ -15427,10 +15310,9 @@ static void wlc_phy_workarounds_nphy_gainctrl_2057_rev6(struct brcms_phy *pi)
 
 			if ((freq <= 5080) || (freq == 5825)) {
 
-				s8 lna1A_gain_db_rev7[] = { 11, 16, 20, 24 };
-				s8 lna1A_gain_db_2_rev7[] = {
-					11, 17, 22, 25};
-				s8 lna2A_gain_db_rev7[] = { -1, 6, 10, 14 };
+				static const s8 lna1A_gain_db_rev7[] = { 11, 16, 20, 24 };
+				static const s8 lna1A_gain_db_2_rev7[] = { 11, 17, 22, 25};
+				static const s8 lna2A_gain_db_rev7[] = { -1, 6, 10, 14 };
 
 				crsminu_th = 0x3e;
 				lna1_gain_db = lna1A_gain_db_rev7;
@@ -15438,10 +15320,9 @@ static void wlc_phy_workarounds_nphy_gainctrl_2057_rev6(struct brcms_phy *pi)
 				lna2_gain_db = lna2A_gain_db_rev7;
 			} else if ((freq >= 5500) && (freq <= 5700)) {
 
-				s8 lna1A_gain_db_rev7[] = { 11, 17, 21, 25 };
-				s8 lna1A_gain_db_2_rev7[] = {
-					12, 18, 22, 26};
-				s8 lna2A_gain_db_rev7[] = { 1, 8, 12, 16 };
+				static const s8 lna1A_gain_db_rev7[] = { 11, 17, 21, 25 };
+				static const s8 lna1A_gain_db_2_rev7[] = { 12, 18, 22, 26};
+				static const s8 lna2A_gain_db_rev7[] = { 1, 8, 12, 16 };
 
 				crsminu_th = 0x45;
 				clip1md_gaincode_B = 0x14;
@@ -15452,10 +15333,9 @@ static void wlc_phy_workarounds_nphy_gainctrl_2057_rev6(struct brcms_phy *pi)
 				lna2_gain_db = lna2A_gain_db_rev7;
 			} else {
 
-				s8 lna1A_gain_db_rev7[] = { 12, 18, 22, 26 };
-				s8 lna1A_gain_db_2_rev7[] = {
-					12, 18, 22, 26};
-				s8 lna2A_gain_db_rev7[] = { -1, 6, 10, 14 };
+				static const s8 lna1A_gain_db_rev7[] = { 12, 18, 22, 26 };
+				static const s8 lna1A_gain_db_2_rev7[] = { 12, 18, 22, 26};
+				static const s8 lna2A_gain_db_rev7[] = { -1, 6, 10, 14 };
 
 				crsminu_th = 0x41;
 				lna1_gain_db = lna1A_gain_db_rev7;
@@ -15567,65 +15447,65 @@ static void wlc_phy_workarounds_nphy_gainctrl(struct brcms_phy *pi)
 		NPHY_RFSEQ_CMD_CLR_HIQ_DIS,
 		NPHY_RFSEQ_CMD_SET_HPF_BW
 	};
-	u8 rfseq_updategainu_dlys[] = { 10, 30, 1 };
-	s8 lna1G_gain_db[] = { 7, 11, 16, 23 };
-	s8 lna1G_gain_db_rev4[] = { 8, 12, 17, 25 };
-	s8 lna1G_gain_db_rev5[] = { 9, 13, 18, 26 };
-	s8 lna1G_gain_db_rev6[] = { 8, 13, 18, 25 };
-	s8 lna1G_gain_db_rev6_224B0[] = { 10, 14, 19, 27 };
-	s8 lna1A_gain_db[] = { 7, 11, 17, 23 };
-	s8 lna1A_gain_db_rev4[] = { 8, 12, 18, 23 };
-	s8 lna1A_gain_db_rev5[] = { 6, 10, 16, 21 };
-	s8 lna1A_gain_db_rev6[] = { 6, 10, 16, 21 };
-	s8 *lna1_gain_db = NULL;
-	s8 lna2G_gain_db[] = { -5, 6, 10, 14 };
-	s8 lna2G_gain_db_rev5[] = { -3, 7, 11, 16 };
-	s8 lna2G_gain_db_rev6[] = { -5, 6, 10, 14 };
-	s8 lna2G_gain_db_rev6_224B0[] = { -5, 6, 10, 15 };
-	s8 lna2A_gain_db[] = { -6, 2, 6, 10 };
-	s8 lna2A_gain_db_rev4[] = { -5, 2, 6, 10 };
-	s8 lna2A_gain_db_rev5[] = { -7, 0, 4, 8 };
-	s8 lna2A_gain_db_rev6[] = { -7, 0, 4, 8 };
-	s8 *lna2_gain_db = NULL;
-	s8 tiaG_gain_db[] = {
+	static const u8 rfseq_updategainu_dlys[] = { 10, 30, 1 };
+	static const s8 lna1G_gain_db[] = { 7, 11, 16, 23 };
+	static const s8 lna1G_gain_db_rev4[] = { 8, 12, 17, 25 };
+	static const s8 lna1G_gain_db_rev5[] = { 9, 13, 18, 26 };
+	static const s8 lna1G_gain_db_rev6[] = { 8, 13, 18, 25 };
+	static const s8 lna1G_gain_db_rev6_224B0[] = { 10, 14, 19, 27 };
+	static const s8 lna1A_gain_db[] = { 7, 11, 17, 23 };
+	static const s8 lna1A_gain_db_rev4[] = { 8, 12, 18, 23 };
+	static const s8 lna1A_gain_db_rev5[] = { 6, 10, 16, 21 };
+	static const s8 lna1A_gain_db_rev6[] = { 6, 10, 16, 21 };
+	const s8 *lna1_gain_db = NULL;
+	static const s8 lna2G_gain_db[] = { -5, 6, 10, 14 };
+	static const s8 lna2G_gain_db_rev5[] = { -3, 7, 11, 16 };
+	static const s8 lna2G_gain_db_rev6[] = { -5, 6, 10, 14 };
+	static const s8 lna2G_gain_db_rev6_224B0[] = { -5, 6, 10, 15 };
+	static const s8 lna2A_gain_db[] = { -6, 2, 6, 10 };
+	static const s8 lna2A_gain_db_rev4[] = { -5, 2, 6, 10 };
+	static const s8 lna2A_gain_db_rev5[] = { -7, 0, 4, 8 };
+	static const s8 lna2A_gain_db_rev6[] = { -7, 0, 4, 8 };
+	const s8 *lna2_gain_db = NULL;
+	static const s8 tiaG_gain_db[] = {
 		0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A };
-	s8 tiaA_gain_db[] = {
+	static const s8 tiaA_gain_db[] = {
 		0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13 };
-	s8 tiaA_gain_db_rev4[] = {
+	static const s8 tiaA_gain_db_rev4[] = {
 		0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d };
-	s8 tiaA_gain_db_rev5[] = {
+	static const s8 tiaA_gain_db_rev5[] = {
 		0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d };
-	s8 tiaA_gain_db_rev6[] = {
+	static const s8 tiaA_gain_db_rev6[] = {
 		0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d };
-	s8 *tia_gain_db;
-	s8 tiaG_gainbits[] = {
+	const s8 *tia_gain_db;
+	static const s8 tiaG_gainbits[] = {
 		0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03 };
-	s8 tiaA_gainbits[] = {
+	static const s8 tiaA_gainbits[] = {
 		0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06 };
-	s8 tiaA_gainbits_rev4[] = {
+	static const s8 tiaA_gainbits_rev4[] = {
 		0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
-	s8 tiaA_gainbits_rev5[] = {
+	static const s8 tiaA_gainbits_rev5[] = {
 		0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
-	s8 tiaA_gainbits_rev6[] = {
+	static const s8 tiaA_gainbits_rev6[] = {
 		0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
-	s8 *tia_gainbits;
-	s8 lpf_gain_db[] = { 0x00, 0x06, 0x0c, 0x12, 0x12, 0x12 };
-	s8 lpf_gainbits[] = { 0x00, 0x01, 0x02, 0x03, 0x03, 0x03 };
-	u16 rfseqG_init_gain[] = { 0x613f, 0x613f, 0x613f, 0x613f };
-	u16 rfseqG_init_gain_rev4[] = { 0x513f, 0x513f, 0x513f, 0x513f };
-	u16 rfseqG_init_gain_rev5[] = { 0x413f, 0x413f, 0x413f, 0x413f };
-	u16 rfseqG_init_gain_rev5_elna[] = {
+	const s8 *tia_gainbits;
+	static const s8 lpf_gain_db[] = { 0x00, 0x06, 0x0c, 0x12, 0x12, 0x12 };
+	static const s8 lpf_gainbits[] = { 0x00, 0x01, 0x02, 0x03, 0x03, 0x03 };
+	static const u16 rfseqG_init_gain[] = { 0x613f, 0x613f, 0x613f, 0x613f };
+	static const u16 rfseqG_init_gain_rev4[] = { 0x513f, 0x513f, 0x513f, 0x513f };
+	static const u16 rfseqG_init_gain_rev5[] = { 0x413f, 0x413f, 0x413f, 0x413f };
+	static const u16 rfseqG_init_gain_rev5_elna[] = {
 		0x013f, 0x013f, 0x013f, 0x013f };
-	u16 rfseqG_init_gain_rev6[] = { 0x513f, 0x513f };
-	u16 rfseqG_init_gain_rev6_224B0[] = { 0x413f, 0x413f };
-	u16 rfseqG_init_gain_rev6_elna[] = { 0x113f, 0x113f };
-	u16 rfseqA_init_gain[] = { 0x516f, 0x516f, 0x516f, 0x516f };
-	u16 rfseqA_init_gain_rev4[] = { 0x614f, 0x614f, 0x614f, 0x614f };
-	u16 rfseqA_init_gain_rev4_elna[] = {
+	static const u16 rfseqG_init_gain_rev6[] = { 0x513f, 0x513f };
+	static const u16 rfseqG_init_gain_rev6_224B0[] = { 0x413f, 0x413f };
+	static const u16 rfseqG_init_gain_rev6_elna[] = { 0x113f, 0x113f };
+	static const u16 rfseqA_init_gain[] = { 0x516f, 0x516f, 0x516f, 0x516f };
+	static const u16 rfseqA_init_gain_rev4[] = { 0x614f, 0x614f, 0x614f, 0x614f };
+	static const u16 rfseqA_init_gain_rev4_elna[] = {
 		0x314f, 0x314f, 0x314f, 0x314f };
-	u16 rfseqA_init_gain_rev5[] = { 0x714f, 0x714f, 0x714f, 0x714f };
-	u16 rfseqA_init_gain_rev6[] = { 0x714f, 0x714f };
-	u16 *rfseq_init_gain;
+	static const u16 rfseqA_init_gain_rev5[] = { 0x714f, 0x714f, 0x714f, 0x714f };
+	static const u16 rfseqA_init_gain_rev6[] = { 0x714f, 0x714f };
+	const u16 *rfseq_init_gain;
 	u16 initG_gaincode = 0x627e;
 	u16 initG_gaincode_rev4 = 0x527e;
 	u16 initG_gaincode_rev5 = 0x427e;
@@ -15655,10 +15535,10 @@ static void wlc_phy_workarounds_nphy_gainctrl(struct brcms_phy *pi)
 	u16 clip1mdA_gaincode_rev6 = 0x2084;
 	u16 clip1md_gaincode = 0;
 	u16 clip1loG_gaincode = 0x0074;
-	u16 clip1loG_gaincode_rev5[] = {
+	static const u16 clip1loG_gaincode_rev5[] = {
 		0x0062, 0x0064, 0x006a, 0x106a, 0x106c, 0x1074, 0x107c, 0x207c
 	};
-	u16 clip1loG_gaincode_rev6[] = {
+	static const u16 clip1loG_gaincode_rev6[] = {
 		0x106a, 0x106c, 0x1074, 0x107c, 0x007e, 0x107e, 0x207e, 0x307e
 	};
 	u16 clip1loG_gaincode_rev6_224B0 = 0x1074;
@@ -16183,7 +16063,7 @@ static void wlc_phy_workarounds_nphy_gainctrl(struct brcms_phy *pi)
 
 static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 {
-	u8 rfseq_rx2tx_events[] = {
+	static const u8 rfseq_rx2tx_events[] = {
 		NPHY_RFSEQ_CMD_NOP,
 		NPHY_RFSEQ_CMD_RXG_FBW,
 		NPHY_RFSEQ_CMD_TR_SWITCH,
@@ -16193,7 +16073,7 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 		NPHY_RFSEQ_CMD_EXT_PA
 	};
 	u8 rfseq_rx2tx_dlys[] = { 8, 6, 6, 2, 4, 60, 1 };
-	u8 rfseq_tx2rx_events[] = {
+	static const u8 rfseq_tx2rx_events[] = {
 		NPHY_RFSEQ_CMD_NOP,
 		NPHY_RFSEQ_CMD_EXT_PA,
 		NPHY_RFSEQ_CMD_TX_GAIN,
@@ -16202,8 +16082,8 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 		NPHY_RFSEQ_CMD_RXG_FBW,
 		NPHY_RFSEQ_CMD_CLR_HIQ_DIS
 	};
-	u8 rfseq_tx2rx_dlys[] = { 8, 6, 2, 4, 4, 6, 1 };
-	u8 rfseq_tx2rx_events_rev3[] = {
+	static const u8 rfseq_tx2rx_dlys[] = { 8, 6, 2, 4, 4, 6, 1 };
+	static const u8 rfseq_tx2rx_events_rev3[] = {
 		NPHY_REV3_RFSEQ_CMD_EXT_PA,
 		NPHY_REV3_RFSEQ_CMD_INT_PA_PU,
 		NPHY_REV3_RFSEQ_CMD_TX_GAIN,
@@ -16213,7 +16093,7 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 		NPHY_REV3_RFSEQ_CMD_CLR_HIQ_DIS,
 		NPHY_REV3_RFSEQ_CMD_END
 	};
-	u8 rfseq_tx2rx_dlys_rev3[] = { 8, 4, 2, 2, 4, 4, 6, 1 };
+	static const u8 rfseq_tx2rx_dlys_rev3[] = { 8, 4, 2, 2, 4, 4, 6, 1 };
 	u8 rfseq_rx2tx_events_rev3[] = {
 		NPHY_REV3_RFSEQ_CMD_NOP,
 		NPHY_REV3_RFSEQ_CMD_RXG_FBW,
@@ -16227,7 +16107,7 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 	};
 	u8 rfseq_rx2tx_dlys_rev3[] = { 8, 6, 6, 4, 4, 18, 42, 1, 1 };
 
-	u8 rfseq_rx2tx_events_rev3_ipa[] = {
+	static const u8 rfseq_rx2tx_events_rev3_ipa[] = {
 		NPHY_REV3_RFSEQ_CMD_NOP,
 		NPHY_REV3_RFSEQ_CMD_RXG_FBW,
 		NPHY_REV3_RFSEQ_CMD_TR_SWITCH,
@@ -16238,15 +16118,15 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 		NPHY_REV3_RFSEQ_CMD_INT_PA_PU,
 		NPHY_REV3_RFSEQ_CMD_END
 	};
-	u8 rfseq_rx2tx_dlys_rev3_ipa[] = { 8, 6, 6, 4, 4, 16, 43, 1, 1 };
-	u16 rfseq_rx2tx_dacbufpu_rev7[] = { 0x10f, 0x10f };
+	static const u8 rfseq_rx2tx_dlys_rev3_ipa[] = { 8, 6, 6, 4, 4, 16, 43, 1, 1 };
+	static const u16 rfseq_rx2tx_dacbufpu_rev7[] = { 0x10f, 0x10f };
 
 	s16 alpha0, alpha1, alpha2;
 	s16 beta0, beta1, beta2;
 	u32 leg_data_weights, ht_data_weights, nss1_data_weights,
 	    stbc_data_weights;
 	u8 chan_freq_range = 0;
-	u16 dac_control = 0x0002;
+	static const u16 dac_control = 0x0002;
 	u16 aux_adc_vmid_rev7_core0[] = { 0x8e, 0x96, 0x96, 0x96 };
 	u16 aux_adc_vmid_rev7_core1[] = { 0x8f, 0x9f, 0x9f, 0x96 };
 	u16 aux_adc_vmid_rev4[] = { 0xa2, 0xb4, 0xb4, 0x89 };
@@ -16256,8 +16136,8 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 	u16 aux_adc_gain_rev4[] = { 0x02, 0x02, 0x02, 0x00 };
 	u16 aux_adc_gain_rev3[] = { 0x02, 0x02, 0x02, 0x00 };
 	u16 *aux_adc_gain;
-	u16 sk_adc_vmid[] = { 0xb4, 0xb4, 0xb4, 0x24 };
-	u16 sk_adc_gain[] = { 0x02, 0x02, 0x02, 0x02 };
+	static const u16 sk_adc_vmid[] = { 0xb4, 0xb4, 0xb4, 0x24 };
+	static const u16 sk_adc_gain[] = { 0x02, 0x02, 0x02, 0x02 };
 	s32 min_nvar_val = 0x18d;
 	s32 min_nvar_offset_6mbps = 20;
 	u8 pdetrange;
@@ -16268,9 +16148,9 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 	u16 rfseq_rx2tx_lpf_h_hpc_rev7 = 0x77;
 	u16 rfseq_tx2rx_lpf_h_hpc_rev7 = 0x77;
 	u16 rfseq_pktgn_lpf_h_hpc_rev7 = 0x77;
-	u16 rfseq_htpktgn_lpf_hpc_rev7[] = { 0x77, 0x11, 0x11 };
-	u16 rfseq_pktgn_lpf_hpc_rev7[] = { 0x11, 0x11 };
-	u16 rfseq_cckpktgn_lpf_hpc_rev7[] = { 0x11, 0x11 };
+	static const u16 rfseq_htpktgn_lpf_hpc_rev7[] = { 0x77, 0x11, 0x11 };
+	static const u16 rfseq_pktgn_lpf_hpc_rev7[] = { 0x11, 0x11 };
+	static const u16 rfseq_cckpktgn_lpf_hpc_rev7[] = { 0x11, 0x11 };
 	u16 ipalvlshift_3p3_war_en = 0;
 	u16 rccal_bcap_val, rccal_scap_val;
 	u16 rccal_tx20_11b_bcap = 0;
@@ -16353,11 +16233,7 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 			wlc_phy_set_rfseq_nphy(pi, NPHY_RFSEQ_RX2TX,
 					       rfseq_rx2tx_events_rev3_ipa,
 					       rfseq_rx2tx_dlys_rev3_ipa,
-					       sizeof
-					       (rfseq_rx2tx_events_rev3_ipa) /
-					       sizeof
-					       (rfseq_rx2tx_events_rev3_ipa
-						[0]));
+					       ARRAY_SIZE(rfseq_rx2tx_events_rev3_ipa));
 
 		mod_phy_reg(pi, 0x299, (0x3 << 14), (0x1 << 14));
 		mod_phy_reg(pi, 0x29d, (0x3 << 14), (0x1 << 14));
@@ -16858,18 +16734,13 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 		wlc_phy_set_rfseq_nphy(pi, NPHY_RFSEQ_TX2RX,
 				       rfseq_tx2rx_events_rev3,
 				       rfseq_tx2rx_dlys_rev3,
-				       sizeof(rfseq_tx2rx_events_rev3) /
-				       sizeof(rfseq_tx2rx_events_rev3[0]));
+				       ARRAY_SIZE(rfseq_tx2rx_events_rev3));
 
 		if (PHY_IPA(pi))
 			wlc_phy_set_rfseq_nphy(pi, NPHY_RFSEQ_RX2TX,
 					       rfseq_rx2tx_events_rev3_ipa,
 					       rfseq_rx2tx_dlys_rev3_ipa,
-					       sizeof
-					       (rfseq_rx2tx_events_rev3_ipa) /
-					       sizeof
-					       (rfseq_rx2tx_events_rev3_ipa
-						[0]));
+					       ARRAY_SIZE(rfseq_rx2tx_events_rev3_ipa));
 
 		if ((pi->sh->hw_phyrxchain != 0x3) &&
 		    (pi->sh->hw_phyrxchain != pi->sh->hw_phytxchain)) {
@@ -16885,8 +16756,7 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 				pi, NPHY_RFSEQ_RX2TX,
 				rfseq_rx2tx_events_rev3,
 				rfseq_rx2tx_dlys_rev3,
-				sizeof(rfseq_rx2tx_events_rev3)	/
-				sizeof(rfseq_rx2tx_events_rev3[0]));
+				ARRAY_SIZE(rfseq_rx2tx_events_rev3));
 		}
 
 		if (CHSPEC_IS2G(pi->radio_chanspec))
@@ -17209,13 +17079,11 @@ static void wlc_phy_workarounds_nphy(struct brcms_phy *pi)
 
 		wlc_phy_set_rfseq_nphy(pi, NPHY_RFSEQ_RX2TX, rfseq_rx2tx_events,
 				       rfseq_rx2tx_dlys,
-				       sizeof(rfseq_rx2tx_events) /
-				       sizeof(rfseq_rx2tx_events[0]));
+				       ARRAY_SIZE(rfseq_rx2tx_events));
 
 		wlc_phy_set_rfseq_nphy(pi, NPHY_RFSEQ_TX2RX, rfseq_tx2rx_events,
 				       rfseq_tx2rx_dlys,
-				       sizeof(rfseq_tx2rx_events) /
-				       sizeof(rfseq_tx2rx_events[0]));
+				       ARRAY_SIZE(rfseq_tx2rx_events));
 
 		wlc_phy_workarounds_nphy_gainctrl(pi);
 
@@ -18022,6 +17890,8 @@ static u32 *wlc_phy_get_ipa_gaintbl_nphy(struct brcms_phy *pi)
 					nphy_tpc_txgain_ipa_2g_2057rev7;
 		} else if (NREV_IS(pi->pubpi.phy_rev, 6)) {
 			tx_pwrctrl_tbl = nphy_tpc_txgain_ipa_rev6;
+			if (pi->sh->chip == BCMA_CHIP_ID_BCM47162)
+				tx_pwrctrl_tbl = nphy_tpc_txgain_ipa_rev5;
 		} else if (NREV_IS(pi->pubpi.phy_rev, 5)) {
 			tx_pwrctrl_tbl = nphy_tpc_txgain_ipa_rev5;
 		} else {
@@ -19357,8 +19227,7 @@ static void wlc_phy_spurwar_nphy(struct brcms_phy *pi)
 			}
 
 			if (isAdjustNoiseVar) {
-				numTonesAdjust = sizeof(nphy_adj_tone_id_buf) /
-						sizeof(nphy_adj_tone_id_buf[0]);
+				numTonesAdjust = ARRAY_SIZE(nphy_adj_tone_id_buf);
 
 				wlc_phy_adjust_min_noisevar_nphy(
 					pi,
@@ -19384,8 +19253,14 @@ static void wlc_phy_spurwar_nphy(struct brcms_phy *pi)
 			case 38:
 			case 102:
 			case 118:
-				nphy_adj_tone_id_buf[0] = 0;
-				nphy_adj_noise_var_buf[0] = 0x0;
+				if ((pi->sh->chip == BCMA_CHIP_ID_BCM4716) &&
+				    (pi->sh->chippkg == BCMA_PKG_ID_BCM4717)) {
+					nphy_adj_tone_id_buf[0] = 32;
+					nphy_adj_noise_var_buf[0] = 0x21f;
+				} else {
+					nphy_adj_tone_id_buf[0] = 0;
+					nphy_adj_noise_var_buf[0] = 0x0;
+				}
 				break;
 			case 134:
 				nphy_adj_tone_id_buf[0] = 32;
@@ -19439,14 +19314,17 @@ void wlc_phy_init_nphy(struct brcms_phy *pi)
 		pi->measure_hold |= PHY_HOLD_FOR_NOT_ASSOC;
 
 	if ((ISNPHY(pi)) && (NREV_GE(pi->pubpi.phy_rev, 5)) &&
-	    ((pi->sh->chippkg == BCM4717_PKG_ID) ||
-	     (pi->sh->chippkg == BCM4718_PKG_ID))) {
+	    ((pi->sh->chippkg == BCMA_PKG_ID_BCM4717) ||
+	     (pi->sh->chippkg == BCMA_PKG_ID_BCM4718))) {
 		if ((pi->sh->boardflags & BFL_EXTLNA) &&
 		    (CHSPEC_IS2G(pi->radio_chanspec)))
-			ai_cc_reg(pi->sh->sih,
-				  offsetof(struct chipcregs, chipcontrol),
-				  0x40, 0x40);
+			bcma_cc_set32(&pi->d11core->bus->drv_cc,
+				      BCMA_CC_CHIPCTL, 0x40);
 	}
+
+	if ((!PHY_IPA(pi)) && (pi->sh->chip == BCMA_CHIP_ID_BCM5357))
+		bcma_chipco_chipctl_maskset(&pi->d11core->bus->drv_cc, 1,
+					    ~CCTRL5357_EXTPA, CCTRL5357_EXTPA);
 
 	if ((pi->nphy_gband_spurwar2_en) && CHSPEC_IS2G(pi->radio_chanspec) &&
 	    CHSPEC_IS40(pi->radio_chanspec)) {
@@ -19853,7 +19731,7 @@ void wlc_phy_rxcore_setstate_nphy(struct brcms_phy_pub *pih, u8 rxcore_bitmask)
 	u16 regval;
 	u16 tbl_buf[16];
 	uint i;
-	struct brcms_phy *pi = (struct brcms_phy *) pih;
+	struct brcms_phy *pi = container_of(pih, struct brcms_phy, pubpi_ro);
 	u16 tbl_opcode;
 	bool suspend;
 
@@ -19931,7 +19809,7 @@ void wlc_phy_rxcore_setstate_nphy(struct brcms_phy_pub *pih, u8 rxcore_bitmask)
 u8 wlc_phy_rxcore_getstate_nphy(struct brcms_phy_pub *pih)
 {
 	u16 regval, rxen_bits;
-	struct brcms_phy *pi = (struct brcms_phy *) pih;
+	struct brcms_phy *pi = container_of(pih, struct brcms_phy, pubpi_ro);
 
 	regval = read_phy_reg(pi, 0xa2);
 	rxen_bits = (regval >> 4) & 0xf;
@@ -20825,12 +20703,22 @@ wlc_phy_chanspec_radio2056_setup(struct brcms_phy *pi,
 			write_radio_reg(pi, RADIO_2056_SYN_PLL_LOOPFILTER2 |
 					RADIO_2056_SYN, 0x1f);
 
-			write_radio_reg(pi,
-					RADIO_2056_SYN_PLL_LOOPFILTER4 |
-					RADIO_2056_SYN, 0xb);
-			write_radio_reg(pi,
-					RADIO_2056_SYN_PLL_CP2 |
-					RADIO_2056_SYN, 0x14);
+			if ((pi->sh->chip == BCMA_CHIP_ID_BCM4716) ||
+			    (pi->sh->chip == BCMA_CHIP_ID_BCM47162)) {
+				write_radio_reg(pi,
+						RADIO_2056_SYN_PLL_LOOPFILTER4 |
+						RADIO_2056_SYN, 0x14);
+				write_radio_reg(pi,
+						RADIO_2056_SYN_PLL_CP2 |
+						RADIO_2056_SYN, 0x00);
+			} else {
+				write_radio_reg(pi,
+						RADIO_2056_SYN_PLL_LOOPFILTER4 |
+						RADIO_2056_SYN, 0xb);
+				write_radio_reg(pi,
+						RADIO_2056_SYN_PLL_CP2 |
+						RADIO_2056_SYN, 0x14);
+			}
 		}
 	}
 
@@ -20877,24 +20765,30 @@ wlc_phy_chanspec_radio2056_setup(struct brcms_phy *pi,
 				WRITE_RADIO_REG2(pi, RADIO_2056, TX, core,
 						 PADG_IDAC, 0xcc);
 
-				bias = 0x25;
-				cascbias = 0x20;
+				if ((pi->sh->chip == BCMA_CHIP_ID_BCM4716) ||
+				    (pi->sh->chip == BCMA_CHIP_ID_BCM47162)) {
+					bias = 0x40;
+					cascbias = 0x45;
+					pag_boost_tune = 0x5;
+					pgag_boost_tune = 0x33;
+					padg_boost_tune = 0x77;
+					mixg_boost_tune = 0x55;
+				} else {
+					bias = 0x25;
+					cascbias = 0x20;
 
-				if ((pi->sh->chip ==
-				     BCM43224_CHIP_ID)
-				    || (pi->sh->chip ==
-					BCM43225_CHIP_ID)) {
-					if (pi->sh->chippkg ==
-					    BCM43224_FAB_SMIC) {
+					if ((pi->sh->chip == BCMA_CHIP_ID_BCM43224 ||
+					     pi->sh->chip == BCMA_CHIP_ID_BCM43225) &&
+					    pi->sh->chippkg == BCMA_PKG_ID_BCM43224_FAB_SMIC) {
 						bias = 0x2a;
 						cascbias = 0x38;
 					}
-				}
 
-				pag_boost_tune = 0x4;
-				pgag_boost_tune = 0x03;
-				padg_boost_tune = 0x77;
-				mixg_boost_tune = 0x65;
+					pag_boost_tune = 0x4;
+					pgag_boost_tune = 0x03;
+					padg_boost_tune = 0x77;
+					mixg_boost_tune = 0x65;
+				}
 
 				WRITE_RADIO_REG2(pi, RADIO_2056, TX, core,
 						 INTPAG_IMAIN_STAT, bias);
@@ -20993,11 +20887,10 @@ wlc_phy_chanspec_radio2056_setup(struct brcms_phy *pi,
 
 			cascbias = 0x30;
 
-			if ((pi->sh->chip == BCM43224_CHIP_ID) ||
-			    (pi->sh->chip == BCM43225_CHIP_ID)) {
-				if (pi->sh->chippkg == BCM43224_FAB_SMIC)
-					cascbias = 0x35;
-			}
+			if ((pi->sh->chip == BCMA_CHIP_ID_BCM43224 ||
+			     pi->sh->chip == BCMA_CHIP_ID_BCM43225) &&
+			    pi->sh->chippkg == BCMA_PKG_ID_BCM43224_FAB_SMIC)
+				cascbias = 0x35;
 
 			pabias = (pi->phy_pabias == 0) ? 0x30 : pi->phy_pabias;
 
@@ -21308,22 +21201,32 @@ wlc_phy_chanspec_nphy_setup(struct brcms_phy *pi, u16 chanspec,
 		} else if (NREV_GE(pi->pubpi.phy_rev, 7)) {
 			if (val == 54)
 				spuravoid = 1;
-		} else {
-			if (pi->nphy_aband_spurwar_en &&
-			    ((val == 38) || (val == 102)
-			     || (val == 118)))
+		} else if (pi->nphy_aband_spurwar_en &&
+		    ((val == 38) || (val == 102) || (val == 118))) {
+			if ((pi->sh->chip == BCMA_CHIP_ID_BCM4716)
+			    && (pi->sh->chippkg == BCMA_PKG_ID_BCM4717)) {
+				spuravoid = 0;
+			} else {
 				spuravoid = 1;
+			}
 		}
 
 		if (pi->phy_spuravoid == SPURAVOID_FORCEON)
 			spuravoid = 1;
 
-		wlapi_bmac_core_phypll_ctl(pi->sh->physhim, false);
-		si_pmu_spuravoid_pllupdate(pi->sh->sih, spuravoid);
-		wlapi_bmac_core_phypll_ctl(pi->sh->physhim, true);
+		if ((pi->sh->chip == BCMA_CHIP_ID_BCM4716) ||
+		    (pi->sh->chip == BCMA_CHIP_ID_BCM43225)) {
+			bcma_pmu_spuravoid_pllupdate(&pi->d11core->bus->drv_cc,
+						     spuravoid);
+		} else {
+			wlapi_bmac_core_phypll_ctl(pi->sh->physhim, false);
+			bcma_pmu_spuravoid_pllupdate(&pi->d11core->bus->drv_cc,
+						     spuravoid);
+			wlapi_bmac_core_phypll_ctl(pi->sh->physhim, true);
+		}
 
-		if ((pi->sh->chip == BCM43224_CHIP_ID) ||
-		    (pi->sh->chip == BCM43225_CHIP_ID)) {
+		if ((pi->sh->chip == BCMA_CHIP_ID_BCM43224) ||
+		    (pi->sh->chip == BCMA_CHIP_ID_BCM43225)) {
 			if (spuravoid == 1) {
 				bcma_write16(pi->d11core,
 					     D11REGOFFS(tsf_clk_frac_l),
@@ -21339,7 +21242,9 @@ wlc_phy_chanspec_nphy_setup(struct brcms_phy *pi, u16 chanspec,
 			}
 		}
 
-		wlapi_bmac_core_phypll_reset(pi->sh->physhim);
+		if (!((pi->sh->chip == BCMA_CHIP_ID_BCM4716) ||
+		      (pi->sh->chip == BCMA_CHIP_ID_BCM47162)))
+			wlapi_bmac_core_phypll_reset(pi->sh->physhim);
 
 		mod_phy_reg(pi, 0x01, (0x1 << 15),
 			    ((spuravoid > 0) ? (0x1 << 15) : 0));
@@ -21434,7 +21339,7 @@ void wlc_phy_chanspec_set_nphy(struct brcms_phy *pi, u16 chanspec)
 
 void wlc_phy_antsel_init(struct brcms_phy_pub *ppi, bool lut_init)
 {
-	struct brcms_phy *pi = (struct brcms_phy *) ppi;
+	struct brcms_phy *pi = container_of(ppi, struct brcms_phy, pubpi_ro);
 	u16 mask = 0xfc00;
 	u32 mc = 0;
 
@@ -21473,7 +21378,7 @@ void wlc_phy_antsel_init(struct brcms_phy_pub *ppi, bool lut_init)
 		write_phy_reg(pi, 0xc8, 0x0);
 		write_phy_reg(pi, 0xc9, 0x0);
 
-		ai_gpiocontrol(pi->sh->sih, mask, mask, GPIO_DRV_PRIORITY);
+		bcma_chipco_gpio_control(&pi->d11core->bus->drv_cc, mask, mask);
 
 		mc = bcma_read32(pi->d11core, D11REGOFFS(maccontrol));
 		mc &= ~MCTL_GPOUT_SEL_MASK;
@@ -22301,9 +22206,15 @@ s16 wlc_phy_tempsense_nphy(struct brcms_phy *pi)
 		wlc_phy_table_write_nphy(pi, NPHY_TBL_ID_AFECTRL, 1, 0x03, 16,
 					 &auxADC_rssi_ctrlH_save);
 
-		radio_temp[0] = (179 * (radio_temp[1] + radio_temp2[1])
-				 + 82 * (auxADC_Vl) - 28861 +
-				 128) / 256;
+		if (pi->sh->chip == BCMA_CHIP_ID_BCM5357) {
+			radio_temp[0] = (193 * (radio_temp[1] + radio_temp2[1])
+					 + 88 * (auxADC_Vl) - 27111 +
+					 128) / 256;
+		} else {
+			radio_temp[0] = (179 * (radio_temp[1] + radio_temp2[1])
+					 + 82 * (auxADC_Vl) - 28861 +
+					 128) / 256;
+		}
 
 		offset = (s16) pi->phy_tempsense_offset;
 
@@ -23002,7 +22913,6 @@ static void wlc_phy_rssi_cal_nphy_rev2(struct brcms_phy *pi, u8 rssi_type)
 		break;
 	default:
 		return;
-		break;
 	}
 
 	classif_state = wlc_phy_classifier_nphy(pi, 0, 0);
@@ -23128,10 +23038,7 @@ static void wlc_phy_rssi_cal_nphy_rev2(struct brcms_phy *pi, u8 rssi_type)
 	else if (rssi_ctrl_state[0] == RADIO_2055_WBRSSI_G1_SEL)
 		wlc_phy_rssisel_nphy(pi, RADIO_MIMO_CORESEL_CORE1,
 				     NPHY_RSSI_SEL_W1);
-	else if (rssi_ctrl_state[0] == RADIO_2055_WBRSSI_G2_SEL)
-		wlc_phy_rssisel_nphy(pi, RADIO_MIMO_CORESEL_CORE1,
-				     NPHY_RSSI_SEL_W2);
-	else
+	else /* RADIO_2055_WBRSSI_G2_SEL */
 		wlc_phy_rssisel_nphy(pi, RADIO_MIMO_CORESEL_CORE1,
 				     NPHY_RSSI_SEL_W2);
 	if (rssi_ctrl_state[1] == RADIO_2055_NBRSSI_SEL)
@@ -23140,13 +23047,9 @@ static void wlc_phy_rssi_cal_nphy_rev2(struct brcms_phy *pi, u8 rssi_type)
 	else if (rssi_ctrl_state[1] == RADIO_2055_WBRSSI_G1_SEL)
 		wlc_phy_rssisel_nphy(pi, RADIO_MIMO_CORESEL_CORE2,
 				     NPHY_RSSI_SEL_W1);
-	else if (rssi_ctrl_state[1] == RADIO_2055_WBRSSI_G2_SEL)
+	else /* RADIO_2055_WBRSSI_G1_SEL */
 		wlc_phy_rssisel_nphy(pi, RADIO_MIMO_CORESEL_CORE2,
 				     NPHY_RSSI_SEL_W2);
-	else
-		wlc_phy_rssisel_nphy(pi, RADIO_MIMO_CORESEL_CORE2,
-				     NPHY_RSSI_SEL_W2);
-
 	wlc_phy_rssisel_nphy(pi, RADIO_MIMO_CORESEL_OFF, rssi_type);
 
 	write_phy_reg(pi, 0x91, rfctrlintc_state[0]);
@@ -24385,13 +24288,13 @@ static void wlc_phy_update_txcal_ladder_nphy(struct brcms_phy *pi, u16 core)
 	u16 bbmult;
 	u16 tblentry;
 
-	struct nphy_txiqcal_ladder ladder_lo[] = {
+	static const struct nphy_txiqcal_ladder ladder_lo[] = {
 		{3, 0}, {4, 0}, {6, 0}, {9, 0}, {13, 0}, {18, 0},
 		{25, 0}, {25, 1}, {25, 2}, {25, 3}, {25, 4}, {25, 5},
 		{25, 6}, {25, 7}, {35, 7}, {50, 7}, {71, 7}, {100, 7}
 	};
 
-	struct nphy_txiqcal_ladder ladder_iq[] = {
+	static const struct nphy_txiqcal_ladder ladder_iq[] = {
 		{3, 0}, {4, 0}, {6, 0}, {9, 0}, {13, 0}, {18, 0},
 		{25, 0}, {35, 0}, {50, 0}, {71, 0}, {100, 0}, {100, 1},
 		{100, 2}, {100, 3}, {100, 4}, {100, 5}, {100, 6}, {100, 7}
@@ -25053,14 +24956,16 @@ wlc_phy_a2_nphy(struct brcms_phy *pi, struct nphy_ipa_txcalgains *txgains,
 			if (txgains->useindex) {
 				phy_a4 = 15 - ((txgains->index) >> 3);
 				if (CHSPEC_IS2G(pi->radio_chanspec)) {
-					if (NREV_GE(pi->pubpi.phy_rev, 6))
-						phy_a5 = 0x00f7 | (phy_a4 << 8);
-
-					else
-					if (NREV_IS(pi->pubpi.phy_rev, 5))
+					if (NREV_GE(pi->pubpi.phy_rev, 6) &&
+					    pi->sh->chip == BCMA_CHIP_ID_BCM47162) {
 						phy_a5 = 0x10f7 | (phy_a4 << 8);
-					else
+					} else if (NREV_GE(pi->pubpi.phy_rev, 6)) {
+						phy_a5 = 0x00f7 | (phy_a4 << 8);
+					} else if (NREV_IS(pi->pubpi.phy_rev, 5)) {
+						phy_a5 = 0x10f7 | (phy_a4 << 8);
+					} else {
 						phy_a5 = 0x50f7 | (phy_a4 << 8);
+					}
 				} else {
 					phy_a5 = 0x70f7 | (phy_a4 << 8);
 				}
@@ -25204,32 +25109,26 @@ static u8 wlc_phy_a3_nphy(struct brcms_phy *pi, u8 start_gain, u8 core)
 
 				phy_a15 = pad_gain_codes_used_2057rev5;
 				phy_a13 =
-					sizeof(pad_gain_codes_used_2057rev5) /
-					sizeof(pad_gain_codes_used_2057rev5
-						[0]) - 1;
+					ARRAY_SIZE(pad_gain_codes_used_2057rev5) - 1;
 
 			} else if ((pi->pubpi.radiorev == 7)
 				   || (pi->pubpi.radiorev == 8)) {
 
 				phy_a15 = pad_gain_codes_used_2057rev7;
 				phy_a13 =
-					sizeof(pad_gain_codes_used_2057rev7) /
-					sizeof(pad_gain_codes_used_2057rev7
-						[0]) - 1;
+					ARRAY_SIZE(pad_gain_codes_used_2057rev7) - 1;
 
 			} else {
 
 				phy_a15 = pad_all_gain_codes_2057;
-				phy_a13 = sizeof(pad_all_gain_codes_2057) /
-					  sizeof(pad_all_gain_codes_2057[0]) -
+				phy_a13 = ARRAY_SIZE(pad_all_gain_codes_2057) -
 					  1;
 			}
 
 		} else {
 
 			phy_a15 = pga_all_gain_codes_2057;
-			phy_a13 = sizeof(pga_all_gain_codes_2057) /
-				  sizeof(pga_all_gain_codes_2057[0]) - 1;
+			phy_a13 = ARRAY_SIZE(pga_all_gain_codes_2057) - 1;
 		}
 
 		phy_a14 = 0;
@@ -25871,67 +25770,67 @@ wlc_phy_cal_txiqlo_nphy(struct brcms_phy *pi, struct nphy_txgains target_gain,
 	u16 cal_gain[2];
 	struct nphy_iqcal_params cal_params[2];
 	u32 tbl_len;
-	void *tbl_ptr;
+	const void *tbl_ptr;
 	bool ladder_updated[2];
 	u8 mphase_cal_lastphase = 0;
 	int bcmerror = 0;
 	bool phyhang_avoid_state = false;
 
-	u16 tbl_tx_iqlo_cal_loft_ladder_20[] = {
+	static const u16 tbl_tx_iqlo_cal_loft_ladder_20[] = {
 		0x0300, 0x0500, 0x0700, 0x0900, 0x0d00, 0x1100, 0x1900, 0x1901,
 		0x1902,
 		0x1903, 0x1904, 0x1905, 0x1906, 0x1907, 0x2407, 0x3207, 0x4607,
 		0x6407
 	};
 
-	u16 tbl_tx_iqlo_cal_iqimb_ladder_20[] = {
+	static const u16 tbl_tx_iqlo_cal_iqimb_ladder_20[] = {
 		0x0200, 0x0300, 0x0600, 0x0900, 0x0d00, 0x1100, 0x1900, 0x2400,
 		0x3200,
 		0x4600, 0x6400, 0x6401, 0x6402, 0x6403, 0x6404, 0x6405, 0x6406,
 		0x6407
 	};
 
-	u16 tbl_tx_iqlo_cal_loft_ladder_40[] = {
+	static const u16 tbl_tx_iqlo_cal_loft_ladder_40[] = {
 		0x0200, 0x0300, 0x0400, 0x0700, 0x0900, 0x0c00, 0x1200, 0x1201,
 		0x1202,
 		0x1203, 0x1204, 0x1205, 0x1206, 0x1207, 0x1907, 0x2307, 0x3207,
 		0x4707
 	};
 
-	u16 tbl_tx_iqlo_cal_iqimb_ladder_40[] = {
+	static const u16 tbl_tx_iqlo_cal_iqimb_ladder_40[] = {
 		0x0100, 0x0200, 0x0400, 0x0700, 0x0900, 0x0c00, 0x1200, 0x1900,
 		0x2300,
 		0x3200, 0x4700, 0x4701, 0x4702, 0x4703, 0x4704, 0x4705, 0x4706,
 		0x4707
 	};
 
-	u16 tbl_tx_iqlo_cal_startcoefs[] = {
+	static const u16 tbl_tx_iqlo_cal_startcoefs[] = {
 		0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
 		0x0000
 	};
 
-	u16 tbl_tx_iqlo_cal_cmds_fullcal[] = {
+	static const u16 tbl_tx_iqlo_cal_cmds_fullcal[] = {
 		0x8123, 0x8264, 0x8086, 0x8245, 0x8056,
 		0x9123, 0x9264, 0x9086, 0x9245, 0x9056
 	};
 
-	u16 tbl_tx_iqlo_cal_cmds_recal[] = {
+	static const u16 tbl_tx_iqlo_cal_cmds_recal[] = {
 		0x8101, 0x8253, 0x8053, 0x8234, 0x8034,
 		0x9101, 0x9253, 0x9053, 0x9234, 0x9034
 	};
 
-	u16 tbl_tx_iqlo_cal_startcoefs_nphyrev3[] = {
+	static const u16 tbl_tx_iqlo_cal_startcoefs_nphyrev3[] = {
 		0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
 		0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
 		0x0000
 	};
 
-	u16 tbl_tx_iqlo_cal_cmds_fullcal_nphyrev3[] = {
+	static const u16 tbl_tx_iqlo_cal_cmds_fullcal_nphyrev3[] = {
 		0x8434, 0x8334, 0x8084, 0x8267, 0x8056, 0x8234,
 		0x9434, 0x9334, 0x9084, 0x9267, 0x9056, 0x9234
 	};
 
-	u16 tbl_tx_iqlo_cal_cmds_recal_nphyrev3[] = {
+	static const u16 tbl_tx_iqlo_cal_cmds_recal_nphyrev3[] = {
 		0x8423, 0x8323, 0x8073, 0x8256, 0x8045, 0x8223,
 		0x9423, 0x9323, 0x9073, 0x9256, 0x9045, 0x9223
 	};

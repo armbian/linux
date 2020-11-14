@@ -3,6 +3,7 @@ obj-$(CONFIG_RC_MAP) += rc-adstech-dvb-t-pci.o \
 			rc-anysee.o \
 			rc-apac-viewcomp.o \
 			rc-asus-pc39.o \
+			rc-asus-ps3-100.o \
 			rc-ati-tv-wonder-hd-600.o \
 			rc-ati-x10.o \
 			rc-avermedia-a16d.o \
@@ -19,6 +20,7 @@ obj-$(CONFIG_RC_MAP) += rc-adstech-dvb-t-pci.o \
 			rc-budget-ci-old.o \
 			rc-cinergy-1400.o \
 			rc-cinergy.o \
+			rc-delock-61959.o \
 			rc-dib0700-nec.o \
 			rc-dib0700-rc5.o \
 			rc-digitalnow-tinytwin.o \
@@ -26,6 +28,7 @@ obj-$(CONFIG_RC_MAP) += rc-adstech-dvb-t-pci.o \
 			rc-dm1105-nec.o \
 			rc-dntv-live-dvb-t.o \
 			rc-dntv-live-dvbt-pro.o \
+			rc-dvbsky.o \
 			rc-em-terratec.o \
 			rc-encore-enltv2.o \
 			rc-encore-enltv.o \
@@ -52,6 +55,8 @@ obj-$(CONFIG_RC_MAP) += rc-adstech-dvb-t-pci.o \
 			rc-lme2510.o \
 			rc-manli.o \
 			rc-medion-x10.o \
+			rc-medion-x10-digitainer.o \
+			rc-medion-x10-or2x.o \
 			rc-msi-digivox-ii.o \
 			rc-msi-digivox-iii.o \
 			rc-msi-tvanywhere.o \
@@ -75,21 +80,28 @@ obj-$(CONFIG_RC_MAP) += rc-adstech-dvb-t-pci.o \
 			rc-hauppauge.o \
 			rc-rc6-mce.o \
 			rc-real-audio-220-32-keys.o \
+			rc-reddo.o \
 			rc-snapstream-firefly.o \
 			rc-streamzap.o \
 			rc-tbs-nec.o \
+			rc-technisat-ts35.o \
 			rc-technisat-usb2.o \
+			rc-terratec-cinergy-c-pci.o \
+			rc-terratec-cinergy-s2-hd.o \
 			rc-terratec-cinergy-xs.o \
 			rc-terratec-slim.o \
 			rc-terratec-slim-2.o \
 			rc-tevii-nec.o \
 			rc-tivo.o \
 			rc-total-media-in-hand.o \
+			rc-total-media-in-hand-02.o \
 			rc-trekstor.o \
 			rc-tt-1500.o \
+			rc-twinhan-dtv-cab-ci.o \
 			rc-twinhan1027.o \
 			rc-videomate-m1f.o \
 			rc-videomate-s350.o \
 			rc-videomate-tv-pvr.o \
 			rc-winfast.o \
-			rc-winfast-usbii-deluxe.o
+			rc-winfast-usbii-deluxe.o \
+			rc-su3000.o
