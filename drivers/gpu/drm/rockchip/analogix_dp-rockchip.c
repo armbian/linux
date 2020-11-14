@@ -66,6 +66,7 @@ struct rockchip_dp_device {
 
 	const struct rockchip_dp_chip_data *data;
 
+	struct analogix_dp_device *adp;
 	struct analogix_dp_plat_data plat_data;
 };
 
@@ -83,29 +84,19 @@ static int rockchip_dp_poweron(struct analogix_dp_plat_data *plat_data)
 	struct rockchip_dp_device *dp = to_dp(plat_data);
 	int ret;
 
-	if (!IS_ERR(dp->vcc_supply)) {
+	if (dp->vcc_supply) {
 		ret = regulator_enable(dp->vcc_supply);
-		if (ret) {
-			dev_err(dp->dev,
-				"failed to enable vcc regulator: %d\n", ret);
-			return ret;
-		}
+		if (ret)
+			dev_warn(dp->dev, "failed to enable vcc: %d\n", ret);
 	}
 
-	if (!IS_ERR(dp->vccio_supply)) {
+	if (dp->vccio_supply) {
 		ret = regulator_enable(dp->vccio_supply);
-		if (ret) {
-			dev_err(dp->dev,
-				"failed to enable vccio regulator: %d\n", ret);
-			return ret;
-		}
+		if (ret)
+			dev_warn(dp->dev, "failed to enable vccio: %d\n", ret);
 	}
 
-	ret = clk_prepare_enable(dp->pclk);
-	if (ret < 0) {
-		dev_err(dp->dev, "failed to enable pclk %d\n", ret);
-		return ret;
-	}
+	clk_prepare_enable(dp->pclk);
 
 	ret = rockchip_dp_pre_init(dp);
 	if (ret < 0) {
@@ -122,9 +113,10 @@ static int rockchip_dp_powerdown(struct analogix_dp_plat_data *plat_data)
 
 	clk_disable_unprepare(dp->pclk);
 
-	if (!IS_ERR(dp->vccio_supply))
+	if (dp->vccio_supply)
 		regulator_disable(dp->vccio_supply);
-	if (!IS_ERR(dp->vcc_supply))
+
+	if (dp->vcc_supply)
 		regulator_disable(dp->vcc_supply);
 
 	return 0;
@@ -223,12 +215,48 @@ rockchip_dp_drm_encoder_atomic_check(struct drm_encoder *encoder,
 	return 0;
 }
 
+static int rockchip_dp_drm_encoder_loader_protect(struct drm_encoder *encoder,
+						  bool on)
+{
+	struct rockchip_dp_device *dp = to_dp(encoder);
+	int ret;
+
+	if (on) {
+		if (dp->vcc_supply) {
+			ret = regulator_enable(dp->vcc_supply);
+			if (ret)
+				dev_warn(dp->dev,
+					 "failed to enable vcc: %d\n", ret);
+		}
+
+		if (dp->vccio_supply) {
+			ret = regulator_enable(dp->vccio_supply);
+			if (ret)
+				dev_warn(dp->dev,
+					 "failed to enable vccio: %d\n", ret);
+		}
+
+		clk_prepare_enable(dp->pclk);
+	} else {
+		clk_disable_unprepare(dp->pclk);
+
+		if (dp->vccio_supply)
+			regulator_disable(dp->vccio_supply);
+
+		if (dp->vcc_supply)
+			regulator_disable(dp->vcc_supply);
+	}
+
+	return 0;
+}
+
 static struct drm_encoder_helper_funcs rockchip_dp_encoder_helper_funcs = {
 	.mode_fixup = rockchip_dp_drm_encoder_mode_fixup,
 	.mode_set = rockchip_dp_drm_encoder_mode_set,
 	.enable = rockchip_dp_drm_encoder_enable,
 	.disable = rockchip_dp_drm_encoder_nop,
 	.atomic_check = rockchip_dp_drm_encoder_atomic_check,
+	.loader_protect = rockchip_dp_drm_encoder_loader_protect,
 };
 
 static void rockchip_dp_drm_encoder_destroy(struct drm_encoder *encoder)
@@ -265,35 +293,26 @@ static int rockchip_dp_init(struct rockchip_dp_device *dp)
 	}
 
 	dp->vcc_supply = devm_regulator_get_optional(dev, "vcc");
-	dp->vccio_supply = devm_regulator_get_optional(dev, "vccio");
-
 	if (IS_ERR(dp->vcc_supply)) {
-		dev_err(dev, "failed to get vcc regulator: %ld\n",
-			PTR_ERR(dp->vcc_supply));
-	} else {
-		ret = regulator_enable(dp->vcc_supply);
-		if (ret) {
-			dev_err(dev,
-				"failed to enable vcc regulator: %d\n", ret);
+		if (PTR_ERR(dp->vcc_supply) != -ENODEV) {
+			ret = PTR_ERR(dp->vcc_supply);
+			dev_err(dev, "failed to get vcc regulator: %d\n", ret);
 			return ret;
 		}
-	}
-	if (IS_ERR(dp->vccio_supply)) {
-		dev_err(dev, "failed to get vccio regulator: %ld\n",
-			PTR_ERR(dp->vccio_supply));
-	} else {
-		ret = regulator_enable(dp->vccio_supply);
-		if (ret) {
-			dev_err(dev,
-				"failed to enable vccio regulator: %d\n", ret);
-			return ret;
-		}
+
+		dp->vcc_supply = NULL;
 	}
 
-	ret = clk_prepare_enable(dp->pclk);
-	if (ret < 0) {
-		dev_err(dp->dev, "failed to enable pclk %d\n", ret);
-		return ret;
+	dp->vccio_supply = devm_regulator_get_optional(dev, "vccio");
+	if (IS_ERR(dp->vccio_supply)) {
+		if (PTR_ERR(dp->vccio_supply) != -ENODEV) {
+			ret = PTR_ERR(dp->vccio_supply);
+			dev_err(dev, "failed to get vccio regulator: %d\n",
+				ret);
+			return ret;
+		}
+
+		dp->vccio_supply = NULL;
 	}
 
 	return 0;
@@ -306,6 +325,7 @@ static int rockchip_dp_drm_create_encoder(struct rockchip_dp_device *dp)
 	struct device *dev = dp->dev;
 	int ret;
 
+	encoder->port = dev->of_node;
 	encoder->possible_crtcs = drm_of_find_possible_crtcs(drm_dev,
 							     dev->of_node);
 	DRM_DEBUG_KMS("possible_crtcs = 0x%x\n", encoder->possible_crtcs);
@@ -327,43 +347,17 @@ static int rockchip_dp_bind(struct device *dev, struct device *master,
 {
 	struct rockchip_dp_device *dp = dev_get_drvdata(dev);
 	const struct rockchip_dp_chip_data *dp_data;
-	struct device_node *panel_node, *port, *endpoint;
 	struct drm_panel *panel = NULL;
+	struct drm_bridge *bridge = NULL;
 	struct drm_device *drm_dev = data;
 	int ret;
 
-	port = of_graph_get_port_by_id(dev->of_node, 1);
-	if (port) {
-		endpoint = of_get_child_by_name(port, "endpoint");
-		of_node_put(port);
-		if (!endpoint) {
-			dev_err(dev, "no output endpoint found\n");
-			return -EINVAL;
-		}
-
-		panel_node = of_graph_get_remote_port_parent(endpoint);
-		of_node_put(endpoint);
-		if (!panel_node) {
-			dev_err(dev, "no output node found\n");
-			return -EINVAL;
-		}
-
-		panel = of_drm_find_panel(panel_node);
-		if (!panel) {
-			DRM_ERROR("failed to find panel\n");
-			of_node_put(panel_node);
-			return -EPROBE_DEFER;
-		}
-		of_node_put(panel_node);
-	}
+	ret = drm_of_find_panel_or_bridge(dev->of_node, 1, 0, &panel, &bridge);
+	if (ret)
+		return ret;
 
 	dp->plat_data.panel = panel;
-	/*
-	 * Just like the probe function said, we don't need the
-	 * device drvrate anymore, we should leave the charge to
-	 * analogix dp driver, set the device drvdata to NULL.
-	 */
-	dev_set_drvdata(dev, NULL);
+	dp->plat_data.bridge = bridge;
 
 	dp_data = of_device_get_match_data(dev);
 	if (!dp_data)
@@ -390,13 +384,19 @@ static int rockchip_dp_bind(struct device *dev, struct device *master,
 	dp->plat_data.power_off = rockchip_dp_powerdown;
 	dp->plat_data.get_modes = rockchip_dp_get_modes;
 
-	return analogix_dp_bind(dev, dp->drm_dev, &dp->plat_data);
+	dp->adp = analogix_dp_bind(dev, dp->drm_dev, &dp->plat_data);
+	if (IS_ERR(dp->adp))
+		return PTR_ERR(dp->adp);
+
+	return 0;
 }
 
 static void rockchip_dp_unbind(struct device *dev, struct device *master,
 			       void *data)
 {
-	return analogix_dp_unbind(dev, master, data);
+	struct rockchip_dp_device *dp = dev_get_drvdata(dev);
+
+	analogix_dp_unbind(dp->adp);
 }
 
 static const struct component_ops rockchip_dp_component_ops = {
@@ -415,11 +415,6 @@ static int rockchip_dp_probe(struct platform_device *pdev)
 
 	dp->dev = dev;
 
-	/*
-	 * We just use the drvdata until driver run into component
-	 * add function, and then we would set drvdata to null, so
-	 * that analogix dp driver could take charge of the drvdata.
-	 */
 	platform_set_drvdata(pdev, dp);
 
 	return component_add(dev, &rockchip_dp_component_ops);
@@ -432,10 +427,26 @@ static int rockchip_dp_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int rockchip_dp_suspend(struct device *dev)
+{
+	struct rockchip_dp_device *dp = dev_get_drvdata(dev);
+
+	return analogix_dp_suspend(dp->adp);
+}
+
+static int rockchip_dp_resume(struct device *dev)
+{
+	struct rockchip_dp_device *dp = dev_get_drvdata(dev);
+
+	return analogix_dp_resume(dp->adp);
+}
+#endif
+
 static const struct dev_pm_ops rockchip_dp_pm_ops = {
 #ifdef CONFIG_PM_SLEEP
-	.suspend_late = analogix_dp_suspend,
-	.resume_early = analogix_dp_resume,
+	.suspend_late = rockchip_dp_suspend,
+	.resume_early = rockchip_dp_resume,
 #endif
 };
 

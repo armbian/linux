@@ -25,6 +25,8 @@
 #define RK3328_GRF_MAC_CON1		0x904
 #define RK3328_GRF_MAC_CON2		0x908
 #define RK3328_I2S_FRAC_MAX_PRATE       600000000
+#define RK3328_UART_FRAC_MAX_PRATE	600000000
+#define RK3328_SPDIF_FRAC_MAX_PRATE	600000000
 
 enum rk3328_plls {
 	apll, dpll, cpll, gpll, npll,
@@ -419,7 +421,7 @@ static struct rockchip_clk_branch rk3328_clk_branches[] __initdata = {
 	COMPOSITE_FRACMUX(0, "clk_spdif_frac", "clk_spdif_div", CLK_SET_RATE_PARENT,
 			RK3328_CLKSEL_CON(13), 0,
 			RK3328_CLKGATE_CON(1), 13, GFLAGS,
-			&rk3328_spdif_fracmux, 0),
+			&rk3328_spdif_fracmux, RK3328_SPDIF_FRAC_MAX_PRATE),
 
 	/* PD_UART */
 	COMPOSITE(0, "clk_uart0_div", mux_2plls_u480m_p, 0,
@@ -434,15 +436,15 @@ static struct rockchip_clk_branch rk3328_clk_branches[] __initdata = {
 	COMPOSITE_FRACMUX(0, "clk_uart0_frac", "clk_uart0_div", CLK_SET_RATE_PARENT,
 			RK3328_CLKSEL_CON(15), 0,
 			RK3328_CLKGATE_CON(1), 15, GFLAGS,
-			&rk3328_uart0_fracmux, 0),
+			&rk3328_uart0_fracmux, RK3328_UART_FRAC_MAX_PRATE),
 	COMPOSITE_FRACMUX(0, "clk_uart1_frac", "clk_uart1_div", CLK_SET_RATE_PARENT,
 			RK3328_CLKSEL_CON(17), 0,
 			RK3328_CLKGATE_CON(2), 1, GFLAGS,
-			&rk3328_uart1_fracmux, 0),
+			&rk3328_uart1_fracmux, RK3328_UART_FRAC_MAX_PRATE),
 	COMPOSITE_FRACMUX(0, "clk_uart2_frac", "clk_uart2_div", CLK_SET_RATE_PARENT,
 			RK3328_CLKSEL_CON(19), 0,
 			RK3328_CLKGATE_CON(2), 3, GFLAGS,
-			&rk3328_uart2_fracmux, 0),
+			&rk3328_uart2_fracmux, RK3328_UART_FRAC_MAX_PRATE),
 
 	/*
 	 * Clock-Architecture Diagram 4
@@ -546,26 +548,27 @@ static struct rockchip_clk_branch rk3328_clk_branches[] __initdata = {
 	COMPOSITE(ACLK_RKVENC, "aclk_rkvenc", mux_4plls_p, 0,
 			RK3328_CLKSEL_CON(51), 6, 2, MFLAGS, 0, 5, DFLAGS,
 			RK3328_CLKGATE_CON(6), 3, GFLAGS),
-	FACTOR_GATE(HCLK_RKVENC, "hclk_rkvenc", "aclk_rkvenc", 0, 1, 4,
-			RK3328_CLKGATE_CON(11), 4, GFLAGS),
-	GATE(0, "aclk_rkvenc_niu", "aclk_rkvenc", CLK_IGNORE_UNUSED,
-			RK3328_CLKGATE_CON(25), 0, GFLAGS),
-	GATE(0, "hclk_rkvenc_niu", "hclk_rkvenc", CLK_IGNORE_UNUSED,
-			RK3328_CLKGATE_CON(25), 1, GFLAGS),
-	GATE(ACLK_H265, "aclk_h265", "aclk_rkvenc", 0,
-			RK3328_CLKGATE_CON(25), 2, GFLAGS),
-	GATE(PCLK_H265, "pclk_h265", "hclk_rkvenc", 0,
-			RK3328_CLKGATE_CON(25), 3, GFLAGS),
-	GATE(ACLK_H264, "aclk_h264", "aclk_rkvenc", 0,
-			RK3328_CLKGATE_CON(25), 4, GFLAGS),
-	GATE(HCLK_H264, "hclk_h264", "hclk_rkvenc", 0,
-			RK3328_CLKGATE_CON(25), 5, GFLAGS),
-	GATE(ACLK_AXISRAM, "aclk_axisram", "aclk_rkvenc", CLK_IGNORE_UNUSED,
-			RK3328_CLKGATE_CON(25), 6, GFLAGS),
 
 	COMPOSITE(SCLK_VENC_CORE, "sclk_venc_core", mux_4plls_p, 0,
 			RK3328_CLKSEL_CON(51), 14, 2, MFLAGS, 8, 5, DFLAGS,
 			RK3328_CLKGATE_CON(6), 4, GFLAGS),
+	FACTOR_GATE(0, "hclk_venc", "sclk_venc_core", 0, 1, 4,
+			RK3328_CLKGATE_CON(11), 4, GFLAGS),
+
+	GATE(0, "aclk_rkvenc_niu", "sclk_venc_core", 0,
+			RK3328_CLKGATE_CON(25), 0, GFLAGS),
+	GATE(0, "hclk_rkvenc_niu", "hclk_venc", 0,
+			RK3328_CLKGATE_CON(25), 1, GFLAGS),
+	GATE(ACLK_H265, "aclk_h265", "sclk_venc_core", 0,
+			RK3328_CLKGATE_CON(25), 2, GFLAGS),
+	GATE(PCLK_H265, "pclk_h265", "hclk_venc", 0,
+			RK3328_CLKGATE_CON(25), 3, GFLAGS),
+	GATE(ACLK_H264, "aclk_h264", "sclk_venc_core", 0,
+			RK3328_CLKGATE_CON(25), 4, GFLAGS),
+	GATE(HCLK_H264, "hclk_h264", "hclk_venc", 0,
+			RK3328_CLKGATE_CON(25), 5, GFLAGS),
+	GATE(ACLK_AXISRAM, "aclk_axisram", "sclk_venc_core", CLK_IGNORE_UNUSED,
+			RK3328_CLKGATE_CON(25), 6, GFLAGS),
 
 	COMPOSITE(SCLK_VENC_DSP, "sclk_venc_dsp", mux_4plls_p, 0,
 			RK3328_CLKSEL_CON(52), 14, 2, MFLAGS, 8, 5, DFLAGS,

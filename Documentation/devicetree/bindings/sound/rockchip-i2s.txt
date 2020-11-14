@@ -8,10 +8,12 @@ Required properties:
 - compatible: should be one of the followings
    - "rockchip,rk3066-i2s": for rk3066
    - "rockchip,px30-i2s", "rockchip,rk3066-i2s": for px30
+   - "rockchip,rk1808-i2s", "rockchip,rk3066-i2s": for rk1808
    - "rockchip,rk3036-i2s", "rockchip,rk3066-i2s": for rk3036
    - "rockchip,rk3128-i2s", "rockchip,rk3066-i2s": for rk3128
    - "rockchip,rk3188-i2s", "rockchip,rk3066-i2s": for rk3188
    - "rockchip,rk3288-i2s", "rockchip,rk3066-i2s": for rk3288
+   - "rockchip,rk3308-i2s", "rockchip,rk3066-i2s": for rk3308
    - "rockchip,rk3328-i2s", "rockchip,rk3066-i2s": for rk3328
    - "rockchip,rk3368-i2s", "rockchip,rk3066-i2s": for rk3368
    - "rockchip,rk3399-i2s", "rockchip,rk3066-i2s": for rk3399
@@ -25,6 +27,9 @@ Required properties:
 - clock-names: should contain followings:
    - "i2s_hclk": clock for I2S BUS
    - "i2s_clk" : clock for I2S controller
+- resets: a list of phandle + reset-specifer paris, one for each entry in reset-names.
+- reset-names: reset names, should include "reset-m", "reset-h", there may be only
+  "reset-m" on some platforms.
 - rockchip,playback-channels: max playback channels, if not set, 8 channels default.
 - rockchip,capture-channels: max capture channels, if not set, 2 channels default.
 - rockchip,bclk-fs: configure the i2s bclk fs.
@@ -36,6 +41,8 @@ Required properties:
   register pcm dmaengine, only just register dai. if the dai is part of multi-dais,
   the property should be present. Please refer to rockchip,multidais.txt about
   multi-dais usage.
+- rockchip,playback-only: Specify that the controller only has playback capability.
+- rockchip,capture-only: Specify that the controller only has capture capability.
 
 Required properties for controller which support multi channels
 playback/capture:

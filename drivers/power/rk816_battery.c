@@ -172,7 +172,7 @@ struct rk816_battery {
 	struct wake_lock		wake_lock;
 	struct notifier_block           fb_nb;
 	struct timer_list		caltimer;
-	struct timeval			rtc_base;
+	time_t				rtc_base;
 	struct iio_channel		*iio_chan;
 	struct notifier_block		cable_cg_nb;
 	struct notifier_block		cable_host_nb;
@@ -487,6 +487,32 @@ static ssize_t bat_info_store(struct device *dev, struct device_attribute *attr,
 static struct device_attribute rk816_bat_attr[] = {
 	__ATTR(bat, 0664, NULL, bat_info_store),
 };
+
+static void rk816_bat_enable_input_current(struct rk816_battery *di)
+{
+	u8 buf;
+
+	buf = rk816_bat_read(di, RK816_BAT_CTRL_REG);
+	buf |= USB_SYS_EN;
+	rk816_bat_write(di, RK816_BAT_CTRL_REG, buf);
+}
+
+static void rk816_bat_disable_input_current(struct rk816_battery *di)
+{
+	u8 buf;
+
+	buf = rk816_bat_read(di, RK816_BAT_CTRL_REG);
+	buf &= ~USB_SYS_EN;
+	rk816_bat_write(di, RK816_BAT_CTRL_REG, buf);
+}
+
+static int rk816_bat_is_input_enabled(struct rk816_battery *di)
+{
+	u8 buf;
+
+	buf = rk816_bat_read(di, RK816_BAT_CTRL_REG);
+	return !!(buf & USB_SYS_EN);
+}
 
 static void rk816_bat_enable_gauge(struct rk816_battery *di)
 {
@@ -1057,7 +1083,48 @@ static enum power_supply_property rk816_bat_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
 };
+
+static int rk816_bat_ac_set_property(struct power_supply *psy,
+				     enum power_supply_property psp,
+				     const union power_supply_propval *val)
+{
+	struct rk816_battery *di = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		if (val->intval)
+			rk816_bat_enable_input_current(di);
+		else
+			rk816_bat_disable_input_current(di);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int rk816_bat_usb_set_property(struct power_supply *psy,
+				      enum power_supply_property psp,
+				      const union power_supply_propval *val)
+{
+	struct rk816_battery *di = power_supply_get_drvdata(psy);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		if (val->intval)
+			rk816_bat_enable_input_current(di);
+		else
+			rk816_bat_disable_input_current(di);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 static int rk816_battery_get_property(struct power_supply *psy,
 				      enum power_supply_property psp,
@@ -1094,6 +1161,8 @@ static int rk816_battery_get_property(struct power_supply *psy,
 		val->intval = di->prop_status;
 		if (di->pdata->bat_mode == MODE_VIRTUAL)
 			val->intval = VIRTUAL_STATUS;
+		if (!rk816_bat_is_input_enabled(di))
+			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
 		val->intval = di->temperature;
@@ -1102,6 +1171,9 @@ static int rk816_battery_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 		val->intval = di->charge_count;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_FULL:
+		val->intval = di->pdata->design_capacity * 1000;/* uAh */
 		break;
 	default:
 		return -EINVAL;
@@ -1114,12 +1186,14 @@ static enum power_supply_property rk816_ac_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 };
 
 static enum power_supply_property rk816_usb_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 };
 
 static int rk816_bat_ac_get_property(struct power_supply *psy,
@@ -1139,10 +1213,13 @@ static int rk816_bat_ac_get_property(struct power_supply *psy,
 			val->intval = di->ac_in | di->dc_in;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
-		val->intval = di->voltage_max;
+		val->intval = di->voltage_max * 1000;	/* uV */
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		val->intval = di->current_max;
+		val->intval = di->current_max * 1000;	/* uA */
+		break;
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		val->intval = rk816_bat_is_input_enabled(di);
 		break;
 	default:
 		ret = -EINVAL;
@@ -1169,10 +1246,13 @@ static int rk816_bat_usb_get_property(struct power_supply *psy,
 			val->intval = di->usb_in;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
-		val->intval = di->voltage_max;
+		val->intval = di->voltage_max * 1000;	/* uV */
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		val->intval = di->current_max;
+		val->intval = di->current_max * 1000;	/* uA */
+		break;
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		val->intval = rk816_bat_is_input_enabled(di);
 		break;
 	default:
 		ret = -EINVAL;
@@ -1180,6 +1260,19 @@ static int rk816_bat_usb_get_property(struct power_supply *psy,
 	}
 
 	return ret;
+}
+
+static int rk816_bat_writable_property(struct power_supply *psy,
+				       enum power_supply_property psp)
+{
+	switch (psp) {
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		return 1;
+	default:
+		return 0;
+	}
+
+	return 0;
 }
 
 static const struct power_supply_desc rk816_bat_desc = {
@@ -1196,6 +1289,8 @@ static const struct power_supply_desc rk816_ac_desc = {
 	.properties = rk816_ac_props,
 	.num_properties = ARRAY_SIZE(rk816_ac_props),
 	.get_property = rk816_bat_ac_get_property,
+	.set_property = rk816_bat_ac_set_property,
+	.property_is_writeable = rk816_bat_writable_property,
 };
 
 static const struct power_supply_desc rk816_usb_desc = {
@@ -1204,6 +1299,8 @@ static const struct power_supply_desc rk816_usb_desc = {
 	.properties = rk816_usb_props,
 	.num_properties = ARRAY_SIZE(rk816_usb_props),
 	.get_property = rk816_bat_usb_get_property,
+	.set_property = rk816_bat_usb_set_property,
+	.property_is_writeable = rk816_bat_writable_property,
 };
 
 static int rk816_bat_init_power_supply(struct rk816_battery *di)
@@ -4103,28 +4200,37 @@ static int rk816_bat_init_charger(struct rk816_battery *di)
 	return 0;
 }
 
-static int rk816_bat_rtc_sleep_sec(struct rk816_battery *di)
+static time_t rk816_get_rtc_sec(void)
 {
 	int err;
-	int interval_sec = 0;
 	struct rtc_time tm;
 	struct timespec tv = { .tv_nsec = NSEC_PER_SEC >> 1, };
 	struct rtc_device *rtc = rtc_class_open(CONFIG_RTC_HCTOSYS_DEVICE);
+	time_t sec;
 
 	err = rtc_read_time(rtc, &tm);
 	if (err) {
-		dev_err(rtc->dev.parent, "hctosys: read hardware clk failed\n");
+		dev_err(rtc->dev.parent, "read hardware clk failed\n");
 		return 0;
 	}
 
 	err = rtc_valid_tm(&tm);
 	if (err) {
-		dev_err(rtc->dev.parent, "hctosys: invalid date time\n");
+		dev_err(rtc->dev.parent, "invalid date time\n");
 		return 0;
 	}
 
 	rtc_tm_to_time(&tm, &tv.tv_sec);
-	interval_sec = tv.tv_sec - di->rtc_base.tv_sec;
+	sec = tv.tv_sec;
+
+	return sec;
+}
+
+static int rk816_bat_rtc_sleep_sec(struct rk816_battery *di)
+{
+	int interval_sec;
+
+	interval_sec = rk816_get_rtc_sec() - di->rtc_base;
 
 	return (interval_sec > 0) ? interval_sec : 0;
 }
@@ -4167,6 +4273,7 @@ static void rk816_bat_init_ts_detect(struct rk816_battery *di)
 
 static void rk816_bat_init_fg(struct rk816_battery *di)
 {
+	rk816_bat_enable_input_current(di);
 	rk816_bat_enable_gauge(di);
 	rk816_bat_init_voltage_kb(di);
 	rk816_bat_init_poffset(di);
@@ -4702,7 +4809,7 @@ static int rk816_battery_suspend(struct platform_device *dev,
 	di->current_avg = rk816_bat_get_avg_current(di);
 	di->remain_cap = rk816_bat_get_coulomb_cap(di);
 	di->rsoc = rk816_bat_get_rsoc(di);
-	do_gettimeofday(&di->rtc_base);
+	di->rtc_base = rk816_get_rtc_sec();
 	rk816_bat_save_data(di);
 	st = (rk816_bat_read(di, RK816_SUP_STS_REG) & CHRG_STATUS_MSK) >> 4;
 	di->slp_dcdc_en_reg = rk816_bat_read(di, RK816_SLP_DCDC_EN_REG);

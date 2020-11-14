@@ -272,12 +272,12 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	snprintf(adap->input_name, sizeof(adap->input_name),
+	snprintf(adap->device_name, sizeof(adap->device_name),
 		 "RC for %s", name);
 	snprintf(adap->input_phys, sizeof(adap->input_phys),
 		 "%s/input0", name);
 
-	adap->rc->input_name = adap->input_name;
+	adap->rc->device_name = adap->device_name;
 	adap->rc->input_phys = adap->input_phys;
 	adap->rc->input_id.bustype = BUS_CEC;
 	adap->rc->input_id.vendor = 0;
@@ -287,7 +287,7 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 	adap->rc->allowed_protocols = RC_BIT_CEC;
 	adap->rc->priv = adap;
 	adap->rc->map_name = RC_MAP_CEC;
-	adap->rc->timeout = MS_TO_NS(100);
+	adap->rc->timeout = MS_TO_NS(550);
 #endif
 	return adap;
 }

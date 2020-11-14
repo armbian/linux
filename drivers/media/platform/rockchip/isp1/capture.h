@@ -70,13 +70,30 @@ enum rkisp1_sp_inp {
 	RKISP1_SP_INP_MAX
 };
 
+enum rkisp1_field {
+	RKISP_FIELD_ODD,
+	RKISP_FIELD_EVEN,
+	RKISP_FIELD_INVAL,
+};
+
 struct rkisp1_stream_sp {
 	int y_stride;
+	int vir_offs;
 	enum rkisp1_sp_inp input_sel;
+	enum rkisp1_field field;
+	enum rkisp1_field field_rec;
 };
 
 struct rkisp1_stream_mp {
 	bool raw_enable;
+};
+
+struct rkisp1_stream_raw {
+	u8 pre_stop;
+};
+
+struct rkisp1_stream_dmarx {
+	int y_stride;
 };
 
 /* Different config between selfpath and mainpath */
@@ -143,6 +160,7 @@ struct streams_ops {
 	void (*disable_mi)(struct rkisp1_stream *stream);
 	void (*set_data_path)(void __iomem *base);
 	bool (*is_stream_stopped)(void __iomem *base);
+	void (*update_mi)(struct rkisp1_stream *stream);
 };
 
 /*
@@ -161,7 +179,8 @@ struct streams_ops {
  * @next_buf: the buffer used for next frame
  */
 struct rkisp1_stream {
-	unsigned id:1;
+	unsigned id:2;
+	unsigned interlaced:1;
 	struct rkisp1_device *ispdev;
 	struct rkisp1_vdev_node vnode;
 	struct capture_fmt out_isp_fmt;
@@ -176,11 +195,14 @@ struct rkisp1_stream {
 	struct rkisp1_buffer *next_buf;
 	bool streaming;
 	bool stopping;
+	bool frame_end;
 	wait_queue_head_t done;
 	unsigned int burst;
 	union {
 		struct rkisp1_stream_sp sp;
 		struct rkisp1_stream_mp mp;
+		struct rkisp1_stream_raw raw;
+		struct rkisp1_stream_dmarx dmarx;
 	} u;
 };
 
@@ -188,5 +210,13 @@ void rkisp1_unregister_stream_vdevs(struct rkisp1_device *dev);
 int rkisp1_register_stream_vdevs(struct rkisp1_device *dev);
 void rkisp1_mi_isr(u32 mis_val, struct rkisp1_device *dev);
 void rkisp1_stream_init(struct rkisp1_device *dev, u32 id);
+void rkisp1_set_stream_def_fmt(struct rkisp1_device *dev, u32 id,
+			       u32 width, u32 height, u32 pixelformat);
+void rkisp1_mipi_dmatx0_end(u32 status, struct rkisp1_device *dev);
+int fcc_xysubs(u32 fcc, u32 *xsubs, u32 *ysubs);
+int rkisp1_fh_open(struct file *filp);
+int rkisp1_fop_release(struct file *file);
+int rkisp1_dma_attach_device(struct rkisp1_device *rkisp1_dev);
+void rkisp1_dma_detach_device(struct rkisp1_device *rkisp1_dev);
 
 #endif /* _RKISP1_PATH_VIDEO_H */

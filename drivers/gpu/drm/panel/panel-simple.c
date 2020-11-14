@@ -575,10 +575,7 @@ static int panel_simple_disable(struct drm_panel *panel)
 	if (!p->enabled)
 		return 0;
 
-	if (p->backlight) {
-		p->backlight->props.power = FB_BLANK_POWERDOWN;
-		backlight_update_status(p->backlight);
-	}
+	backlight_disable(p->backlight);
 
 	if (p->desc && p->desc->delay.disable)
 		panel_simple_sleep(p->desc->delay.disable);
@@ -688,10 +685,7 @@ static int panel_simple_enable(struct drm_panel *panel)
 	if (p->desc && p->desc->delay.enable)
 		panel_simple_sleep(p->desc->delay.enable);
 
-	if (p->backlight) {
-		p->backlight->props.power = FB_BLANK_UNBLANK;
-		backlight_update_status(p->backlight);
-	}
+	backlight_enable(p->backlight);
 
 	p->enabled = true;
 
@@ -752,6 +746,52 @@ static const struct drm_panel_funcs panel_simple_funcs = {
 	.get_timings = panel_simple_get_timings,
 };
 
+static int dcs_bl_update_status(struct backlight_device *bl)
+{
+	struct panel_simple *p = bl_get_data(bl);
+	struct mipi_dsi_device *dsi = p->dsi;
+	int ret;
+
+	if (!p->prepared)
+		return 0;
+
+	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+
+	ret = mipi_dsi_dcs_set_display_brightness(dsi, bl->props.brightness);
+	if (ret < 0)
+		return ret;
+
+	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+
+	return 0;
+}
+
+static int dcs_bl_get_brightness(struct backlight_device *bl)
+{
+	struct panel_simple *p = bl_get_data(bl);
+	struct mipi_dsi_device *dsi = p->dsi;
+	u16 brightness = bl->props.brightness;
+	int ret;
+
+	if (!p->prepared)
+		return 0;
+
+	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+
+	ret = mipi_dsi_dcs_get_display_brightness(dsi, &brightness);
+	if (ret < 0)
+		return ret;
+
+	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+
+	return brightness & 0xff;
+}
+
+static const struct backlight_ops dcs_bl_ops = {
+	.update_status = dcs_bl_update_status,
+	.get_brightness = dcs_bl_get_brightness,
+};
+
 static int panel_simple_probe(struct device *dev, const struct panel_desc *desc)
 {
 	struct device_node *backlight, *ddc;
@@ -802,8 +842,11 @@ static int panel_simple_probe(struct device *dev, const struct panel_desc *desc)
 		return err;
 	}
 	panel->supply = devm_regulator_get(dev, "power");
-	if (IS_ERR(panel->supply))
-		return PTR_ERR(panel->supply);
+	if (IS_ERR(panel->supply)) {
+		err = PTR_ERR(panel->supply);
+		dev_err(dev, "failed to get power regulator: %d\n", err);
+		return err;
+	}
 
 	panel->enable_gpio = devm_gpiod_get_optional(dev, "enable", 0);
 	if (IS_ERR(panel->enable_gpio)) {
@@ -878,8 +921,11 @@ static int panel_simple_probe(struct device *dev, const struct panel_desc *desc)
 		panel->backlight = of_find_backlight_by_node(backlight);
 		of_node_put(backlight);
 
-		if (!panel->backlight)
-			return -EPROBE_DEFER;
+		if (!panel->backlight) {
+			err = -EPROBE_DEFER;
+			dev_err(dev, "failed to find backlight: %d\n", err);
+			return err;
+		}
 	}
 
 	ddc = of_parse_phandle(dev->of_node, "ddc-i2c-bus", 0);
@@ -889,6 +935,7 @@ static int panel_simple_probe(struct device *dev, const struct panel_desc *desc)
 
 		if (!panel->ddc) {
 			err = -EPROBE_DEFER;
+			dev_err(dev, "failed to find ddc-i2c-bus: %d\n", err);
 			goto free_backlight;
 		}
 	}
@@ -942,13 +989,15 @@ static void panel_simple_shutdown(struct device *dev)
 
 	panel_simple_disable(&panel->base);
 
-	if (panel->reset_gpio)
-		gpiod_direction_output(panel->reset_gpio, 1);
+	if (panel->prepared) {
+		if (panel->reset_gpio)
+			gpiod_direction_output(panel->reset_gpio, 1);
 
-	if (panel->enable_gpio)
-		gpiod_direction_output(panel->enable_gpio, 0);
+		if (panel->enable_gpio)
+			gpiod_direction_output(panel->enable_gpio, 0);
 
-	panel_simple_regulator_disable(&panel->base);
+		panel_simple_regulator_disable(&panel->base);
+	}
 }
 
 static const struct drm_display_mode ampire_am800480r3tmqwa1h_mode = {
@@ -2365,6 +2414,7 @@ MODULE_DEVICE_TABLE(of, dsi_of_match);
 
 static int panel_simple_dsi_probe(struct mipi_dsi_device *dsi)
 {
+	struct device *dev = &dsi->dev;
 	struct panel_simple *panel;
 	const struct panel_desc_dsi *desc;
 	const struct of_device_id *id;
@@ -2372,7 +2422,7 @@ static int panel_simple_dsi_probe(struct mipi_dsi_device *dsi)
 	int err;
 	u32 val;
 
-	id = of_match_node(dsi_of_match, dsi->dev.of_node);
+	id = of_match_node(dsi_of_match, dev->of_node);
 	if (!id)
 		return -ENODEV;
 
@@ -2387,23 +2437,50 @@ static int panel_simple_dsi_probe(struct mipi_dsi_device *dsi)
 		pdesc = NULL;
 	}
 
-	err = panel_simple_probe(&dsi->dev, pdesc);
+	err = panel_simple_probe(dev, pdesc);
 	if (err < 0)
 		return err;
 
-	panel = dev_get_drvdata(&dsi->dev);
+	panel = dev_get_drvdata(dev);
 	panel->dsi = dsi;
 
-	if (!of_property_read_u32(dsi->dev.of_node, "dsi,flags", &val))
+	if (!panel->backlight) {
+		struct backlight_properties props;
+
+		memset(&props, 0, sizeof(props));
+		props.type = BACKLIGHT_RAW;
+		props.brightness = 255;
+		props.max_brightness = 255;
+
+		panel->backlight =
+			devm_backlight_device_register(dev, "dcs-backlight",
+						       dev, panel, &dcs_bl_ops,
+						       &props);
+		if (IS_ERR(panel->backlight)) {
+			err = PTR_ERR(panel->backlight);
+			dev_err(dev, "failed to register dcs backlight: %d\n",
+				err);
+			return err;
+		}
+	}
+
+	if (!of_property_read_u32(dev->of_node, "dsi,flags", &val))
 		dsi->mode_flags = val;
 
-	if (!of_property_read_u32(dsi->dev.of_node, "dsi,format", &val))
+	if (!of_property_read_u32(dev->of_node, "dsi,format", &val))
 		dsi->format = val;
 
-	if (!of_property_read_u32(dsi->dev.of_node, "dsi,lanes", &val))
+	if (!of_property_read_u32(dev->of_node, "dsi,lanes", &val))
 		dsi->lanes = val;
 
-	return mipi_dsi_attach(dsi);
+	err = mipi_dsi_attach(dsi);
+	if (err) {
+		struct panel_simple *panel = dev_get_drvdata(&dsi->dev);
+
+		drm_panel_remove(&panel->base);
+	}
+
+	return err;
 }
 
 static int panel_simple_dsi_remove(struct mipi_dsi_device *dsi)

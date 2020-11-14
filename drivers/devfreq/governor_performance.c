@@ -20,10 +20,7 @@ static int devfreq_performance_func(struct devfreq *df,
 	 * target callback should be able to get floor value as
 	 * said in devfreq.h
 	 */
-	if (!df->max_freq)
-		*freq = UINT_MAX;
-	else
-		*freq = df->max_freq;
+	*freq = DEVFREQ_MAX_FREQ;
 	return 0;
 }
 
@@ -36,6 +33,9 @@ static int devfreq_performance_handler(struct devfreq *devfreq,
 		mutex_lock(&devfreq->lock);
 		ret = update_devfreq(devfreq);
 		mutex_unlock(&devfreq->lock);
+		devfreq->last_status.update = true;
+	} else if (event == DEVFREQ_GOV_STOP) {
+		devfreq->last_status.update = false;
 	}
 
 	return ret;

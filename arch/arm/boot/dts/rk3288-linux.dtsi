@@ -84,9 +84,18 @@
 		};
 	};
 
+	ramoops {
+		compatible = "ramoops";
+		record-size = <0x0 0x20000>;
+		console-size = <0x0 0x80000>;
+		ftrace-size = <0x0 0x00000>;
+		pmsg-size = <0x0 0x50000>;
+		memory-region = <&ramoops_mem>;
+	};
+
 	fiq-debugger {
 		compatible = "rockchip,fiq-debugger";
-		interrupts = <GIC_SPI 153 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <GIC_SPI 155 IRQ_TYPE_LEVEL_HIGH>;
 		rockchip,serial-id = <2>;
 		rockchip,wake-irq = <0>;
 		/* If enable uart uses irq instead of fiq */
@@ -143,6 +152,15 @@
 				charge_logo,mode = "center";
 				connect = <&vopl_out_lvds>;
 			};
+
+			route_rgb: route-rgb {
+				status = "disabled";
+				logo,uboot = "logo.bmp";
+				logo,kernel = "logo_kernel.bmp";
+				logo,mode = "center";
+				charge_logo,mode = "center";
+				connect = <&vopl_out_rgb>;
+			};
 		};
 	};
 };
@@ -172,6 +190,33 @@
 	compatible = "rockchip,rk3288-secure-efuse";
 };
 
+/* HACK: keep MALI version on linux */
+&gpu_power_model {
+	// for DDK r14.
+	voltage = <900>;
+	frequency = <500>;
+	static-power = <300>;
+	dynamic-power = <396>;
+};
+
+&rga {
+	compatible = "rockchip,rga2";
+	clocks = <&cru ACLK_RGA>, <&cru HCLK_RGA>, <&cru SCLK_RGA>;
+	clock-names = "aclk_rga", "hclk_rga", "clk_rga";
+	assigned-clocks = <&cru ACLK_RGA>, <&cru SCLK_RGA>;
+	assigned-clock-rates = <300000000>, <300000000>;
+	dma-coherent;
+	status = "okay";
+};
+
 &rockchip_suspend {
+	status = "okay";
+};
+
+&uart2 {
+	status = "disabled";
+};
+
+&video_phy {
 	status = "okay";
 };

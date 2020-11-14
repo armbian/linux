@@ -36,6 +36,7 @@
 #define _RKISP1_ISP_H
 
 #include <linux/rkisp1-config.h>
+#include <linux/rk-preisp.h>
 #include "common.h"
 
 struct rkisp1_isp_params_vdev;
@@ -87,6 +88,18 @@ struct rkisp1_isp_params_ops {
 			   const struct cifisp_dpf_config *arg);
 	void (*dpf_strength_config)(struct rkisp1_isp_params_vdev *params_vdev,
 				    const struct cifisp_dpf_strength_config *arg);
+	void (*wdr_config)(struct rkisp1_isp_params_vdev *params_vdev,
+			   const struct cifisp_wdr_config *arg);
+	void (*wdr_enable)(struct rkisp1_isp_params_vdev *params_vdev,
+			  bool en);
+	void (*demosaiclp_config)(struct rkisp1_isp_params_vdev *params_vdev,
+				  const struct cifisp_demosaiclp_config *arg);
+	void (*demosaiclp_enable)(struct rkisp1_isp_params_vdev *params_vdev,
+				  bool en);
+	void (*rkiesharp_config)(struct rkisp1_isp_params_vdev *params_vdev,
+				 const struct cifisp_rkiesharp_config *arg);
+	void (*rkiesharp_enable)(struct rkisp1_isp_params_vdev *params_vdev,
+				 bool en);
 };
 
 struct rkisp1_isp_params_config {
@@ -113,6 +126,9 @@ struct rkisp1_isp_params_vdev {
 
 	enum v4l2_quantization quantization;
 	enum rkisp1_fmt_raw_pat_type raw_type;
+	u32 in_mbus_code;
+
+	struct preisp_hdrae_para_s hdrae_para;
 
 	struct rkisp1_isp_params_ops *ops;
 	struct rkisp1_isp_params_config *config;

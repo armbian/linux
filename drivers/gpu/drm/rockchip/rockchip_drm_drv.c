@@ -154,7 +154,7 @@ struct drm_connector *find_connector_by_bridge(struct drm_device *drm_dev,
 		dev_err(drm_dev->dev, "can't found port point!\n");
 		goto err_put_encoder;
 	}
-	for_each_child_of_node(port, endpoint) {
+	for_each_available_child_of_node(port, endpoint) {
 		np_connector = of_graph_get_remote_port_parent(endpoint);
 		if (!np_connector) {
 			dev_err(drm_dev->dev,
@@ -727,10 +727,7 @@ static void show_loader_logo(struct drm_device *drm_dev)
 
 	state->acquire_ctx = mode_config->acquire_ctx;
 
-	for_each_child_of_node(root, route) {
-		if (!of_device_is_available(route))
-			continue;
-
+	for_each_available_child_of_node(root, route) {
 		set = of_parse_display_resource(drm_dev, route);
 		if (!set)
 			continue;
@@ -1232,6 +1229,24 @@ static int rockchip_drm_create_properties(struct drm_device *dev)
 	if (!prop)
 		return -ENOMEM;
 	private->alpha_scale_prop = prop;
+
+	prop = drm_property_create_range(dev, DRM_MODE_PROP_ATOMIC,
+					 "PDAF_TYPE", 0, 4);
+	if (!prop)
+		return -ENOMEM;
+	private->pdaf_type = prop;
+
+	prop = drm_property_create_range(dev, DRM_MODE_PROP_ATOMIC,
+					 "WORK_MODE", 0, 6);
+	if (!prop)
+		return -ENOMEM;
+	private->work_mode = prop;
+
+	prop = drm_property_create_range(dev, DRM_MODE_PROP_ATOMIC,
+					 "PDAF_DATA_TYPE", 0, 255);
+	if (!prop)
+		return -ENOMEM;
+	private->pdaf_data_type = prop;
 
 	return drm_mode_create_tv_properties(dev, 0, NULL);
 }
@@ -1818,7 +1833,7 @@ static void rockchip_add_endpoints(struct device *dev,
 {
 	struct device_node *ep, *remote;
 
-	for_each_child_of_node(port, ep) {
+	for_each_available_child_of_node(port, ep) {
 		remote = of_graph_get_remote_port_parent(ep);
 		if (!remote || !of_device_is_available(remote)) {
 			of_node_put(remote);

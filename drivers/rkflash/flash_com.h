@@ -15,6 +15,11 @@
 #define NAND_STS_EMPTY                  512	/* page is not proged */
 #define NAND_STS_ECC_ERR                NAND_ERROR
 
+#define NAND_IDB_START    64 /* 32 KB*/
+#define NAND_IDB_SIZE    512 /* 256 KB*/
+#define NAND_IDB_END    (NAND_IDB_START + NAND_IDB_SIZE - 1)
+#define DEFAULT_IDB_RESERVED_BLOCK 16
+
 #define FULL_SLC			0
 #define SLC				1
 
@@ -59,6 +64,8 @@ struct nand_ops {
 	u32 (*erase_blk)(u8 cs, u32 page_addr);
 	u32 (*prog_page)(u8 cs, u32 page_addr, u32 *data, u32 *spare);
 	u32 (*read_page)(u8 cs, u32 page_addr, u32 *data, u32 *spare);
+	void (*bch_sel)(u8 bits);
+	void (*set_sec_num)(u8 num);
 };
 
 s32 ftl_flash_prog_pages(void *req, u32 num_req, u32 flash_type, u32 check);

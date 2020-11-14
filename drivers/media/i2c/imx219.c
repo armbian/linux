@@ -6,6 +6,7 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
+ * V0.0X01.0X01 add enum_frame_interval function.
  */
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -16,11 +17,15 @@
 #include <linux/of_graph.h>
 #include <linux/slab.h>
 #include <linux/videodev2.h>
+#include <linux/version.h>
+#include <linux/rk-camera-module.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-image-sizes.h>
 #include <media/v4l2-mediabus.h>
+
+#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x1)
 
 /* IMX219 supported geometry */
 #define IMX219_TABLE_END		0xffff
@@ -40,6 +45,8 @@
 
 #define IMX219_EXP_LINES_MARGIN	4
 
+#define IMX219_NAME			"imx219"
+
 static const s64 link_freq_menu_items[] = {
 	456000000,
 };
@@ -52,7 +59,7 @@ struct imx219_reg {
 struct imx219_mode {
 	u32 width;
 	u32 height;
-	u32 max_fps;
+	struct v4l2_fract max_fps;
 	u32 hts_def;
 	u32 vts_def;
 	const struct imx219_reg *reg_list;
@@ -230,14 +237,22 @@ struct imx219 {
 	struct v4l2_ctrl *vblank;
 	struct v4l2_ctrl *pixel_rate;
 	const struct imx219_mode *cur_mode;
+	u32 cfg_num;
 	u16 cur_vts;
+	u32 module_index;
+	const char *module_facing;
+	const char *module_name;
+	const char *len_name;
 };
 
 static const struct imx219_mode supported_modes[] = {
 	{
 		.width = 1920,
 		.height = 1080,
-		.max_fps = 30,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 300000,
+		},
 		.hts_def = 0x0d78 - IMX219_EXP_LINES_MARGIN,
 		.vts_def = 0x06E6,
 		.reg_list = imx219_init_tab_1920_1080_30fps,
@@ -245,7 +260,10 @@ static const struct imx219_mode supported_modes[] = {
 	{
 		.width = 3280,
 		.height = 2464,
-		.max_fps = 21,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 210000,
+		},
 		.hts_def = 0x0d78 - IMX219_EXP_LINES_MARGIN,
 		.vts_def = 0x09c4,
 		.reg_list = imx219_init_tab_3280_2464_21fps,
@@ -495,6 +513,18 @@ static int imx219_s_ctrl_test_pattern(struct v4l2_ctrl *ctrl)
 	return 0;
 }
 
+static int imx219_g_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct imx219 *priv = to_imx219(client);
+	const struct imx219_mode *mode = priv->cur_mode;
+
+	fi->interval = mode->max_fps;
+
+	return 0;
+}
+
 static int imx219_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct imx219 *priv =
@@ -645,6 +675,7 @@ static int imx219_set_fmt(struct v4l2_subdev *sd,
 	struct imx219 *priv = to_imx219(client);
 	const struct imx219_mode *mode;
 	s64 h_blank, v_blank, pixel_rate;
+	u32 fps = 0;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
 		return 0;
@@ -662,7 +693,9 @@ static int imx219_set_fmt(struct v4l2_subdev *sd,
 	__v4l2_ctrl_modify_range(priv->vblank, v_blank,
 					v_blank,
 					1, v_blank);
-	pixel_rate = mode->vts_def * mode->hts_def * mode->max_fps;
+	fps = DIV_ROUND_CLOSEST(mode->max_fps.denominator,
+		mode->max_fps.numerator);
+	pixel_rate = mode->vts_def * mode->hts_def * fps;
 	__v4l2_ctrl_modify_range(priv->pixel_rate, pixel_rate,
 					pixel_rate, 1, pixel_rate);
 
@@ -698,17 +731,113 @@ static int imx219_get_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static void imx219_get_module_inf(struct imx219 *imx219,
+				  struct rkmodule_inf *inf)
+{
+	memset(inf, 0, sizeof(*inf));
+	strlcpy(inf->base.sensor, IMX219_NAME, sizeof(inf->base.sensor));
+	strlcpy(inf->base.module, imx219->module_name,
+		sizeof(inf->base.module));
+	strlcpy(inf->base.lens, imx219->len_name, sizeof(inf->base.lens));
+}
+
+static long imx219_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct imx219 *imx219 = to_imx219(client);
+	long ret = 0;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		imx219_get_module_inf(imx219, (struct rkmodule_inf *)arg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long imx219_compat_ioctl32(struct v4l2_subdev *sd,
+				  unsigned int cmd, unsigned long arg)
+{
+	void __user *up = compat_ptr(arg);
+	struct rkmodule_inf *inf;
+	struct rkmodule_awb_cfg *cfg;
+	long ret;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		inf = kzalloc(sizeof(*inf), GFP_KERNEL);
+		if (!inf) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = imx219_ioctl(sd, cmd, inf);
+		if (!ret)
+			ret = copy_to_user(up, inf, sizeof(*inf));
+		kfree(inf);
+		break;
+	case RKMODULE_AWB_CFG:
+		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
+		if (!cfg) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = copy_from_user(cfg, up, sizeof(*cfg));
+		if (!ret)
+			ret = imx219_ioctl(sd, cmd, cfg);
+		kfree(cfg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+#endif
+
+static int imx219_enum_frame_interval(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_frame_interval_enum *fie)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct imx219 *priv = to_imx219(client);
+
+	if (fie->index >= priv->cfg_num)
+		return -EINVAL;
+
+	if (fie->code != MEDIA_BUS_FMT_SRGGB10_1X10)
+		return -EINVAL;
+
+	fie->width = supported_modes[fie->index].width;
+	fie->height = supported_modes[fie->index].height;
+	fie->interval = supported_modes[fie->index].max_fps;
+	return 0;
+}
+
 /* Various V4L2 operations tables */
 static struct v4l2_subdev_video_ops imx219_subdev_video_ops = {
 	.s_stream = imx219_s_stream,
+	.g_frame_interval = imx219_g_frame_interval,
 };
 
 static struct v4l2_subdev_core_ops imx219_subdev_core_ops = {
 	.s_power = imx219_s_power,
+	.ioctl = imx219_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = imx219_compat_ioctl32,
+#endif
 };
 
 static const struct v4l2_subdev_pad_ops imx219_subdev_pad_ops = {
 	.enum_mbus_code = imx219_enum_mbus_code,
+	.enum_frame_interval = imx219_enum_frame_interval,
 	.set_fmt = imx219_set_fmt,
 	.get_fmt = imx219_get_fmt,
 };
@@ -806,6 +935,7 @@ static int imx219_ctrls_init(struct v4l2_subdev *sd)
 	const struct imx219_mode *mode = priv->cur_mode;
 	s64 pixel_rate, h_blank, v_blank;
 	int ret;
+	u32 fps = 0;
 
 	v4l2_ctrl_handler_init(&priv->ctrl_handler, 10);
 	v4l2_ctrl_new_std(&priv->ctrl_handler, &imx219_ctrl_ops,
@@ -841,7 +971,9 @@ static int imx219_ctrls_init(struct v4l2_subdev *sd)
 	/* freq */
 	v4l2_ctrl_new_int_menu(&priv->ctrl_handler, NULL, V4L2_CID_LINK_FREQ,
 			       0, 0, link_freq_menu_items);
-	pixel_rate = mode->vts_def * mode->hts_def * mode->max_fps;
+	fps = DIV_ROUND_CLOSEST(mode->max_fps.denominator,
+		mode->max_fps.numerator);
+	pixel_rate = mode->vts_def * mode->hts_def * fps;
 	priv->pixel_rate = v4l2_ctrl_new_std(&priv->ctrl_handler, NULL, V4L2_CID_PIXEL_RATE,
 			  0, pixel_rate, 1, pixel_rate);
 
@@ -875,7 +1007,16 @@ static int imx219_probe(struct i2c_client *client,
 {
 	struct imx219 *priv;
 	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
+	struct device *dev = &client->dev;
+	struct device_node *node = dev->of_node;
+	struct v4l2_subdev *sd;
+	char facing[2];
 	int ret;
+
+	dev_info(dev, "driver version: %02x.%02x.%02x",
+		DRIVER_VERSION >> 16,
+		(DRIVER_VERSION & 0xff00) >> 8,
+		DRIVER_VERSION & 0x00ff);
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA)) {
 		dev_warn(&adapter->dev,
@@ -886,6 +1027,19 @@ static int imx219_probe(struct i2c_client *client,
 	if (!priv)
 		return -ENOMEM;
 
+	ret = of_property_read_u32(node, RKMODULE_CAMERA_MODULE_INDEX,
+				   &priv->module_index);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_FACING,
+				       &priv->module_facing);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_NAME,
+				       &priv->module_name);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_LENS_NAME,
+				       &priv->len_name);
+	if (ret) {
+		dev_err(dev, "could not get module information!\n");
+		return -EINVAL;
+	}
+
 	priv->clk = devm_clk_get(&client->dev, NULL);
 	if (IS_ERR(priv->clk)) {
 		dev_info(&client->dev, "Error %ld getting clock\n",
@@ -895,6 +1049,7 @@ static int imx219_probe(struct i2c_client *client,
 
 	/* 1920 * 1080 by default */
 	priv->cur_mode = &supported_modes[0];
+	priv->cfg_num = ARRAY_SIZE(supported_modes);
 
 	priv->crop_rect.left = 680;
 	priv->crop_rect.top = 692;
@@ -916,7 +1071,17 @@ static int imx219_probe(struct i2c_client *client,
 	if (ret < 0)
 		return ret;
 
-	ret = v4l2_async_register_subdev(&priv->subdev);
+	sd = &priv->subdev;
+	memset(facing, 0, sizeof(facing));
+	if (strcmp(priv->module_facing, "back") == 0)
+		facing[0] = 'b';
+	else
+		facing[0] = 'f';
+
+	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
+		 priv->module_index, facing,
+		 IMX219_NAME, dev_name(sd->dev));
+	ret = v4l2_async_register_subdev_sensor_common(sd);
 	if (ret < 0)
 		return ret;
 
@@ -949,7 +1114,7 @@ MODULE_DEVICE_TABLE(i2c, imx219_id);
 static struct i2c_driver imx219_i2c_driver = {
 	.driver = {
 		.of_match_table = of_match_ptr(imx219_of_match),
-		.name = "imx219",
+		.name = IMX219_NAME,
 	},
 	.probe = imx219_probe,
 	.remove = imx219_remove,

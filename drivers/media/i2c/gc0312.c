@@ -2,23 +2,8 @@
 /*
  * GC0312 CMOS Image Sensor driver
  *
- * Copyright (C) 2015 Texas Instruments, Inc.
- *
- * Benoit Parrot <bparrot@ti.com>
- * Lad, Prabhakar <prabhakar.csengg@gmail.com>
- *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (C) 2017 Fuzhou Rockchip Electronics Co., Ltd.
+ * V0.0X01.0X01 add enum_frame_interval function.
  */
 
 #include <linux/clk.h>
@@ -38,7 +23,8 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/videodev2.h>
-
+#include <linux/version.h>
+#include <linux/rk-camera-module.h>
 #include <media/media-entity.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
@@ -49,6 +35,7 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
+#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x1)
 #define DRIVER_NAME "gc0312"
 #define GC0312_PIXEL_RATE		(96 * 1000 * 1000)
 
@@ -74,6 +61,7 @@ struct gc0312_framesize {
 	u16 width;
 	u16 height;
 	u16 max_exp_lines;
+	struct v4l2_fract max_fps;
 	const struct sensor_register *regs;
 };
 
@@ -116,6 +104,10 @@ struct gc0312 {
 	struct v4l2_ctrl *link_frequency;
 	const struct gc0312_framesize *frame_size;
 	int streaming;
+	u32 module_index;
+	const char *module_facing;
+	const char *module_name;
+	const char *len_name;
 };
 
 static const struct sensor_register gc0312_vga_regs[] = {
@@ -191,6 +183,7 @@ static const struct sensor_register gc0312_vga_regs[] = {
 	{0x4d, 0x05},
 	{0x4f, 0x01},
 	{0x50, 0x01},
+	{0x54, 0x04},
 	{0x55, 0x01},
 	{0x56, 0xe0},
 	{0x57, 0x02},
@@ -467,6 +460,10 @@ static const struct gc0312_framesize gc0312_framesizes[] = {
 	{ /* VGA */
 		.width		= 640,
 		.height		= 480,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 300000,
+		},
 		.regs		= gc0312_vga_regs,
 		.max_exp_lines	= 488,
 	}
@@ -736,6 +733,76 @@ static int gc0312_set_fmt(struct v4l2_subdev *sd,
 	return ret;
 }
 
+static void gc0312_get_module_inf(struct gc0312 *gc0312,
+				  struct rkmodule_inf *inf)
+{
+	memset(inf, 0, sizeof(*inf));
+	strlcpy(inf->base.sensor, DRIVER_NAME, sizeof(inf->base.sensor));
+	strlcpy(inf->base.module, gc0312->module_name,
+		sizeof(inf->base.module));
+	strlcpy(inf->base.lens, gc0312->len_name, sizeof(inf->base.lens));
+}
+
+static long gc0312_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct gc0312 *gc0312 = to_gc0312(sd);
+	long ret = 0;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		gc0312_get_module_inf(gc0312, (struct rkmodule_inf *)arg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long gc0312_compat_ioctl32(struct v4l2_subdev *sd,
+				  unsigned int cmd, unsigned long arg)
+{
+	void __user *up = compat_ptr(arg);
+	struct rkmodule_inf *inf;
+	struct rkmodule_awb_cfg *cfg;
+	long ret;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		inf = kzalloc(sizeof(*inf), GFP_KERNEL);
+		if (!inf) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = gc0312_ioctl(sd, cmd, inf);
+		if (!ret)
+			ret = copy_to_user(up, inf, sizeof(*inf));
+		kfree(inf);
+		break;
+	case RKMODULE_AWB_CFG:
+		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
+		if (!cfg) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = copy_from_user(cfg, up, sizeof(*cfg));
+		if (!ret)
+			ret = gc0312_ioctl(sd, cmd, cfg);
+		kfree(cfg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+#endif
+
 static int gc0312_s_stream(struct v4l2_subdev *sd, int on)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -836,10 +903,30 @@ static int gc0312_g_mbus_config(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int gc0312_enum_frame_interval(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_frame_interval_enum *fie)
+{
+	if (fie->index >= ARRAY_SIZE(gc0312_framesizes))
+		return -EINVAL;
+
+	if (fie->code != MEDIA_BUS_FMT_YUYV8_2X8)
+		return -EINVAL;
+
+	fie->width = gc0312_framesizes[fie->index].width;
+	fie->height = gc0312_framesizes[fie->index].height;
+	fie->interval = gc0312_framesizes[fie->index].max_fps;
+	return 0;
+}
+
 static const struct v4l2_subdev_core_ops gc0312_subdev_core_ops = {
 	.log_status = v4l2_ctrl_subdev_log_status,
 	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
 	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
+	.ioctl = gc0312_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = gc0312_compat_ioctl32,
+#endif
 };
 
 static const struct v4l2_subdev_video_ops gc0312_subdev_video_ops = {
@@ -850,6 +937,7 @@ static const struct v4l2_subdev_video_ops gc0312_subdev_video_ops = {
 static const struct v4l2_subdev_pad_ops gc0312_subdev_pad_ops = {
 	.enum_mbus_code = gc0312_enum_mbus_code,
 	.enum_frame_size = gc0312_enum_frame_sizes,
+	.enum_frame_interval = gc0312_enum_frame_interval,
 	.get_fmt = gc0312_get_fmt,
 	.set_fmt = gc0312_set_fmt,
 };
@@ -980,13 +1068,34 @@ static int gc0312_parse_of(struct gc0312 *gc0312)
 static int gc0312_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
+	struct device *dev = &client->dev;
+	struct device_node *node = dev->of_node;
 	struct v4l2_subdev *sd;
 	struct gc0312 *gc0312;
+	char facing[2];
 	int ret;
+
+	dev_info(dev, "driver version: %02x.%02x.%02x",
+		DRIVER_VERSION >> 16,
+		(DRIVER_VERSION & 0xff00) >> 8,
+		DRIVER_VERSION & 0x00ff);
 
 	gc0312 = devm_kzalloc(&client->dev, sizeof(*gc0312), GFP_KERNEL);
 	if (!gc0312)
 		return -ENOMEM;
+
+	ret = of_property_read_u32(node, RKMODULE_CAMERA_MODULE_INDEX,
+				   &gc0312->module_index);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_FACING,
+				       &gc0312->module_facing);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_NAME,
+				       &gc0312->module_name);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_LENS_NAME,
+				       &gc0312->len_name);
+	if (ret) {
+		dev_err(dev, "could not get module information!\n");
+		return -EINVAL;
+	}
 
 	gc0312->client = client;
 	gc0312->xvclk = devm_clk_get(&client->dev, "xvclk");
@@ -1050,7 +1159,16 @@ static int gc0312_probe(struct i2c_client *client,
 	if (ret < 0)
 		goto error;
 
-	ret = v4l2_async_register_subdev(&gc0312->sd);
+	memset(facing, 0, sizeof(facing));
+	if (strcmp(gc0312->module_facing, "back") == 0)
+		facing[0] = 'b';
+	else
+		facing[0] = 'f';
+
+	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
+		 gc0312->module_index, facing,
+		 DRIVER_NAME, dev_name(sd->dev));
+	ret = v4l2_async_register_subdev_sensor_common(sd);
 	if (ret)
 		goto error;
 

@@ -44,7 +44,8 @@
  */
 static struct clk *rockchip_clk_register_branch(const char *name,
 		const char *const *parent_names, u8 num_parents, void __iomem *base,
-		int muxdiv_offset, u8 mux_shift, u8 mux_width, u8 mux_flags,
+		int muxdiv_offset, u8 mux_shift, u8 mux_width,
+		u8 mux_flags, u32 *mux_table,
 		int div_offset, u8 div_shift, u8 div_width, u8 div_flags,
 		struct clk_div_table *div_table, int gate_offset,
 		u8 gate_shift, u8 gate_flags, unsigned long flags,
@@ -66,6 +67,7 @@ static struct clk *rockchip_clk_register_branch(const char *name,
 		mux->shift = mux_shift;
 		mux->mask = BIT(mux_width) - 1;
 		mux->flags = mux_flags;
+		mux->table = mux_table;
 		mux->lock = lock;
 		mux_ops = (mux_flags & CLK_MUX_READ_ONLY) ? &clk_mux_ro_ops
 							: &clk_mux_ops;
@@ -195,8 +197,8 @@ static void rockchip_fractional_approximation(struct clk_hw *hw,
 		}
 
 		if (*parent_rate < rate * 20) {
-			pr_err("%s parent_rate(%ld) is low than rate(%ld)*20, fractional div is not allowed\n",
-			       clk_hw_get_name(hw), *parent_rate, rate);
+			pr_warn("%s p_rate(%ld) is low than rate(%ld)*20, use integer or half-div\n",
+				clk_hw_get_name(hw), *parent_rate, rate);
 			*m = 0;
 			*n = 1;
 			return;
@@ -301,6 +303,8 @@ static struct clk *rockchip_clk_register_frac_branch(
 		frac_mux->shift = child->mux_shift;
 		frac_mux->mask = BIT(child->mux_width) - 1;
 		frac_mux->flags = child->mux_flags;
+		if (child->mux_table)
+			frac_mux->table = child->mux_table;
 		frac_mux->lock = lock;
 		frac_mux->hw.init = &init;
 
@@ -407,9 +411,12 @@ struct rockchip_clk_provider * __init rockchip_clk_init(struct device_node *np,
 	ctx->clk_data.clk_num = nr_clks;
 	ctx->cru_node = np;
 	ctx->grf = ERR_PTR(-EPROBE_DEFER);
+	ctx->pmugrf = ERR_PTR(-EPROBE_DEFER);
 	spin_lock_init(&ctx->lock);
 	ctx->grf = syscon_regmap_lookup_by_phandle(ctx->cru_node,
 						   "rockchip,grf");
+	ctx->pmugrf = syscon_regmap_lookup_by_phandle(ctx->cru_node,
+						   "rockchip,pmugrf");
 
 	return ctx;
 
@@ -479,16 +486,33 @@ void __init rockchip_clk_register_branches(
 		/* catch simple muxes */
 		switch (list->branch_type) {
 		case branch_mux:
-			clk = clk_register_mux(NULL, list->name,
-				list->parent_names, list->num_parents,
-				flags, ctx->reg_base + list->muxdiv_offset,
-				list->mux_shift, list->mux_width,
-				list->mux_flags, &ctx->lock);
+			if (list->mux_table)
+				clk = clk_register_mux_table(NULL, list->name,
+					list->parent_names, list->num_parents,
+					flags,
+					ctx->reg_base + list->muxdiv_offset,
+					list->mux_shift, list->mux_width,
+					list->mux_flags, list->mux_table,
+					&ctx->lock);
+			else
+				clk = clk_register_mux(NULL, list->name,
+					list->parent_names, list->num_parents,
+					flags,
+					ctx->reg_base + list->muxdiv_offset,
+					list->mux_shift, list->mux_width,
+					list->mux_flags, &ctx->lock);
 			break;
 		case branch_muxgrf:
 			clk = rockchip_clk_register_muxgrf(list->name,
 				list->parent_names, list->num_parents,
 				flags, ctx->grf, list->muxdiv_offset,
+				list->mux_shift, list->mux_width,
+				list->mux_flags);
+			break;
+		case branch_muxpmugrf:
+			clk = rockchip_clk_register_muxgrf(list->name,
+				list->parent_names, list->num_parents,
+				flags, ctx->pmugrf, list->muxdiv_offset,
 				list->mux_shift, list->mux_width,
 				list->mux_flags);
 			break;
@@ -538,7 +562,8 @@ void __init rockchip_clk_register_branches(
 				list->parent_names, list->num_parents,
 				ctx->reg_base, list->muxdiv_offset, list->mux_shift,
 				list->mux_width, list->mux_flags,
-				list->div_offset, list->div_shift, list->div_width,
+				list->mux_table, list->div_offset,
+				list->div_shift, list->div_width,
 				list->div_flags, list->div_table,
 				list->gate_offset, list->gate_shift,
 				list->gate_flags, flags, &ctx->lock);
@@ -630,6 +655,21 @@ void __init rockchip_clk_protect_critical(const char *const clocks[],
 	}
 }
 
+void (*rk_dump_cru)(void);
+EXPORT_SYMBOL(rk_dump_cru);
+
+static int rk_clk_panic(struct notifier_block *this,
+			unsigned long ev, void *ptr)
+{
+	if (rk_dump_cru)
+		rk_dump_cru();
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block rk_clk_panic_block = {
+	.notifier_call = rk_clk_panic,
+};
+
 static void __iomem *rst_base;
 static unsigned int reg_restart;
 static void (*cb_restart)(void);
@@ -660,4 +700,6 @@ void __init rockchip_register_restart_notifier(struct rockchip_clk_provider *ctx
 	if (ret)
 		pr_err("%s: cannot register restart handler, %d\n",
 		       __func__, ret);
+	atomic_notifier_chain_register(&panic_notifier_list,
+				       &rk_clk_panic_block);
 }

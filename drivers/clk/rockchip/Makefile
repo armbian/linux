@@ -11,9 +11,12 @@ obj-y	+= clk-mmc-phase.o
 obj-y	+= clk-muxgrf.o
 obj-y	+= clk-ddr.o
 obj-y	+= clk-half-divider.o
+obj-y	+= clk-pvtm.o
 obj-$(CONFIG_RESET_CONTROLLER)	+= softrst.o
 
 obj-$(CONFIG_CPU_PX30)		+= clk-px30.o
+obj-$(CONFIG_CPU_RV110X)	+= clk-rv1108.o
+obj-$(CONFIG_CPU_RK1808)	+= clk-rk1808.o
 obj-$(CONFIG_CPU_RK3036)	+= clk-rk3036.o
 obj-$(CONFIG_CPU_RK312X)	+= clk-rk3128.o
 obj-$(CONFIG_CPU_RK3188)	+= clk-rk3188.o

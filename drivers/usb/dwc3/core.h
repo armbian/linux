@@ -541,7 +541,6 @@ struct dwc3_ep {
 #define DWC3_EP_BUSY		(1 << 4)
 #define DWC3_EP_PENDING_REQUEST	(1 << 5)
 #define DWC3_EP_MISSED_ISOC	(1 << 6)
-#define DWC3_EP_TRANSFER_STARTED (1 << 8)
 
 	/* This last one is specific to EP0 */
 #define DWC3_EP0_DIR_IN		(1 << 31)
@@ -821,6 +820,7 @@ struct dwc3_scratchpad_array {
  * @dis_u3_autosuspend_quirk: set if the we disable usb3 autosuspend
  * @dis_u3_susphy_quirk: set if we disable usb3 suspend phy
  * @dis_u2_susphy_quirk: set if we disable usb2 suspend phy
+ * @dis_u1u2_quirk: set if we reject transition to U1 or U2 state
  * @dis_enblslpm_quirk: set if we clear enblslpm in GUSB2PHYCFG,
  *                      disabling the suspend signal to the PHY.
  * @dis_u2_freeclk_exists_quirk : set if we clear u2_freeclk_exists
@@ -833,6 +833,9 @@ struct dwc3_scratchpad_array {
  * @xhci_slow_suspend_quirk: set if need an extraordinary delay to wait
  *			for xHC enter the Halted state after the Run/Stop
  *			(R/S) bit is cleared to '0'.
+ * @xhci_trb_ent_quirk: set if need to enable the Evaluate Next TRB(ENT)
+			flag in the TRB data structure to force xHC to
+			pre-fetch the next TRB of a TD.
  * @usb3_warm_reset_on_resume_quirk: set if need a warm reset on resume
  * @tx_de_emphasis_quirk: set if we enable Tx de-emphasis quirk
  * @tx_de_emphasis: Tx de-emphasis value
@@ -840,6 +843,7 @@ struct dwc3_scratchpad_array {
  * 	1	- -3.5dB de-emphasis
  * 	2	- No de-emphasis
  * 	3	- Reserved
+ * @needs_fifo_resize: set if we want to resize TXFIFO.
  */
 struct dwc3 {
 	struct usb_ctrlrequest	*ctrl_req;
@@ -980,16 +984,19 @@ struct dwc3 {
 	unsigned		dis_u3_autosuspend_quirk:1;
 	unsigned		dis_u3_susphy_quirk:1;
 	unsigned		dis_u2_susphy_quirk:1;
+	unsigned		dis_u1u2_quirk:1;
 	unsigned		dis_enblslpm_quirk:1;
 	unsigned		dis_rxdet_inp3_quirk:1;
 	unsigned		dis_u2_freeclk_exists_quirk:1;
 	unsigned		dis_del_phy_power_chg_quirk:1;
 	unsigned		tx_ipgap_linecheck_dis_quirk:1;
 	unsigned		xhci_slow_suspend_quirk:1;
+	unsigned		xhci_trb_ent_quirk:1;
 	unsigned		usb3_warm_reset_on_resume_quirk:1;
 
 	unsigned		tx_de_emphasis_quirk:1;
 	unsigned		tx_de_emphasis:2;
+	unsigned		needs_fifo_resize:1;
 };
 
 /* -------------------------------------------------------------------------- */

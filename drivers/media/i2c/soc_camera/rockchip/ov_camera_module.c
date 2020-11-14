@@ -339,6 +339,30 @@ int ov_camera_module_g_fmt(struct v4l2_subdev *sd,
 
 /* ======================================================================== */
 
+int ov_camera_module_enum_frame_size(
+	struct v4l2_subdev *sd,
+	struct v4l2_subdev_pad_config *cfg,
+	struct v4l2_subdev_frame_size_enum *fse)
+{
+	struct ov_camera_module *cam_mod = to_ov_camera_module(sd);
+
+	if (fse->index >= cam_mod->custom.num_configs)
+		return -EINVAL;
+
+	fse->code =
+		cam_mod->custom.configs[fse->index].frm_fmt.code;
+	fse->max_width =
+		cam_mod->custom.configs[fse->index].frm_fmt.width;
+	fse->max_height =
+		cam_mod->custom.configs[fse->index].frm_fmt.height;
+
+	pltfrm_camera_module_pr_debug(&cam_mod->sd, "%dx%d",
+				      fse->max_width, fse->max_height);
+	return 0;
+}
+
+/* ======================================================================== */
+
 int ov_camera_module_s_frame_interval(
 	struct v4l2_subdev *sd,
 	struct v4l2_subdev_frame_interval *interval)
@@ -800,6 +824,7 @@ int ov_camera_module_s_ext_ctrls(
 	int i;
 	int ctrl_cnt = 0;
 	struct ov_camera_module *cam_mod =  to_ov_camera_module(sd);
+	struct ov_camera_module_ext_ctrls ov_ctrls;
 	int ret = 0;
 
 	pltfrm_camera_module_pr_debug(&cam_mod->sd, "\n");
@@ -921,6 +946,24 @@ int ov_camera_module_s_ext_ctrls(
 			else
 				cam_mod->vflip = false;
 			cam_mod->flip_flg = true;
+			break;
+		case V4L2_CID_TEST_PATTERN:
+			ov_ctrls.ctrls =
+				kmalloc_array(ctrls->count,
+					sizeof(*ov_ctrls.ctrls),
+					GFP_KERNEL);
+			if (ov_ctrls.ctrls) {
+				for (i = 0; i < ctrls->count; i++) {
+					ov_ctrls.ctrls[i].id =
+						ctrls->controls[i].id;
+					ov_ctrls.ctrls[i].value =
+						ctrls->controls[i].value;
+				}
+				ov_ctrls.count = ctrls->count;
+				ret = cam_mod->custom.s_ext_ctrls(cam_mod,
+								  &ov_ctrls);
+			}
+			kfree(ov_ctrls.ctrls);
 			break;
 		default:
 			pltfrm_camera_module_pr_warn(&cam_mod->sd,

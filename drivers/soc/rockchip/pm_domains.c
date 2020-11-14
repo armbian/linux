@@ -18,9 +18,11 @@
 #include <linux/clk.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
+#include <linux/regulator/consumer.h>
 #include <soc/rockchip/pm_domains.h>
 #include <soc/rockchip/rockchip_dmc.h>
 #include <dt-bindings/power/px30-power.h>
+#include <dt-bindings/power/rk1808-power.h>
 #include <dt-bindings/power/rk3036-power.h>
 #include <dt-bindings/power/rk3128-power.h>
 #include <dt-bindings/power/rk3228-power.h>
@@ -75,6 +77,7 @@ struct rockchip_pm_domain {
 	int num_clks;
 	bool is_ignore_pwr;
 	bool is_qos_saved;
+	struct regulator *supply;
 	struct clk *clks[];
 };
 
@@ -391,6 +394,21 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
 	rockchip_pmu_lock(pd);
 
 	if (rockchip_pmu_domain_is_on(pd) != power_on) {
+		if (IS_ERR_OR_NULL(pd->supply) &&
+		    PTR_ERR(pd->supply) != -ENODEV)
+			pd->supply = devm_regulator_get_optional(pd->pmu->dev,
+								 genpd->name);
+
+		if (power_on && !IS_ERR(pd->supply)) {
+			ret = regulator_enable(pd->supply);
+			if (ret < 0) {
+				dev_err(pd->pmu->dev, "failed to set vdd supply enable '%s',\n",
+					genpd->name);
+				rockchip_pmu_unlock(pd);
+				return ret;
+			}
+		}
+
 		for (i = 0; i < pd->num_clks; i++)
 			clk_enable(pd->clks[i]);
 
@@ -429,6 +447,9 @@ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
 out:
 		for (i = pd->num_clks - 1; i >= 0; i--)
 			clk_disable(pd->clks[i]);
+
+		if (!power_on && !IS_ERR(pd->supply))
+			ret = regulator_disable(pd->supply);
 	}
 
 	rockchip_pmu_unlock(pd);
@@ -511,7 +532,7 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 	struct rockchip_pm_domain *pd;
 	struct device_node *qos_node;
 	struct clk *clk;
-	int clk_cnt;
+	int clk_cnt, num_qos = 0, num_qos_reg = 0;
 	int i, j;
 	u32 id;
 	int error;
@@ -574,8 +595,14 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 			clk, node->name);
 	}
 
-	pd->num_qos = of_count_phandle_with_args(node, "pm_qos",
-						 NULL);
+	num_qos = of_count_phandle_with_args(node, "pm_qos", NULL);
+
+	for (j = 0; j < num_qos; j++) {
+		qos_node = of_parse_phandle(node, "pm_qos", j);
+		if (qos_node && of_device_is_available(qos_node))
+			pd->num_qos++;
+		of_node_put(qos_node);
+	}
 
 	if (pd->num_qos > 0) {
 		pd->qos_regmap = devm_kcalloc(pmu->dev, pd->num_qos,
@@ -597,28 +624,26 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 			}
 		}
 
-		for (j = 0; j < pd->num_qos; j++) {
+		for (j = 0; j < num_qos; j++) {
 			qos_node = of_parse_phandle(node, "pm_qos", j);
 			if (!qos_node) {
 				error = -ENODEV;
 				goto err_out;
 			}
-			pd->qos_regmap[j] = syscon_node_to_regmap(qos_node);
-			if (IS_ERR(pd->qos_regmap[j])) {
-				error = -ENODEV;
-				of_node_put(qos_node);
-				goto err_out;
+			if (of_device_is_available(qos_node)) {
+				pd->qos_regmap[num_qos_reg] =
+					syscon_node_to_regmap(qos_node);
+				if (IS_ERR(pd->qos_regmap[num_qos_reg])) {
+					error = -ENODEV;
+					of_node_put(qos_node);
+					goto err_out;
+				}
+				num_qos_reg++;
 			}
 			of_node_put(qos_node);
+			if (num_qos_reg > pd->num_qos)
+				goto err_out;
 		}
-	}
-
-	error = rockchip_pd_power(pd, true);
-	if (error) {
-		dev_err(pmu->dev,
-			"failed to power on domain '%s': %d\n",
-			node->name, error);
-		goto err_out;
 	}
 
 	pd->genpd.name = node->name;
@@ -628,7 +653,7 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
 	pd->genpd.detach_dev = rockchip_pd_detach_dev;
 	pd->genpd.dev_ops.active_wakeup = rockchip_active_wakeup;
 	pd->genpd.flags = GENPD_FLAG_PM_CLK;
-	pm_genpd_init(&pd->genpd, NULL, false);
+	pm_genpd_init(&pd->genpd, NULL, !rockchip_pmu_domain_is_on(pd));
 
 	pmu->genpd_data.domains[id] = &pd->genpd;
 	return 0;
@@ -895,6 +920,13 @@ static const struct rockchip_domain_info px30_pm_domains[] = {
 	[PX30_PD_GPU]		= DOMAIN_PX30(15, 15, 2, false),
 };
 
+static const struct rockchip_domain_info rk1808_pm_domains[] = {
+	[RK1808_VD_NPU]		= DOMAIN_PX30(15, 15, 2, false),
+	[RK1808_PD_PCIE]	= DOMAIN_PX30(9, 9, 4, true),
+	[RK1808_PD_VPU]		= DOMAIN_PX30(13, 13, 7, false),
+	[RK1808_PD_VIO]		= DOMAIN_PX30(14, 14, 8, false),
+};
+
 static const struct rockchip_domain_info rk3036_pm_domains[] = {
 	[RK3036_PD_MSCH]	= DOMAIN_RK3036(14, 23, 30, true),
 	[RK3036_PD_CORE]	= DOMAIN_RK3036(13, 17, 24, false),
@@ -1003,6 +1035,17 @@ static const struct rockchip_pmu_info px30_pmu = {
 
 	.num_domains = ARRAY_SIZE(px30_pm_domains),
 	.domain_info = px30_pm_domains,
+};
+
+static const struct rockchip_pmu_info rk1808_pmu = {
+	.pwr_offset = 0x18,
+	.status_offset = 0x20,
+	.req_offset = 0x64,
+	.idle_offset = 0x6c,
+	.ack_offset = 0x6c,
+
+	.num_domains = ARRAY_SIZE(rk1808_pm_domains),
+	.domain_info = rk1808_pm_domains,
 };
 
 static const struct rockchip_pmu_info rk3036_pmu = {
@@ -1115,6 +1158,10 @@ static const struct of_device_id rockchip_pm_domain_dt_match[] = {
 	{
 		.compatible = "rockchip,px30-power-controller",
 		.data = (void *)&px30_pmu,
+	},
+	{
+		.compatible = "rockchip,rk1808-power-controller",
+		.data = (void *)&rk1808_pmu,
 	},
 	{
 		.compatible = "rockchip,rk3036-power-controller",

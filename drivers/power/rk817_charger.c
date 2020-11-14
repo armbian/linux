@@ -255,6 +255,7 @@ static const struct reg_field rk817_charge_reg_fields[] = {
 	[BAT_SYS_CMP_DLY] = REG_FIELD(0xEC, 4, 5),
 	[BAT_DIS_ILIM_EN] = REG_FIELD(0xEC, 3, 3),
 	[BAT_DISCHRG_ILIM] = REG_FIELD(0xEC, 0, 2),
+	[PLUG_IN_STS] = REG_FIELD(0xf0, 6, 6),
 	[CHRG_CLK_SEL] = REG_FIELD(0xF3, 6, 6),
 };
 
@@ -366,10 +367,10 @@ static int rk817_charge_ac_get_property(struct power_supply *psy,
 		DBG("report prop: %d\n", val->intval);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
-		val->intval = charge->max_chrg_voltage;
+		val->intval = charge->max_chrg_voltage * 1000;	/* uV */
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
-		val->intval = charge->max_chrg_current;
+		val->intval = charge->max_chrg_current * 1000;	/* uA */
 		break;
 	default:
 		ret = -EINVAL;

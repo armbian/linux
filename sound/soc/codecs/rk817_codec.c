@@ -316,7 +316,7 @@ static struct rk817_reg_val_typ capture_power_up_list[] = {
 	{RK817_CODEC_APLL_CFG4, 0xa5},
 	{RK817_CODEC_APLL_CFG5, 0x00},
 
-	{RK817_CODEC_DI2S_RXCMD_TSD, 0x00},
+	/*{RK817_CODEC_DI2S_RXCMD_TSD, 0x00},*/
 	{RK817_CODEC_DI2S_RSD, 0x00},
 	/* {RK817_CODEC_DI2S_CKM, 0x00}, */
 	{RK817_CODEC_DI2S_RXCR1, 0x00},
@@ -329,7 +329,7 @@ static struct rk817_reg_val_typ capture_power_up_list[] = {
 	{RK817_CODEC_DI2S_TXCR3_TXCMD, 0x88},
 	{RK817_CODEC_DDAC_POPD_DACST, 0x02},
 	/* 0x29: -18db to 27db */
-	{RK817_CODEC_DMIC_PGA_GAIN, 0xaa},
+	{RK817_CODEC_DMIC_PGA_GAIN, 0x99},
 };
 
 #define RK817_CODEC_CAPTURE_POWER_UP_LIST_LEN \
@@ -649,7 +649,7 @@ static int rk817_capture_path_put(struct snd_kcontrol *kcontrol,
 
 		if (rk817->adc_for_loopback) {
 			/* don't need to gain when adc use for loopback */
-			snd_soc_write(codec, RK817_CODEC_AMIC_CFG0, 0x00);
+			snd_soc_update_bits(codec, RK817_CODEC_AMIC_CFG0, 0xf, 0x0);
 			snd_soc_write(codec, RK817_CODEC_DMIC_PGA_GAIN, 0x66);
 			snd_soc_write(codec, RK817_CODEC_DADC_VOLL, 0x00);
 			snd_soc_write(codec, RK817_CODEC_DADC_VOLR, 0x00);
@@ -669,7 +669,7 @@ static int rk817_capture_path_put(struct snd_kcontrol *kcontrol,
 
 		if (rk817->adc_for_loopback) {
 			/* don't need to gain when adc use for loopback */
-			snd_soc_write(codec, RK817_CODEC_AMIC_CFG0, 0x00);
+			snd_soc_update_bits(codec, RK817_CODEC_AMIC_CFG0, 0xf, 0x0);
 			snd_soc_write(codec, RK817_CODEC_DMIC_PGA_GAIN, 0x66);
 			snd_soc_write(codec, RK817_CODEC_DADC_VOLL, 0x00);
 			snd_soc_write(codec, RK817_CODEC_DADC_VOLR, 0x00);
@@ -758,6 +758,7 @@ static int rk817_hw_params(struct snd_pcm_substream *substream,
 		snd_soc_write(codec, RK817_CODEC_DI2S_TXCR2, VDW_TX_16BITS);
 		break;
 	case SNDRV_PCM_FORMAT_S24_LE:
+	case SNDRV_PCM_FORMAT_S32_LE:
 		snd_soc_write(codec, RK817_CODEC_DI2S_RXCR2, VDW_RX_24BITS);
 		snd_soc_write(codec, RK817_CODEC_DI2S_TXCR2, VDW_TX_24BITS);
 		break;

@@ -286,10 +286,13 @@ static int of_thermal_set_mode(struct thermal_zone_device *tz,
 
 	mutex_lock(&tz->lock);
 
-	if (mode == THERMAL_DEVICE_ENABLED)
+	if (mode == THERMAL_DEVICE_ENABLED) {
 		tz->polling_delay = data->polling_delay;
-	else
+		tz->passive_delay = data->passive_delay;
+	} else {
 		tz->polling_delay = 0;
+		tz->passive_delay = 0;
+	}
 
 	mutex_unlock(&tz->lock);
 
@@ -1006,6 +1009,18 @@ int __init of_parse_thermal_zones(void)
 
 		if (!of_property_read_u32(child, "sustainable-power", &prop))
 			tzp->sustainable_power = prop;
+		if (!of_property_read_u32(child, "k_pu", &prop)) {
+			tzp->k_pu = prop;
+			tzp->is_k_pu_available = true;
+		}
+		if (!of_property_read_u32(child, "k_po", &prop)) {
+			tzp->k_po = prop;
+			tzp->is_k_po_available = true;
+		}
+		if (!of_property_read_u32(child, "k_i", &prop)) {
+			tzp->k_i = prop;
+			tzp->is_k_i_available = true;
+		}
 
 		for (i = 0; i < tz->ntrips; i++)
 			mask |= 1 << i;

@@ -3,6 +3,7 @@
  * gc0329 sensor driver
  *
  * Copyright (C) 2018 Fuzhou Rockchip Electronics Co., Ltd.
+ * V0.0X01.0X01 add enum_frame_interval function.
  */
 
 #include <linux/clk.h>
@@ -22,7 +23,8 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/videodev2.h>
-
+#include <linux/version.h>
+#include <linux/rk-camera-module.h>
 #include <media/media-entity.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
@@ -33,6 +35,7 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
+#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x1)
 #define DRIVER_NAME "gc0329"
 #define GC0329_PIXEL_RATE		(24 * 1000 * 1000)
 
@@ -52,7 +55,7 @@ struct sensor_register {
 struct gc0329_framesize {
 	u16 width;
 	u16 height;
-	u16 fps;
+	struct v4l2_fract max_fps;
 	const struct sensor_register *regs;
 };
 
@@ -96,6 +99,10 @@ struct gc0329 {
 	struct v4l2_ctrl *link_frequency;
 	const struct gc0329_framesize *frame_size;
 	int streaming;
+	u32 module_index;
+	const char *module_facing;
+	const char *module_name;
+	const char *len_name;
 };
 
 static const struct sensor_register gc0329_vga_regs[] = {
@@ -356,13 +363,19 @@ static const struct gc0329_framesize gc0329_framesizes[] = {
 	{
 		.width		= 640,
 		.height		= 480,
-		.fps		= 14,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 140000,
+		},
 		.regs		= gc0329_vga_regs_14fps,
 	},
 	{
 		.width		= 640,
 		.height		= 480,
-		.fps		= 30,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 300000,
+		},
 		.regs		= gc0329_vga_regs_30fps,
 	}
 };
@@ -589,7 +602,8 @@ static void __gc0329_try_frame_size_fps(struct v4l2_mbus_framefmt *mf,
 		for (i = 0; i < ARRAY_SIZE(gc0329_framesizes); i++) {
 			if (fsize->width == match->width &&
 				fsize->height == match->height &&
-				fps >= fsize->fps)
+				fps >= DIV_ROUND_CLOSEST(fsize->max_fps.denominator,
+				fsize->max_fps.numerator))
 				match = fsize;
 
 			fsize++;
@@ -651,6 +665,76 @@ static int gc0329_set_fmt(struct v4l2_subdev *sd,
 	mutex_unlock(&gc0329->lock);
 	return ret;
 }
+
+static void gc0329_get_module_inf(struct gc0329 *gc0329,
+				  struct rkmodule_inf *inf)
+{
+	memset(inf, 0, sizeof(*inf));
+	strlcpy(inf->base.sensor, DRIVER_NAME, sizeof(inf->base.sensor));
+	strlcpy(inf->base.module, gc0329->module_name,
+		sizeof(inf->base.module));
+	strlcpy(inf->base.lens, gc0329->len_name, sizeof(inf->base.lens));
+}
+
+static long gc0329_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct gc0329 *gc0329 = to_gc0329(sd);
+	long ret = 0;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		gc0329_get_module_inf(gc0329, (struct rkmodule_inf *)arg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long gc0329_compat_ioctl32(struct v4l2_subdev *sd,
+				  unsigned int cmd, unsigned long arg)
+{
+	void __user *up = compat_ptr(arg);
+	struct rkmodule_inf *inf;
+	struct rkmodule_awb_cfg *cfg;
+	long ret;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		inf = kzalloc(sizeof(*inf), GFP_KERNEL);
+		if (!inf) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = gc0329_ioctl(sd, cmd, inf);
+		if (!ret)
+			ret = copy_to_user(up, inf, sizeof(*inf));
+		kfree(inf);
+		break;
+	case RKMODULE_AWB_CFG:
+		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
+		if (!cfg) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = copy_from_user(cfg, up, sizeof(*cfg));
+		if (!ret)
+			ret = gc0329_ioctl(sd, cmd, cfg);
+		kfree(cfg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+#endif
 
 static int gc0329_s_stream(struct v4l2_subdev *sd, int on)
 {
@@ -761,8 +845,7 @@ static int gc0329_g_frame_interval(struct v4l2_subdev *sd,
 	struct gc0329 *gc0329 = to_gc0329(sd);
 
 	mutex_lock(&gc0329->lock);
-	fi->interval.numerator = 10000;
-	fi->interval.denominator = gc0329->fps * 10000;
+	fi->interval = gc0329->frame_size->max_fps;
 	mutex_unlock(&gc0329->lock);
 
 	return 0;
@@ -799,10 +882,30 @@ unlock:
 	return ret;
 }
 
+static int gc0329_enum_frame_interval(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_frame_interval_enum *fie)
+{
+	if (fie->index >= ARRAY_SIZE(gc0329_framesizes))
+		return -EINVAL;
+
+	if (fie->code != MEDIA_BUS_FMT_YUYV8_2X8)
+		return -EINVAL;
+
+	fie->width = gc0329_framesizes[fie->index].width;
+	fie->height = gc0329_framesizes[fie->index].height;
+	fie->interval = gc0329_framesizes[fie->index].max_fps;
+	return 0;
+}
+
 static const struct v4l2_subdev_core_ops gc0329_subdev_core_ops = {
 	.log_status = v4l2_ctrl_subdev_log_status,
 	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
 	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
+	.ioctl = gc0329_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = gc0329_compat_ioctl32,
+#endif
 };
 
 static const struct v4l2_subdev_video_ops gc0329_subdev_video_ops = {
@@ -815,6 +918,7 @@ static const struct v4l2_subdev_video_ops gc0329_subdev_video_ops = {
 static const struct v4l2_subdev_pad_ops gc0329_subdev_pad_ops = {
 	.enum_mbus_code = gc0329_enum_mbus_code,
 	.enum_frame_size = gc0329_enum_frame_sizes,
+	.enum_frame_interval = gc0329_enum_frame_interval,
 	.get_fmt = gc0329_get_fmt,
 	.set_fmt = gc0329_set_fmt,
 };
@@ -942,13 +1046,34 @@ static int gc0329_parse_of(struct gc0329 *gc0329)
 static int gc0329_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
+	struct device *dev = &client->dev;
+	struct device_node *node = dev->of_node;
 	struct v4l2_subdev *sd;
 	struct gc0329 *gc0329;
+	char facing[2];
 	int ret;
+
+	dev_info(dev, "driver version: %02x.%02x.%02x",
+		DRIVER_VERSION >> 16,
+		(DRIVER_VERSION & 0xff00) >> 8,
+		DRIVER_VERSION & 0x00ff);
 
 	gc0329 = devm_kzalloc(&client->dev, sizeof(*gc0329), GFP_KERNEL);
 	if (!gc0329)
 		return -ENOMEM;
+
+	ret = of_property_read_u32(node, RKMODULE_CAMERA_MODULE_INDEX,
+				   &gc0329->module_index);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_FACING,
+				       &gc0329->module_facing);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_NAME,
+				       &gc0329->module_name);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_LENS_NAME,
+				       &gc0329->len_name);
+	if (ret) {
+		dev_err(dev, "could not get module information!\n");
+		return -EINVAL;
+	}
 
 	gc0329->client = client;
 	gc0329->xvclk = devm_clk_get(&client->dev, "xvclk");
@@ -1009,13 +1134,23 @@ static int gc0329_probe(struct i2c_client *client,
 	gc0329->frame_size = &gc0329_framesizes[0];
 	gc0329->format.width = gc0329_framesizes[0].width;
 	gc0329->format.height = gc0329_framesizes[0].height;
-	gc0329->fps = gc0329_framesizes[0].fps;
+	gc0329->fps = DIV_ROUND_CLOSEST(gc0329_framesizes[0].max_fps.denominator,
+				gc0329_framesizes[0].max_fps.numerator);
 
 	ret = gc0329_detect(gc0329);
 	if (ret < 0)
 		goto error;
 
-	ret = v4l2_async_register_subdev(&gc0329->sd);
+	memset(facing, 0, sizeof(facing));
+	if (strcmp(gc0329->module_facing, "back") == 0)
+		facing[0] = 'b';
+	else
+		facing[0] = 'f';
+
+	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
+		 gc0329->module_index, facing,
+		 DRIVER_NAME, dev_name(sd->dev));
+	ret = v4l2_async_register_subdev_sensor_common(sd);
 	if (ret)
 		goto error;
 

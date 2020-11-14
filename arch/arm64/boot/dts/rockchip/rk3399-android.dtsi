@@ -47,14 +47,8 @@
 / {
 	compatible = "rockchip,android", "rockchip,rk3399";
 
-	chosen {
-		bootargs = "earlycon=uart8250,mmio32,0xff1a0000 swiotlb=1";
-	};
-
-	cpuinfo {
-		compatible = "rockchip,cpuinfo";
-		nvmem-cells = <&cpu_id>;
-		nvmem-cell-names = "id";
+	chosen: chosen {
+		bootargs = "earlycon=uart8250,mmio32,0xff1a0000 swiotlb=1 coherent_pool=1m";
 	};
 
 	ramoops_mem: ramoops_mem {
@@ -170,8 +164,11 @@
 		compatible = "rockchip,rk3399-isp", "rockchip,isp";
 		reg = <0x0 0xff910000 0x0 0x4000>;
 		interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL_HIGH 0>;
+		assigned-clocks = <&cru SCLK_CIF_OUT_SRC>;
+		assigned-clock-parents = <&cru PLL_GPLL>;
+		assigned-clock-rates = <800000000>;
 		clocks =
-			<&cru SCLK_CIF_OUT>, <&cru SCLK_CIF_OUT>,
+			<&cru SCLK_CIF_OUT>, <&cru SCLK_CIF_OUT_SRC>,
 			<&cru SCLK_DPHY_TX1RX1_CFG>, <&cru SCLK_MIPIDPHY_REF>,
 			<&cru ACLK_ISP0_NOC>, <&cru ACLK_ISP0_WRAPPER>,
 			<&cru HCLK_ISP0_NOC>, <&cru HCLK_ISP0_WRAPPER>,
@@ -212,7 +209,7 @@
 			<&cru ACLK_ISP1_NOC>, <&cru ACLK_ISP1_WRAPPER>,
 			<&cru HCLK_ISP1_NOC>, <&cru HCLK_ISP1_WRAPPER>,
 			<&cru SCLK_ISP1>, <&cru SCLK_CIF_OUT>,
-			<&cru SCLK_CIF_OUT>, <&cru SCLK_DPHY_TX1RX1_CFG>,
+			<&cru SCLK_CIF_OUT_SRC>, <&cru SCLK_DPHY_TX1RX1_CFG>,
 			<&cru SCLK_MIPIDPHY_REF>, <&cru PCLK_ISP1_WRAPPER>,
 			<&cru SCLK_DPHY_RX0_CFG>, <&cru PCLK_MIPI_DSI1>,
 			<&cru SCLK_MIPIDPHY_CFG>;
@@ -229,7 +226,7 @@
 			"isp_mipi_fl_prefl", "isp_flash_as_gpio",
 			"isp_flash_as_trigger_out";
 		pinctrl-0 = <&cif_clkout>;
-		pinctrl-1 = <&isp_dvp_d0d7>;
+		pinctrl-1 = <&cif_clkout &isp_dvp_d0d7>;
 		pinctrl-2 = <&cif_clkout>;
 		pinctrl-3 = <&isp_prelight>;
 		pinctrl-4 = <&isp_flash_trigger_as_gpio>;
@@ -260,26 +257,7 @@
 	};
 
 	firmware {
-		android {
-			compatible = "android,firmware";
-			fstab {
-				compatible = "android,fstab";
-				system {
-					compatible = "android,system";
-					dev = "/dev/block/by-name/system";
-					type = "ext4";
-					mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
-					fsmgr_flags = "wait,verify";
-				};
-				vendor {
-					compatible = "android,vendor";
-					dev = "/dev/block/by-name/vendor";
-					type = "ext4";
-					mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
-					fsmgr_flags = "wait,verify";
-				};
-			};
-		};
+		firmware_android: android {};
 	};
 };
 
@@ -383,6 +361,10 @@
 };
 
 &pvtm {
+	status = "okay";
+};
+
+&rng {
 	status = "okay";
 };
 

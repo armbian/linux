@@ -17,7 +17,7 @@
 	compatible = "rockchip,rk3326-evb-lp3-v10-linux", "rockchip,rk3326";
 
 	chosen {
-                bootargs = "earlycon=uart8250,mmio32,0xff160000 swiotlb=1 console=ttyFIQ0 root=PARTUUID=614e0000-0000 rootfstype=squashfs rootwait";
+                bootargs = "earlycon=uart8250,mmio32,0xff160000 swiotlb=1 console=ttyFIQ0 rw root=PARTUUID=614e0000-0000 rootfstype=ext4 rootwait";
         };
 
 	adc-keys {
@@ -95,48 +95,6 @@
 			240 241 242 243 244 245 246 247
 			248 249 250 251 252 253 254 255>;
 		default-brightness-level = <200>;
-	};
-
-	panel {
-		compatible = "samsung,lsl070nl01", "simple-panel";
-		backlight = <&backlight>;
-		enable-gpios = <&gpio0 RK_PB5 GPIO_ACTIVE_HIGH>;
-		enable-delay-ms = <20>;
-		prepare-delay-ms = <20>;
-		unprepare-delay-ms = <20>;
-		disable-delay-ms = <20>;
-		width-mm = <217>;
-		height-mm = <136>;
-		rockchip,data-mapping = "vesa";
-		rockchip,data-width = <24>;
-		rockchip,output = "lvds";
-		status = "disabled";
-
-		display-timings {
-			native-mode = <&timing0>;
-
-			timing0: timing0 {
-				clock-frequency = <49500000>;
-				hactive = <1024>;
-				vactive = <600>;
-				hback-porch = <90>;
-				hfront-porch = <90>;
-				vback-porch = <10>;
-				vfront-porch = <10>;
-				hsync-len = <90>;
-				vsync-len = <10>;
-				hsync-active = <0>;
-				vsync-active = <0>;
-				de-active = <0>;
-				pixelclk-active = <0>;
-			};
-		};
-
-		port {
-			panel_in_lvds: endpoint {
-				remote-endpoint = <&lvds_out_panel>;
-			};
-		};
 	};
 
 	rk817-sound {
@@ -320,9 +278,9 @@
 		];
 
 		display-timings {
-			native-mode = <&st7703_timing>;
+			native-mode = <&timing0>;
 
-			st7703_timing: timing0 {
+			timing0: timing0 {
 				clock-frequency = <66000000>;
 				hactive = <720>;
 				vactive = <1280>;
@@ -341,8 +299,13 @@
 	};
 };
 
-&dsi_in_vopl {
-	status = "disabled";
+&dsi_in_vopb {
+	status = "okay";
+};
+
+&route_dsi {
+	connect = <&vopb_out_dsi>;
+	status = "okay";
 };
 
 &dfi {
@@ -576,6 +539,7 @@
 			vcc_sd: LDO_REG6 {
 				regulator-min-microvolt = <3300000>;
 				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
 
 				regulator-name = "vcc_sd";
 				regulator-state-mem {
@@ -586,7 +550,6 @@
 			};
 
 			vcc2v8_dvp: LDO_REG7 {
-				regulator-always-on;
 				regulator-boot-on;
 				regulator-min-microvolt = <2800000>;
 				regulator-max-microvolt = <2800000>;
@@ -599,7 +562,6 @@
 			};
 
 			vcc1v8_dvp: LDO_REG8 {
-				regulator-always-on;
 				regulator-boot-on;
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
@@ -612,7 +574,6 @@
 			};
 
 			vdd1v5_dvp: LDO_REG9 {
-				regulator-always-on;
 				regulator-boot-on;
 				regulator-min-microvolt = <1500000>;
 				regulator-max-microvolt = <1500000>;
@@ -748,6 +709,10 @@
 
 		/* hw changed the pwdn to gpio2_b5 */
 		pwdn-gpios = <&gpio2 13 GPIO_ACTIVE_HIGH>;
+		rockchip,camera-module-index = <1>;
+		rockchip,camera-module-facing = "front";
+		rockchip,camera-module-name = "CMK-CW2392";
+		rockchip,camera-module-lens-name = "CMK-CW2392";
 
 		port {
 			gc2155_out: endpoint {
@@ -765,10 +730,15 @@
 
 		avdd-supply = <&vcc2v8_dvp>;
 		dovdd-supply = <&vcc1v8_dvp>;
-		dvdd-supply = <&vcc1v8_dvp>;
+		dvdd-supply = <&vdd1v5_dvp>;
 
 		/*reset-gpios = <&gpio2 14 GPIO_ACTIVE_HIGH>;*/
 		pwdn-gpios = <&gpio2 14 GPIO_ACTIVE_HIGH>;
+
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "TongJu";
+		rockchip,camera-module-lens-name = "CHT842-MD";
 
 		port {
 			ucam_out: endpoint {
@@ -790,33 +760,11 @@
 	vccio1-supply = <&vcc1v8_soc>;
 	vccio2-supply = <&vccio_sd>;
 	vccio3-supply = <&vcc1v8_dvp>;
-	vccio4-supply = <&vcc1v8_soc>;
+	vccio4-supply = <&vcc_3v0>;
 	vccio5-supply = <&vcc_3v0>;
 };
 
 &isp_mmu {
-	status = "okay";
-};
-
-&lvds {
-	status = "disabled";
-
-	ports {
-		port@1 {
-			reg = <1>;
-
-			lvds_out_panel: endpoint {
-				remote-endpoint = <&panel_in_lvds>;
-			};
-		};
-	};
-};
-
-&lvds_in_vopl {
-	status = "disabled";
-};
-
-&mipi_dphy {
 	status = "okay";
 };
 
@@ -890,14 +838,6 @@
 	rockchip,sleep-debug-en = <1>;
 };
 
-&route_dsi {
-	status = "okay";
-};
-
-&route_lvds {
-	status = "disabled";
-};
-
 &saradc {
 	status = "okay";
 	vref-supply = <&vcc1v8_soc>;
@@ -933,7 +873,7 @@
 };
 
 &tsadc {
-	pinctrl-names = "init", "default";
+	pinctrl-names = "gpio", "otpout";
 	pinctrl-0 = <&tsadc_otp_gpio>;
 	pinctrl-1 = <&tsadc_otp_out>;
 	status = "okay";
@@ -970,14 +910,6 @@
 };
 
 &vopb_mmu {
-	status = "okay";
-};
-
-&vopl {
-	status = "okay";
-};
-
-&vopl_mmu {
 	status = "okay";
 };
 

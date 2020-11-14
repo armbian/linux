@@ -77,7 +77,10 @@ enum {
 #define REG_INT_START     BIT(4) /* START condition generated */
 #define REG_INT_STOP      BIT(5) /* STOP condition generated */
 #define REG_INT_NAKRCV    BIT(6) /* NACK received */
-#define REG_INT_ALL       0x7f
+#define REG_INT_ALL       0xff
+
+/* Disable i2c all irqs */
+#define IEN_ALL_DISABLE   0
 
 /* Constants */
 #define WAIT_TIMEOUT      1000 /* ms */
@@ -243,6 +246,18 @@ static inline u32 i2c_readl(struct rk3x_i2c *i2c, unsigned int offset)
 static inline void rk3x_i2c_clean_ipd(struct rk3x_i2c *i2c)
 {
 	i2c_writel(i2c, REG_INT_ALL, REG_IPD);
+}
+
+static inline void rk3x_i2c_disable_irq(struct rk3x_i2c *i2c)
+{
+	i2c_writel(i2c, IEN_ALL_DISABLE, REG_IEN);
+}
+
+static inline void rk3x_i2c_disable(struct rk3x_i2c *i2c)
+{
+	u32 val = i2c_readl(i2c, REG_CON) & REG_CON_TUNING_MASK;
+
+	i2c_writel(i2c, val, REG_CON);
 }
 
 /**
@@ -510,8 +525,10 @@ static irqreturn_t rk3x_i2c_irq(int irqno, void *dev_id)
 
 		ipd &= ~REG_INT_NAKRCV;
 
-		if (!(i2c->msg->flags & I2C_M_IGNORE_NAK))
+		if (!(i2c->msg->flags & I2C_M_IGNORE_NAK)) {
 			rk3x_i2c_stop(i2c, -ENXIO);
+			goto out;
+		}
 	}
 
 	/* is there anything left to handle? */
@@ -1098,7 +1115,7 @@ static int rk3x_i2c_xfer(struct i2c_adapter *adap,
 				i2c_readl(i2c, REG_IPD), i2c->state);
 
 			/* Force a STOP condition without interrupt */
-			i2c_writel(i2c, 0, REG_IEN);
+			rk3x_i2c_disable_irq(i2c);
 			val = i2c_readl(i2c, REG_CON) & REG_CON_TUNING_MASK;
 			val |= REG_CON_EN | REG_CON_STOP;
 			i2c_writel(i2c, val, REG_CON);
@@ -1114,6 +1131,9 @@ static int rk3x_i2c_xfer(struct i2c_adapter *adap,
 			break;
 		}
 	}
+
+	rk3x_i2c_disable_irq(i2c);
+	rk3x_i2c_disable(i2c);
 
 	clk_disable(i2c->pclk);
 	clk_disable(i2c->clk);
@@ -1198,6 +1218,11 @@ static const struct i2c_algorithm rk3x_i2c_algorithm = {
 	.functionality		= rk3x_i2c_func,
 };
 
+static const struct rk3x_i2c_soc_data rv1108_soc_data = {
+	.grf_offset = -1,
+	.calc_timings = rk3x_i2c_v1_calc_timings,
+};
+
 static const struct rk3x_i2c_soc_data rk3066_soc_data = {
 	.grf_offset = 0x154,
 	.calc_timings = rk3x_i2c_v0_calc_timings,
@@ -1229,6 +1254,10 @@ static const struct rk3x_i2c_soc_data rk3399_soc_data = {
 };
 
 static const struct of_device_id rk3x_i2c_match[] = {
+	{
+		.compatible = "rockchip,rv1108-i2c",
+		.data = (void *)&rv1108_soc_data
+	},
 	{
 		.compatible = "rockchip,rk3066-i2c",
 		.data = (void *)&rk3066_soc_data

@@ -45,6 +45,9 @@ struct stmmac_resources {
 struct stmmac_tx_info {
 	dma_addr_t buf;
 	bool map_as_page;
+	unsigned len;
+	bool last_segment;
+	bool is_jumbo;
 };
 
 struct stmmac_priv {
@@ -54,7 +57,6 @@ struct stmmac_priv {
 	struct sk_buff **tx_skbuff;
 	unsigned int cur_tx;
 	unsigned int dirty_tx;
-	unsigned int dma_tx_size;
 	u32 tx_count_frames;
 	u32 tx_coal_frames;
 	u32 tx_coal_timer;
@@ -71,7 +73,6 @@ struct stmmac_priv {
 	struct sk_buff **rx_skbuff;
 	unsigned int cur_rx;
 	unsigned int dirty_rx;
-	unsigned int dma_rx_size;
 	unsigned int dma_buf_sz;
 	u32 rx_riwt;
 	int hwts_rx_en;

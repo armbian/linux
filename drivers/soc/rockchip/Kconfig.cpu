@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 
-menu "CPU selection"
+menu "Rockchip CPU selection"
 	depends on ARCH_ROCKCHIP
 
 config CPU_RK312X
@@ -36,15 +36,16 @@ config CPU_RK322X
 config CPU_RV110X
 	bool "RV1107/8"
 	depends on ARM
-	default y
 
 config CPU_PX30
 	bool "PX30"
 	default y if ARM64
 
+config CPU_RK1808
+	bool "RK1808"
+
 config CPU_RK3308
 	bool "RK3308"
-	default y if ARM64
 
 config CPU_RK3328
 	bool "RK3328"
@@ -52,7 +53,6 @@ config CPU_RK3328
 
 config CPU_RK3366
 	bool "RK3366"
-	default y if ARM64
 
 config CPU_RK3368
 	bool "RK3368"

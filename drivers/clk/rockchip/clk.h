@@ -86,7 +86,46 @@ struct clk;
 #define PX30_PMU_CLKGATE_CON(x)		((x) * 0x4 + 0x80)
 #define PX30_PMU_MODE			0x0020
 
-/* register positions shared by RK2928, RK3036, RK3066, RK3188 and RK3228 */
+/*
+ * register positions shared by RV1108, RK1808 RK2928, RK3036,
+ * RK3066, RK3188 and RK3228
+ */
+
+#define RV1108_PLL_CON(x)		((x) * 0x4)
+#define RV1108_CLKSEL_CON(x)		((x) * 0x4 + 0x60)
+#define RV1108_CLKGATE_CON(x)		((x) * 0x4 + 0x120)
+#define RV1108_SOFTRST_CON(x)		((x) * 0x4 + 0x180)
+#define RV1108_GLB_SRST_FST		0x1c0
+#define RV1108_GLB_SRST_SND		0x1c4
+#define RV1108_MISC_CON			0x1cc
+#define RV1108_SDMMC_CON0		0x1d8
+#define RV1108_SDMMC_CON1		0x1dc
+#define RV1108_SDIO_CON0		0x1e0
+#define RV1108_SDIO_CON1		0x1e4
+#define RV1108_EMMC_CON0		0x1e8
+#define RV1108_EMMC_CON1		0x1ec
+
+#define RK1808_PLL_CON(x)		((x) * 0x4)
+#define RK1808_MODE_CON			0xa0
+#define RK1808_MISC_CON			0xa4
+#define RK1808_MISC1_CON		0xa8
+#define RK1808_GLB_SRST_FST		0xb8
+#define RK1808_GLB_SRST_SND		0xbc
+#define RK1808_CLKSEL_CON(x)		((x) * 0x4 + 0x100)
+#define RK1808_CLKGATE_CON(x)		((x) * 0x4 + 0x230)
+#define RK1808_SOFTRST_CON(x)		((x) * 0x4 + 0x300)
+#define RK1808_SDMMC_CON0		0x380
+#define RK1808_SDMMC_CON1		0x384
+#define RK1808_SDIO_CON0		0x388
+#define RK1808_SDIO_CON1		0x38c
+#define RK1808_EMMC_CON0		0x390
+#define RK1808_EMMC_CON1		0x394
+
+#define RK1808_PMU_PLL_CON(x)		((x) * 0x4 + 0x4000)
+#define RK1808_PMU_MODE_CON		0x4020
+#define RK1808_PMU_CLKSEL_CON(x)	((x) * 0x4 + 0x4040)
+#define RK1808_PMU_CLKGATE_CON(x)	((x) * 0x4 + 0x4080)
+
 #define RK2928_PLL_CON(x)		((x) * 0x4)
 #define RK2928_MODE_CON		0x40
 #define RK2928_CLKSEL_CON(x)	((x) * 0x4 + 0x44)
@@ -249,6 +288,7 @@ struct rockchip_clk_provider {
 	struct clk_onecell_data clk_data;
 	struct device_node *cru_node;
 	struct regmap *grf;
+	struct regmap *pmugrf;
 	spinlock_t lock;
 };
 
@@ -414,6 +454,7 @@ enum rockchip_clk_branch_type {
 	branch_composite,
 	branch_mux,
 	branch_muxgrf,
+	branch_muxpmugrf,
 	branch_divider,
 	branch_fraction_divider,
 	branch_gate,
@@ -435,6 +476,7 @@ struct rockchip_clk_branch {
 	u8				mux_shift;
 	u8				mux_width;
 	u8				mux_flags;
+	u32				*mux_table;
 	int				div_offset;
 	u8				div_shift;
 	u8				div_width;
@@ -460,6 +502,28 @@ struct rockchip_clk_branch {
 		.mux_shift	= ms,				\
 		.mux_width	= mw,				\
 		.mux_flags	= mf,				\
+		.div_shift	= ds,				\
+		.div_width	= dw,				\
+		.div_flags	= df,				\
+		.gate_offset	= go,				\
+		.gate_shift	= gs,				\
+		.gate_flags	= gf,				\
+	}
+
+#define COMPOSITE_MUXTBL(_id, cname, pnames, f, mo, ms, mw, mf,	\
+		 mt, ds, dw, df, go, gs, gf)			\
+	{							\
+		.id		= _id,				\
+		.branch_type	= branch_composite,		\
+		.name		= cname,			\
+		.parent_names	= pnames,			\
+		.num_parents	= ARRAY_SIZE(pnames),		\
+		.flags		= f,				\
+		.muxdiv_offset	= mo,				\
+		.mux_shift	= ms,				\
+		.mux_width	= mw,				\
+		.mux_flags	= mf,				\
+		.mux_table	= mt,				\
 		.div_shift	= ds,				\
 		.div_width	= dw,				\
 		.div_flags	= df,				\
@@ -671,10 +735,41 @@ struct rockchip_clk_branch {
 		.gate_offset	= -1,				\
 	}
 
+#define MUXTBL(_id, cname, pnames, f, o, s, w, mf, mt)		\
+	{							\
+		.id		= _id,				\
+		.branch_type	= branch_mux,			\
+		.name		= cname,			\
+		.parent_names	= pnames,			\
+		.num_parents	= ARRAY_SIZE(pnames),		\
+		.flags		= f,				\
+		.muxdiv_offset	= o,				\
+		.mux_shift	= s,				\
+		.mux_width	= w,				\
+		.mux_flags	= mf,				\
+		.gate_offset	= -1,				\
+		.mux_table	= mt,				\
+	}
+
 #define MUXGRF(_id, cname, pnames, f, o, s, w, mf)		\
 	{							\
 		.id		= _id,				\
 		.branch_type	= branch_muxgrf,		\
+		.name		= cname,			\
+		.parent_names	= pnames,			\
+		.num_parents	= ARRAY_SIZE(pnames),		\
+		.flags		= f,				\
+		.muxdiv_offset	= o,				\
+		.mux_shift	= s,				\
+		.mux_width	= w,				\
+		.mux_flags	= mf,				\
+		.gate_offset	= -1,				\
+	}
+
+#define MUXPMUGRF(_id, cname, pnames, f, o, s, w, mf)		\
+	{							\
+		.id		= _id,				\
+		.branch_type	= branch_muxpmugrf,		\
 		.name		= cname,			\
 		.parent_names	= pnames,			\
 		.num_parents	= ARRAY_SIZE(pnames),		\
@@ -902,5 +997,6 @@ static inline void rockchip_register_softrst(struct device_node *np,
 {
 }
 #endif
+extern void (*rk_dump_cru)(void);
 
 #endif

@@ -201,7 +201,7 @@
 
 	bt-sound {
 		compatible = "simple-audio-card";
-		simple-audio-card,format = "dsp_b";
+		simple-audio-card,format = "dsp_a";
 		simple-audio-card,bitclock-inversion = <1>;
 		simple-audio-card,mclk-fs = <256>;
 		simple-audio-card,name = "rockchip,bt";
@@ -413,6 +413,8 @@
 
 &edp {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&edp_hpd>;
 
 	ports {
 		edp_out: port@1 {
@@ -433,6 +435,27 @@
 
 &emmc_phy {
 	status = "okay";
+};
+
+&firmware_android {
+	compatible = "android,firmware";
+	fstab {
+		compatible = "android,fstab";
+		system {
+			compatible = "android,system";
+			dev = "/dev/block/by-name/system";
+			type = "ext4";
+			mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
+			fsmgr_flags = "wait,verify";
+		};
+		vendor {
+			compatible = "android,vendor";
+			dev = "/dev/block/by-name/vendor";
+			type = "ext4";
+			mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
+			fsmgr_flags = "wait,verify";
+		};
+	};
 };
 
 &gpu {
@@ -979,10 +1002,6 @@
 &uart0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart0_xfer &uart0_cts>;
-	status = "okay";
-};
-
-&uart2 {
 	status = "okay";
 };
 

@@ -29,13 +29,12 @@
 #include <linux/slab.h>
 #include <linux/fb.h>
 #include <linux/wakelock.h>
+#include <linux/version.h>
 
 #include "rga2_reg_info.h"
-#include "../rga/rga_type.h"
-//#include "../rga/rga_rop.h"
+#include "rga2_type.h"
+#include "rga2_rop.h"
 #include "rga2.h"
-
-extern unsigned int rga2_ROP3_code[256];
 
 static void RGA2_reg_get_param(unsigned char *base, struct rga2_req *msg)
 {
@@ -389,11 +388,20 @@ static void RGA2_set_reg_dst_info(u8 *base, struct rga2_req *msg)
         case RGA2_FORMAT_YCbCr_422_SP : dst_format = 0x8; x_div = 1; y_div = 1; break;
         case RGA2_FORMAT_YCbCr_422_P  : dst_format = 0x9; x_div = 2; y_div = 1; break;
         case RGA2_FORMAT_YCbCr_420_SP : dst_format = 0xa; x_div = 1; y_div = 2; break;
-        case RGA2_FORMAT_YCbCr_420_P  : dst_format = 0xb; x_div = 2; y_div = 2; break;
+        case RGA2_FORMAT_YCbCr_420_P  : dst_format = 0xb; dst_cbcr_swp = 1; x_div = 2; y_div = 2; break;
         case RGA2_FORMAT_YCrCb_422_SP : dst_format = 0x8; dst_cbcr_swp = 1; x_div = 1; y_div = 1; break;
         case RGA2_FORMAT_YCrCb_422_P  : dst_format = 0x9; dst_cbcr_swp = 1; x_div = 2; y_div = 1; break;
         case RGA2_FORMAT_YCrCb_420_SP : dst_format = 0xa; dst_cbcr_swp = 1; x_div = 1; y_div = 2; break;
-        case RGA2_FORMAT_YCrCb_420_P  : dst_format = 0xb; dst_cbcr_swp = 1; x_div = 2; y_div = 2; break;
+        case RGA2_FORMAT_YCrCb_420_P  : dst_format = 0xb; x_div = 2; y_div = 2; break;
+
+	case RGA2_FORMAT_YUYV_422     : dst_format = 0xc; dpw = 2; break;
+	case RGA2_FORMAT_YVYU_422     : dst_format = 0xc; dpw = 2; dst_cbcr_swp = 1; break;
+	case RGA2_FORMAT_YUYV_420     : dst_format = 0xd; dpw = 2; break;
+	case RGA2_FORMAT_YVYU_420     : dst_format = 0xd; dpw = 2; dst_cbcr_swp = 1; break;
+	case RGA2_FORMAT_UYVY_422     : dst_format = 0xe; dpw = 2; break;
+	case RGA2_FORMAT_VYUY_422     : dst_format = 0xe; dpw = 2; dst_cbcr_swp = 1; break;
+	case RGA2_FORMAT_UYVY_420     : dst_format = 0xf; dpw = 2; break;
+	case RGA2_FORMAT_VYUY_420     : dst_format = 0xf; dpw = 2; dst_cbcr_swp = 1; break;
     };
 
     reg = ((reg & (~m_RGA2_DST_INFO_SW_DST_FMT)) | (s_RGA2_DST_INFO_SW_DST_FMT(dst_format)));
@@ -449,18 +457,35 @@ static void RGA2_set_reg_dst_info(u8 *base, struct rga2_req *msg)
     u_lt_addr = u_addr;
     v_lt_addr = v_addr;
 
-    y_ld_addr = yrgb_addr + (msg->dst.act_h - 1) * (d_stride);
-    u_ld_addr = u_addr + ((msg->dst.act_h / y_div) - 1) * (d_uv_stride);
-    v_ld_addr = v_addr + ((msg->dst.act_h / y_div) - 1) * (d_uv_stride);
-
-    y_rt_addr = yrgb_addr + (msg->dst.act_w - 1) * dpw;
-    u_rt_addr = u_addr + (msg->dst.act_w / x_div) - 1;
-    v_rt_addr = v_addr + (msg->dst.act_w / x_div) - 1;
-
-    y_rd_addr = y_ld_addr + (msg->dst.act_w - 1) * dpw;
-    u_rd_addr = u_ld_addr + (msg->dst.act_w / x_div) - 1;
-    v_rd_addr = v_ld_addr + (msg->dst.act_w / x_div) - 1;
-
+	if (msg->dst.format < 0x18) {
+		/* 270 degree & Mirror V*/
+		y_ld_addr = yrgb_addr + (msg->dst.act_h - 1) * (d_stride);
+		u_ld_addr = u_addr + ((msg->dst.act_h / y_div) - 1) * (d_uv_stride);
+		v_ld_addr = v_addr + ((msg->dst.act_h / y_div) - 1) * (d_uv_stride);
+		/* 90 degree & Mirror H  */
+		y_rt_addr = yrgb_addr + (msg->dst.act_w - 1) * dpw;
+		u_rt_addr = u_addr + (msg->dst.act_w / x_div) - 1;
+		v_rt_addr = v_addr + (msg->dst.act_w / x_div) - 1;
+		/* 180 degree */
+		y_rd_addr = y_ld_addr + (msg->dst.act_w - 1) * dpw;
+		u_rd_addr = u_ld_addr + (msg->dst.act_w / x_div) - 1;
+		v_rd_addr = v_ld_addr + (msg->dst.act_w / x_div) - 1;
+	} else {
+		if (msg->dst.format == RGA2_FORMAT_YUYV_422 ||
+		    msg->dst.format == RGA2_FORMAT_YVYU_422 ||
+		    msg->dst.format == RGA2_FORMAT_UYVY_422 ||
+		    msg->dst.format == RGA2_FORMAT_VYUY_422) {
+			y_ld_addr = yrgb_addr + (msg->dst.act_h - 1) * (d_stride);
+			y_rt_addr = yrgb_addr + (msg->dst.act_w * 2 - 1);
+			y_rd_addr = y_ld_addr + (msg->dst.act_w * 2 - 1);
+		} else {
+			y_ld_addr = (RK_U32)msg->dst.yrgb_addr +
+			((msg->dst.y_offset + (msg->dst.act_h -1)) * d_stride) +
+			msg->dst.x_offset;
+			y_rt_addr = yrgb_addr + (msg->dst.act_w * 2 - 1);
+			y_rd_addr = y_ld_addr + (msg->dst.act_w - 1);
+		}
+	}
     if(rot_90_flag == 0)
     {
         if(y_mirr == 1)
@@ -562,6 +587,9 @@ static void RGA2_set_reg_dst_info(u8 *base, struct rga2_req *msg)
         *bRGA_DST_BASE2 = (RK_U32)v_addr;
     }
 
+	if (msg->dst.format >= 0x18) {
+		*bRGA_DST_BASE1 = msg->dst.x_offset;
+	}
     *bRGA_SRC_BASE3 = (RK_U32)s_y_lt_addr;
 }
 
@@ -632,14 +660,14 @@ static void RGA2_set_reg_rop_info(u8 *base, struct rga2_req *msg)
     bRGA_PAT_CON   = (RK_U32 *)(base + RGA2_PAT_CON_OFFSET);
 
     if(msg->rop_mode == 0) {
-	rop_code0 = rga2_ROP3_code[(msg->rop_code & 0xff)];
+	rop_code0 = RGA2_ROP3_code[(msg->rop_code & 0xff)];
     }
     else if(msg->rop_mode == 1) {
-	rop_code0 = rga2_ROP3_code[(msg->rop_code & 0xff)];
+	rop_code0 = RGA2_ROP3_code[(msg->rop_code & 0xff)];
     }
     else if(msg->rop_mode == 2) {
-	rop_code0 = rga2_ROP3_code[(msg->rop_code & 0xff)];
-	rop_code1 = rga2_ROP3_code[(msg->rop_code & 0xff00)>>8];
+	rop_code0 = RGA2_ROP3_code[(msg->rop_code & 0xff)];
+	rop_code1 = RGA2_ROP3_code[(msg->rop_code & 0xff00)>>8];
     }
 
     *bRGA_ROP_CTRL0 = rop_code0;
@@ -957,19 +985,30 @@ static void format_name_convert(uint32_t *df, uint32_t sf)
         case 0xe: *df = RGA2_FORMAT_YCrCb_420_SP; break;
         case 0xf: *df = RGA2_FORMAT_YCrCb_420_P; break;
 
+	case 0x18: *df = RGA2_FORMAT_YVYU_422; break;
+	case 0x19: *df = RGA2_FORMAT_YVYU_420; break;
+	case 0x1a: *df = RGA2_FORMAT_VYUY_422; break;
+	case 0x1b: *df = RGA2_FORMAT_VYUY_420; break;
+	case 0x1c: *df = RGA2_FORMAT_YUYV_422; break;
+	case 0x1d: *df = RGA2_FORMAT_YUYV_420; break;
+	case 0x1e: *df = RGA2_FORMAT_UYVY_422; break;
+	case 0x1f: *df = RGA2_FORMAT_UYVY_420; break;
+
         case 0x20:*df = RGA2_FORMAT_YCbCr_420_SP_10B; break;
         case 0x21:*df = RGA2_FORMAT_YCrCb_420_SP_10B; break;
+
     }
 }
 
 void RGA_MSG_2_RGA2_MSG(struct rga_req *req_rga, struct rga2_req *req)
 {
 	u16 alpha_mode_0, alpha_mode_1;
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
 	if (req_rga->render_mode & RGA_BUF_GEM_TYPE_MASK)
 		req->buf_type = RGA_BUF_GEM_TYPE_MASK & RGA_BUF_GEM_TYPE_DMA;
 
 	req_rga->render_mode &= (~RGA_BUF_GEM_TYPE_MASK);
+#endif
 
     if (req_rga->render_mode == 6)
         req->render_mode = update_palette_table_mode;
@@ -1039,7 +1078,7 @@ void RGA_MSG_2_RGA2_MSG(struct rga_req *req_rga, struct rga2_req *req)
     req->src_a_global_val = req_rga->alpha_global_value;
     req->dst_a_global_val = req_rga->alpha_global_value;
     req->rop_code = req_rga->rop_code;
-    req->rop_mode = 0;
+    req->rop_mode = req_rga->alpha_rop_mode;
 
     req->color_fill_mode = req_rga->color_fill_mode;
     req->color_key_min   = req_rga->color_key_min;
@@ -1131,8 +1170,8 @@ void RGA_MSG_2_RGA2_MSG(struct rga_req *req_rga, struct rga2_req *req)
                 req->alpha_mode_1 = 0x3848;
             }
             else if ((req_rga->alpha_rop_mode & 3) == 1) {
-                req->alpha_mode_0 = 0x483A;
-                req->alpha_mode_1 = 0x483A;
+		req->alpha_mode_0 = 0x384A;
+		req->alpha_mode_1 = 0x3A4A;
             }
             else if ((req_rga->alpha_rop_mode & 3) == 2) {
                 req->alpha_mode_0 = 0x384C;
@@ -1188,12 +1227,12 @@ static void memcpy_img_info(struct rga_img_info_t *dst, struct rga_img_info_32_t
 void RGA_MSG_2_RGA2_MSG_32(struct rga_req_32 *req_rga, struct rga2_req *req)
 {
 	u16 alpha_mode_0, alpha_mode_1;
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
 	if (req_rga->render_mode & RGA_BUF_GEM_TYPE_MASK)
 		req->buf_type = RGA_BUF_GEM_TYPE_MASK & RGA_BUF_GEM_TYPE_DMA;
 
 	req_rga->render_mode &= (~RGA_BUF_GEM_TYPE_MASK);
-
+#endif
     if (req_rga->render_mode == 6)
         req->render_mode = update_palette_table_mode;
     else if (req_rga->render_mode == 7)
@@ -1249,7 +1288,7 @@ void RGA_MSG_2_RGA2_MSG_32(struct rga_req_32 *req_rga, struct rga2_req *req)
     req->src_a_global_val = req_rga->alpha_global_value;
     req->dst_a_global_val = req_rga->alpha_global_value;
     req->rop_code = req_rga->rop_code;
-    req->rop_mode = 0;
+    req->rop_mode = req_rga->alpha_rop_mode;
     req->color_fill_mode = req_rga->color_fill_mode;
     req->color_key_min   = req_rga->color_key_min;
     req->color_key_max   = req_rga->color_key_max;
@@ -1333,8 +1372,8 @@ void RGA_MSG_2_RGA2_MSG_32(struct rga_req_32 *req_rga, struct rga2_req *req)
                 req->alpha_mode_1 = 0x3848;
             }
             else if ((req_rga->alpha_rop_mode & 3) == 1) {
-                req->alpha_mode_0 = 0x483A;
-                req->alpha_mode_1 = 0x483A;
+		req->alpha_mode_0 = 0x384A;
+		req->alpha_mode_1 = 0x3A4A;
             }
             else if ((req_rga->alpha_rop_mode & 3) == 2) {
                 req->alpha_mode_0 = 0x384C;

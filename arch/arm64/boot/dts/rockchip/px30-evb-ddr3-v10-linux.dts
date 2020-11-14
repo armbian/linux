@@ -10,7 +10,7 @@
 #include <dt-bindings/display/drm_mipi_dsi.h>
 #include <dt-bindings/sensor-dev.h>
 #include "px30.dtsi"
-#include "rk3326-linux.dtsi"
+#include "px30-linux.dtsi"
 
 / {
 	model = "Rockchip linux PX30 evb ddr3 board";
@@ -282,6 +282,19 @@
 	};
 };
 
+&dsi_in_vopb {
+	status = "okay";
+};
+
+&dsi_in_vopl {
+	status = "disabled";
+};
+
+&route_dsi {
+	connect = <&vopb_out_dsi>;
+	status = "okay";
+};
+
 &bus_apll {
 	bus-supply = <&vdd_logic>;
 	status = "okay";
@@ -289,10 +302,6 @@
 
 &cpu0 {
 	cpu-supply = <&vdd_arm>;
-};
-
-&dsi_in_vopl {
-	status = "disabled";
 };
 
 &dfi {
@@ -510,6 +519,7 @@
 			vcc_sd: LDO_REG6 {
 				regulator-min-microvolt = <3300000>;
 				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
 
 				regulator-name = "vcc_sd";
 				regulator-state-mem {
@@ -520,7 +530,6 @@
 			};
 
 			vcc2v8_dvp: LDO_REG7 {
-				regulator-always-on;
 				regulator-boot-on;
 				regulator-min-microvolt = <2800000>;
 				regulator-max-microvolt = <2800000>;
@@ -533,7 +542,6 @@
 			};
 
 			vcc1v8_dvp: LDO_REG8 {
-				regulator-always-on;
 				regulator-boot-on;
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
@@ -546,7 +554,6 @@
 			};
 
 			vdd1v5_dvp: LDO_REG9 {
-				regulator-always-on;
 				regulator-boot-on;
 				regulator-min-microvolt = <1500000>;
 				regulator-max-microvolt = <1500000>;
@@ -570,15 +577,15 @@
 				};
 			};
 
-			vcc3v3_lcd: SWITCH_REG1 {
-				regulator-boot-on;
-				regulator-name = "vcc3v3_lcd";
-			};
-
-			vcc5v0_host: SWITCH_REG2 {
+			vcc5v0_host: SWITCH_REG1 {
 				regulator-always-on;
 				regulator-boot-on;
 				regulator-name = "vcc5v0_host";
+			};
+
+			vcc3v3_lcd: SWITCH_REG2 {
+				regulator-boot-on;
+				regulator-name = "vcc3v3_lcd";
 			};
 		};
 
@@ -645,10 +652,19 @@
 		reg = <0x36>;
 		clocks = <&cru SCLK_CIF_OUT>;
 		clock-names = "xvclk";
+
+		avdd-supply = <&vcc2v8_dvp>;
+		dovdd-supply = <&vcc1v8_dvp>;
+		dvdd-supply = <&vdd1v5_dvp>;
+
 		/*reset-gpios = <&gpio2 14 GPIO_ACTIVE_HIGH>;*/
 		pwdn-gpios = <&gpio2 14 GPIO_ACTIVE_HIGH>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&cif_clkout_m0>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "TongJu";
+		rockchip,camera-module-lens-name = "CHT842-MD";
 		port {
 			ucam_out: endpoint {
 				remote-endpoint = <&mipi_in_ucam>;
@@ -666,7 +682,7 @@
 &io_domains {
 	status = "okay";
 
-	vccio1-supply = <&vcc1v8_soc>;
+	vccio1-supply = <&vcc_3v0>;
 	vccio2-supply = <&vccio_sd>;
 	vccio3-supply = <&vcc_3v0>;
 	vccio4-supply = <&vcc3v0_pmu>;
@@ -674,10 +690,6 @@
 };
 
 &isp_mmu {
-	status = "okay";
-};
-
-&mipi_dphy {
 	status = "okay";
 };
 
@@ -751,10 +763,6 @@
 	rockchip,sleep-debug-en = <1>;
 };
 
-&route_dsi {
-	status = "okay";
-};
-
 &saradc {
 	status = "okay";
 	vref-supply = <&vcc1v8_soc>;
@@ -790,7 +798,7 @@
 };
 
 &tsadc {
-	pinctrl-names = "init", "default";
+	pinctrl-names = "gpio", "otpout";
 	pinctrl-0 = <&tsadc_otp_gpio>;
 	pinctrl-1 = <&tsadc_otp_out>;
 	status = "okay";

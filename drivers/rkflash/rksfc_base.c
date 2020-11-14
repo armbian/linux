@@ -57,12 +57,6 @@ void rksfc_dma_unmap_single(unsigned long ptr, int size, int dir)
 #endif
 }
 
-int rksfc_get_reg_addr(unsigned long *p_sfc_addr)
-{
-	*p_sfc_addr = (unsigned long)g_sfc_info.reg_base;
-	return 0;
-}
-
 static irqreturn_t rksfc_interrupt(int irq, void *dev_id)
 {
 	sfc_clean_irq();
@@ -112,7 +106,7 @@ static int rksfc_probe(struct platform_device *pdev)
 	int irq;
 	struct resource	*mem;
 	void __iomem	*membase;
-	int ret;
+	int dev_result = -1;
 
 	g_sfc_dev = &pdev->dev;
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -149,20 +143,30 @@ static int rksfc_probe(struct platform_device *pdev)
 		 __func__,
 		 g_sfc_info.clk_rate);
 	rksfc_irq_init();
-	ret = rkflash_dev_init(g_sfc_info.reg_base, FLASH_CON_TYPE_SFC);
+#ifdef CONFIG_RK_SFC_NOR
+	dev_result = rkflash_dev_init(g_sfc_info.reg_base, FLASH_TYPE_SFC_NOR, &sfc_nor_ops);
+#endif
+#ifdef CONFIG_RK_SFC_NAND
+	if (dev_result)
+		dev_result = rkflash_dev_init(g_sfc_info.reg_base, FLASH_TYPE_SFC_NAND, &sfc_nand_ops);
+#endif
 
-	return ret;
+	return dev_result;
 }
 
-static int rksfc_suspend(struct platform_device *pdev, pm_message_t state)
+static int __maybe_unused rksfc_suspend(struct device *dev)
 {
 	return rkflash_dev_suspend();
 }
 
-static int rksfc_resume(struct platform_device *pdev)
+static int __maybe_unused rksfc_resume(struct device *dev)
 {
 	return rkflash_dev_resume(g_sfc_info.reg_base);
 }
+
+static SIMPLE_DEV_PM_OPS(rksfc_pmops,
+			 rksfc_suspend,
+			 rksfc_resume);
 
 static void rksfc_shutdown(struct platform_device *pdev)
 {
@@ -178,14 +182,13 @@ static const struct of_device_id of_rksfc_match[] = {
 
 static struct platform_driver rksfc_driver = {
 	.probe		= rksfc_probe,
-	.suspend	= rksfc_suspend,
-	.resume		= rksfc_resume,
 	.shutdown	= rksfc_shutdown,
 	.driver		= {
 		.name	= "rksfc",
 #ifdef CONFIG_OF
 		.of_match_table	= of_rksfc_match,
 #endif
+		.pm		= &rksfc_pmops,
 	},
 };
 

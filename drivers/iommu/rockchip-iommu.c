@@ -79,6 +79,7 @@
 #define IOMMU_INV_TLB_ENTIRE	BIT(4) /* invalidate tlb entire */
 
 static LIST_HEAD(iommu_dev_list);
+static const struct iommu_ops rk_iommu_ops;
 
 struct rk_iommu_domain {
 	struct list_head iommus;
@@ -103,8 +104,12 @@ struct rk_iommu {
 	struct iommu_domain *domain; /* domain to which iommu is attached */
 	struct clk *aclk; /* aclock belong to master */
 	struct clk *hclk; /* hclock belong to master */
+	struct clk *sclk; /* sclock belong to master */
 	struct list_head dev_node;
 };
+
+static void rk_iommu_detach_device(struct iommu_domain *domain,
+				   struct device *dev);
 
 static inline void rk_table_flush(struct rk_iommu_domain *dom, dma_addr_t dma,
 				  unsigned int count)
@@ -274,6 +279,9 @@ static void rk_iommu_power_on(struct rk_iommu *iommu)
 		clk_enable(iommu->hclk);
 	}
 
+	if (iommu->sclk)
+		clk_enable(iommu->sclk);
+
 	pm_runtime_get_sync(iommu->dev);
 }
 
@@ -285,6 +293,9 @@ static void rk_iommu_power_off(struct rk_iommu *iommu)
 		clk_disable(iommu->aclk);
 		clk_disable(iommu->hclk);
 	}
+
+	if (iommu->sclk)
+		clk_disable(iommu->sclk);
 }
 
 static u32 rk_iova_dte_index(dma_addr_t iova)
@@ -961,6 +972,13 @@ static int rk_iommu_attach_device(struct iommu_domain *domain,
 	if (!iommu)
 		return 0;
 
+	/* iommu already attached */
+	if (iommu->domain == domain)
+		return 0;
+
+	if (iommu->domain)
+		rk_iommu_detach_device(iommu->domain, dev);
+
 	rk_iommu_power_on(iommu);
 
 	ret = rk_iommu_enable_stall(iommu);
@@ -1018,6 +1036,10 @@ static void rk_iommu_detach_device(struct iommu_domain *domain,
 	if (!iommu)
 		return;
 
+	/* iommu already detached */
+	if (iommu->domain != domain)
+		return;
+
 	mutex_lock(&rk_domain->iommus_lock);
 	list_del_init(&iommu->node);
 	mutex_unlock(&rk_domain->iommus_lock);
@@ -1034,9 +1056,8 @@ static void rk_iommu_detach_device(struct iommu_domain *domain,
 	if (iommu->skip_read)
 		goto read_wa;
 
-	for (i = 0; i < iommu->num_irq; i++) {
+	for (i = 0; i < iommu->num_irq; i++)
 		devm_free_irq(iommu->dev, iommu->irq[i], iommu);
-	}
 
 read_wa:
 	iommu->domain = NULL;
@@ -1099,6 +1120,7 @@ static struct iommu_domain *rk_iommu_domain_alloc(unsigned type)
 	rk_domain->domain.geometry.aperture_start = 0;
 	rk_domain->domain.geometry.aperture_end   = DMA_BIT_MASK(32);
 	rk_domain->domain.geometry.force_aperture = true;
+	rk_domain->domain.ops = &rk_iommu_ops;
 
 	return &rk_domain->domain;
 
@@ -1345,10 +1367,19 @@ static int rk_iommu_probe(struct platform_device *pdev)
 		iommu->hclk = NULL;
 	}
 
+	iommu->sclk = devm_clk_get(dev, "sclk");
+	if (IS_ERR(iommu->sclk)) {
+		dev_info(dev, "can't get sclk\n");
+		iommu->sclk = NULL;
+	}
+
 	if (iommu->aclk && iommu->hclk) {
 		clk_prepare(iommu->aclk);
 		clk_prepare(iommu->hclk);
 	}
+
+	if (iommu->sclk)
+		clk_prepare(iommu->sclk);
 
 	pm_runtime_enable(iommu->dev);
 	pm_runtime_get_sync(iommu->dev);

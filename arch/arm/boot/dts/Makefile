@@ -520,11 +520,14 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += \
 	rk3066a-marsboard.dtb \
 	rk3066a-rayeager.dtb \
 	rk3126-bnd-d708.dtb \
+	rk3126-bnd-d708-avb.dtb \
 	rk3126-bnd-m88-emmc.dtb \
 	rk3126-evb.dtb \
+	rk3126-linux.dtb \
 	rk3128-fireprime.dtb \
 	rk3128h-box.dtb \
 	rk3128h-box-avb.dtb \
+	rk3128h-evb-linux.dtb \
 	rk3188-radxarock.dtb \
 	rk3228-evb.dtb \
 	rk3229-at-3nod.dtb \
@@ -533,10 +536,12 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += \
 	rk3229-echo-v10.dtb \
 	rk3229-evb.dtb \
 	rk3229-evb-android.dtb \
+	rk3229-evb-android-avb.dts \
 	rk3229-gva-sdk.dtb \
 	rk3288-evb-act8846.dtb \
 	rk3288-evb-android-act8846-edp.dtb \
 	rk3288-evb-android-rk808-edp.dtb \
+	rk3288-evb-android-rk808-edp-avb.dtb \
 	rk3288-evb-android-rk818-edp.dtb \
 	rk3288-evb-android-rk818-hdmi.dtb \
 	rk3288-evb-android-rk818-lvds.dtb \
@@ -560,18 +565,29 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += \
 	rk3288-r89.dtb \
 	rk3288-rock2-square.dtb \
 	rk3288-th804.dtb \
+	rk3288-th804-avb.dtb \
 	rk3288-veyron-jaq.dtb \
 	rk3288-veyron-jerry.dtb \
 	rk3288-veyron-minnie.dtb \
 	rk3288-veyron-pinky.dtb \
 	rk3288-veyron-speedy.dtb \
 	rk3288-x7811-rk818-dual-dsi.dtb \
+	rk3308-chameleon-aarch32.dtb \
 	rk3308-dot-v10-aarch32.dtb \
 	rk3308-dot-rk816-v10-aarch32.dtb \
 	rk3308-evb-dmic-i2s-v10-aarch32.dtb \
+	rk3308-evb-dmic-pdm-v11-aarch32.dtb \
+	rk3308-robot-aarch32.dtb \
 	rk3308-voice-module-board-v10-aarch32.dtb \
+	rk3308-voice-module-board-v11-aarch32.dtb \
 	rk3308-voice-module-amic-mainboard-v10-aarch32.dtb \
-	rk3308-voice-module-pdm-mainboard-v10-aarch32.dtb
+	rk3308-voice-module-pdm-mainboard-v10-aarch32.dtb \
+	rk3308b-evb-amic-v10-aarch32.dtb \
+	rk3326-evb-lp3-v10.dtb \
+	rk3326-863-lp3-v10.dtb \
+	rk3326-evb-lp3-v10-avb.dtb \
+	rk3326-863-lp3-v10-avb.dtb \
+	rv1108-minievb-v10.dtb
 dtb-$(CONFIG_ARCH_S3C24XX) += \
 	s3c2416-smdk2416.dtb
 dtb-$(CONFIG_ARCH_S3C64XX) += \

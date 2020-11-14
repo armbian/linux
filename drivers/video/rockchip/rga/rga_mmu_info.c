@@ -24,6 +24,10 @@
 extern rga_service_info rga_service;
 extern struct rga_mmu_buf_t rga_mmu_buf;
 
+#if RGA_DEBUGFS
+extern int RGA_CHECK_MODE;
+#endif
+
 #define KERNEL_SPACE_VALID    0xc0000000
 
 static int rga_mmu_buf_get(struct rga_mmu_buf_t *t, uint32_t size)
@@ -244,6 +248,72 @@ static int rga_buf_size_cal(unsigned long yrgb_addr, unsigned long uv_addr, unsi
     return pageCount;
 }
 
+#if RGA_DEBUGFS
+static int rga_usermemory_cheeck(struct page **pages, u32 w, u32 h, u32 format, int flag)
+{
+	int bits;
+	void *vaddr = NULL;
+	int taipage_num;
+	int taidata_num;
+	int *tai_vaddr = NULL;
+
+	switch (format) {
+	case RK_FORMAT_RGBA_8888:
+	case RK_FORMAT_RGBX_8888:
+	case RK_FORMAT_BGRA_8888:
+		bits = 32;
+		break;
+	case RK_FORMAT_RGB_888:
+	case RK_FORMAT_BGR_888:
+		bits = 24;
+		break;
+	case RK_FORMAT_RGB_565:
+	case RK_FORMAT_RGBA_5551:
+	case RK_FORMAT_RGBA_4444:
+	case RK_FORMAT_YCbCr_422_SP:
+	case RK_FORMAT_YCbCr_422_P:
+	case RK_FORMAT_YCrCb_422_SP:
+	case RK_FORMAT_YCrCb_422_P:
+		bits = 16;
+		break;
+	case RK_FORMAT_YCbCr_420_SP:
+	case RK_FORMAT_YCbCr_420_P:
+	case RK_FORMAT_YCrCb_420_SP:
+	case RK_FORMAT_YCrCb_420_P:
+		bits = 12;
+		break;
+	case RK_FORMAT_YCbCr_420_SP_10B:
+	case RK_FORMAT_YCrCb_420_SP_10B:
+		bits = 15;
+		break;
+	default:
+		printk(KERN_DEBUG "un know format\n");
+		return -1;
+	}
+	taipage_num = w * h * bits / 8 / (1024 * 4);
+	taidata_num = w * h * bits / 8 % (1024 * 4);
+	if (taidata_num == 0) {
+		vaddr = kmap(pages[taipage_num - 1]);
+		tai_vaddr = (int *)vaddr + 1023;
+	} else {
+		vaddr = kmap(pages[taipage_num]);
+		tai_vaddr = (int *)vaddr + taidata_num / 4 - 1;
+	}
+	if (flag == 1) {
+		printk(KERN_DEBUG "src user memory check\n");
+		printk(KERN_DEBUG "tai data is %d\n", *tai_vaddr);
+	} else {
+		printk(KERN_DEBUG "dst user memory check\n");
+		printk(KERN_DEBUG "tai data is %d\n", *tai_vaddr);
+	}
+	if (taidata_num == 0)
+		kunmap(pages[taipage_num - 1]);
+	else
+		kunmap(pages[taipage_num]);
+	return 0;
+}
+#endif
+
 static int rga_MapUserMemory(struct page **pages,
                                             uint32_t *pageTable,
                                             unsigned long Memory,
@@ -259,6 +329,10 @@ static int rga_MapUserMemory(struct page **pages,
 
     do {
         down_read(&current->mm->mmap_sem);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 168) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 5, 0)
+        result = get_user_pages(current, current->mm, Memory << PAGE_SHIFT,
+				pageCount, FOLL_WRITE, pages, NULL);
+#else
         result = get_user_pages(current,
                 current->mm,
                 Memory << PAGE_SHIFT,
@@ -268,6 +342,7 @@ static int rga_MapUserMemory(struct page **pages,
                 pages,
                 NULL
                 );
+#endif
         up_read(&current->mm->mmap_sem);
 
         #if 0
@@ -529,6 +604,12 @@ static int rga_mmu_info_BitBlt_mode(struct rga_reg *reg, struct rga_req *req)
                     status = ret;
                     break;
                 }
+
+#if RGA_DEBUGFS
+	if (RGA_CHECK_MODE)
+		rga_usermemory_cheeck(&pages[0], req->src.vir_w,
+				      req->src.vir_h, req->src.format, 1);
+#endif
             }
         }
         else {
@@ -555,6 +636,12 @@ static int rga_mmu_info_BitBlt_mode(struct rga_reg *reg, struct rga_req *req)
                     status = ret;
                     break;
                 }
+
+#if RGA_DEBUGFS
+	if (RGA_CHECK_MODE)
+		rga_usermemory_cheeck(&pages[0], req->src.vir_w,
+				      req->src.vir_h, req->src.format, 2);
+#endif
             }
         }
         else {
@@ -612,7 +699,7 @@ static int rga_mmu_info_color_palette_mode(struct rga_reg *reg, struct rga_req *
     uint32_t AllSize;
     uint32_t *MMU_Base = NULL, *MMU_Base_phys = NULL;
     uint32_t *MMU_p;
-    int ret, status;
+    int ret, status = 0;
     uint32_t stride;
 
     uint8_t shift;
@@ -1108,7 +1195,7 @@ static int rga_mmu_info_update_patten_buff_mode(struct rga_reg *reg, struct rga_
         }
 
         MMU_Base = kzalloc(AllSize * sizeof(uint32_t), GFP_KERNEL);
-        if(pages == NULL) {
+        if(MMU_Base == NULL) {
             pr_err("RGA MMU malloc MMU_Base point failed\n");
             status = RGA_MALLOC_ERROR;
             break;

@@ -61,15 +61,6 @@
 		status = "okay";
 	};
 
-	lvds_panel: lvds-panel {
-		status = "disabled";
-		ports {
-			panel_in_lvds: endpoint {
-				remote-endpoint = <&lvds_out_panel>;
-			};
-		};
-	};
-
 	clkin_gmac: external-gmac-clock {
 		compatible = "fixed-clock";
 		clock-frequency = <125000000>;
@@ -123,17 +114,12 @@
 	};
 };
 
-&cpu0 {
-	cpu-supply = <&vdd_arm>;
+&cma_region {
+	/delete-property/ reg;
 };
 
-&display_subsystem {
-	status = "okay";
-	route {
-		route_lvds: route-lvds {
-			status = "disabled";
-		};
-	};
+&cpu0 {
+	cpu-supply = <&vdd_arm>;
 };
 
 &emmc {
@@ -355,53 +341,34 @@
 				};
 			};
 		};
-	};
-};
 
-&lvds {
-	status = "disabled";
-	pinctrl-names = "default";
-	pinctrl-0 = <&lcdc_lcdc>;
-	ports {
-		lvds_out: port@1 {
-			reg = <1>;
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			lvds_out_panel: endpoint@0 {
-				reg = <0>;
-				remote-endpoint = <&panel_in_lvds>;
-			};
+		battery {
+			compatible = "rk818-battery";
+			ocv_table = <3400 3650 3693 3707 3731 3749 3760
+				     3770 3782 3796 3812 3829 3852 3882
+				     3915 3951 3981 4047 4086 4132 4182>;
+			design_capacity = <4000>;
+			design_qmax = <4000>;
+			bat_res = <100>;
+			max_input_current = <2000>;
+			max_chrg_current = <1400>;
+			max_chrg_voltage = <4200>;
+			sleep_enter_current = <300>;
+			sleep_exit_current = <300>;
+			power_off_thresd = <3400>;
+			zero_algorithm_vol = <3850>;
+			energy_mode = <0>;
+			fb_temperature = <105>;
+			sample_res = <20>;
+			max_soc_offset = <60>;
+			monitor_sec = <5>;
+			virtual_power = <1>;
+			power_dc2otg = <0>;
 		};
 	};
 };
 
 &pinctrl {
-	lcdc {
-		lcdc_lcdc: lcdc-lcdc {
-			rockchip,pins =
-				/* depend on the hardware */
-				<2 RK_PB0 1 &pcfg_pull_none>, /* DCLK */
-				/* <2 RK_PB1 1 &pcfg_pull_none>, /* HSYNC */
-				/* <2 RK_PB2 1 &pcfg_pull_none>, /* VSYNC */
-				<2 RK_PB3 1 &pcfg_pull_none>, /* DEN */
-				<2 RK_PB4 1 &pcfg_pull_none>, /* DATA10 */
-				<2 RK_PB5 1 &pcfg_pull_none>, /* DATA11 */
-				<2 RK_PB6 1 &pcfg_pull_none>, /* DATA12 */
-				<2 RK_PB7 1 &pcfg_pull_none>, /* DATA13 */
-				<2 RK_PC0 1 &pcfg_pull_none>, /* DATA14 */
-				<2 RK_PC1 1 &pcfg_pull_none>, /* DATA15 */
-				<2 RK_PC2 1 &pcfg_pull_none>, /* DATA16 */
-				<2 RK_PC3 1 &pcfg_pull_none>; /* DATA17 */
-				/* <2 RK_PC4 1 &pcfg_pull_none>, /* DATA18 */
-				/* <2 RK_PC5 1 &pcfg_pull_none>, /* DATA19 */
-				/* <2 RK_PC6 1 &pcfg_pull_none>, /* DATA20 */
-				/* <2 RK_PC7 1 &pcfg_pull_none>, /* DATA21 */
-				/* <2 RK_PD0 1 &pcfg_pull_none>, /* DATA22 */
-				/* <2 RK_PD1 1 &pcfg_pull_none>; /* DATA23 */
-		};
-	};
-
 	pmic {
 		pmic_int_l: pmic-int-l {
 			rockchip,pins = <RK_GPIO3 22 RK_FUNC_GPIO &pcfg_pull_default>;

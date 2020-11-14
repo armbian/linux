@@ -257,6 +257,27 @@
 	};
 };
 
+&firmware_android {
+	compatible = "android,firmware";
+	fstab {
+		compatible = "android,fstab";
+		system {
+			compatible = "android,system";
+			dev = "/dev/block/by-name/system";
+			type = "ext4";
+			mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
+			fsmgr_flags = "wait,verify";
+		};
+		vendor {
+			compatible = "android,vendor";
+			dev = "/dev/block/by-name/vendor";
+			type = "ext4";
+			mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
+			fsmgr_flags = "wait,verify";
+		};
+	};
+};
+
 &rk_key {
 	compatible = "rockchip,key";
 	status = "okay";
@@ -871,10 +892,6 @@
 	status = "okay";
 };
 
-&uart2 {
-	status = "okay";
-};
-
 &usb_host0_ehci {
 	status = "okay";
 };
@@ -1025,6 +1042,9 @@
 
 &edp {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&edp_hpd>;
+
 	ports {
 		edp_out: port@1 {
 			reg = <1>;

@@ -46,9 +46,27 @@
 	model = "Rockchip RK3036 KylinBoard";
 	compatible = "rockchip,rk3036-kylin", "rockchip,rk3036";
 
+	chosen {
+		bootargs = "earlycon=uart8250,mmio32,0x20068000 console=ttyFIQ0 rw root=PARTUUID=7c0b0000-0000 rootfstype=ext4 rootwait";
+	};
+
 	memory {
 		device_type = "memory";
 		reg = <0x60000000 0x20000000>;
+	};
+
+	fiq-debugger {
+		compatible = "rockchip,fiq-debugger";
+		interrupts = <GIC_SPI 127 IRQ_TYPE_LEVEL_LOW>;
+		rockchip,serial-id = <2>;
+		rockchip,wake-irq = <0>;
+		/* If enable uart uses irq instead of fiq */
+		rockchip,irq-mode-enable = <0>;
+		/* Only 115200 and 1500000 */
+		rockchip,baudrate = <115200>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&uart2_xfer>;
+		status = "okay";
 	};
 
 	leds: gpio-leds {
@@ -61,8 +79,6 @@
 			pinctrl-0 = <&led_ctl>;
 		};
 	};
-
-	/delete-node/ psci;
 
 	sdio_pwrseq: sdio-pwrseq {
 		compatible = "mmc-pwrseq-simple";
@@ -441,12 +457,12 @@
 	supports-sd;
 };
 
-&uart0 {
-	pinctrl-0 = <&uart0_xfer>, <&uart0_cts>;
+&sfc {
 	status = "okay";
 };
 
-&uart2 {
+&uart0 {
+	pinctrl-0 = <&uart0_xfer>, <&uart0_cts>;
 	status = "okay";
 };
 

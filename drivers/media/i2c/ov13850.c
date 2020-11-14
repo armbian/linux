@@ -3,6 +3,10 @@
  * ov13850 driver
  *
  * Copyright (C) 2017 Fuzhou Rockchip Electronics Co., Ltd.
+ *
+ * V0.0X01.0X01 add poweron function.
+ * V0.0X01.0X02 fix mclk issue when probe multiple camera.
+ * V0.0X01.0X03 add enum_frame_interval function.
  */
 
 #include <linux/clk.h>
@@ -14,11 +18,16 @@
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sysfs.h>
+#include <linux/slab.h>
+#include <linux/version.h>
+#include <linux/rk-camera-module.h>
 #include <media/media-entity.h>
 #include <media/v4l2-async.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-subdev.h>
 #include <linux/pinctrl/consumer.h>
+
+#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x03)
 
 #ifndef V4L2_CID_DIGITAL_GAIN
 #define V4L2_CID_DIGITAL_GAIN		V4L2_CID_GAIN
@@ -73,6 +82,8 @@
 #define OF_CAMERA_PINCTRL_STATE_DEFAULT	"rockchip,camera_default"
 #define OF_CAMERA_PINCTRL_STATE_SLEEP	"rockchip,camera_sleep"
 
+#define OV13850_NAME			"ov13850"
+
 static const struct regval *ov13850_global_regs;
 
 static const char * const ov13850_supply_names[] = {
@@ -91,7 +102,7 @@ struct regval {
 struct ov13850_mode {
 	u32 width;
 	u32 height;
-	u32 max_fps;
+	struct v4l2_fract max_fps;
 	u32 hts_def;
 	u32 vts_def;
 	u32 exp_def;
@@ -120,7 +131,12 @@ struct ov13850 {
 	struct v4l2_ctrl	*test_pattern;
 	struct mutex		mutex;
 	bool			streaming;
+	bool			power_on;
 	const struct ov13850_mode *cur_mode;
+	u32			module_index;
+	const char		*module_facing;
+	const char		*module_name;
+	const char		*len_name;
 };
 
 #define to_ov13850(sd) container_of(sd, struct ov13850, subdev)
@@ -624,7 +640,10 @@ static const struct ov13850_mode supported_modes[] = {
 	{
 		.width = 2112,
 		.height = 1568,
-		.max_fps = 30,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 300000,
+		},
 		.exp_def = 0x0600,
 		.hts_def = 0x12c0,
 		.vts_def = 0x0680,
@@ -632,7 +651,10 @@ static const struct ov13850_mode supported_modes[] = {
 	},{
 		.width = 4224,
 		.height = 3136,
-		.max_fps = 7,
+		.max_fps = {
+			.numerator = 20000,
+			.denominator = 150000,
+		},
 		.exp_def = 0x0600,
 		.hts_def = 0x12c0,
 		.vts_def = 0x0d00,
@@ -865,13 +887,92 @@ static int ov13850_enable_test_pattern(struct ov13850 *ov13850, u32 pattern)
 				 val);
 }
 
+static int ov13850_g_frame_interval(struct v4l2_subdev *sd,
+				    struct v4l2_subdev_frame_interval *fi)
+{
+	struct ov13850 *ov13850 = to_ov13850(sd);
+	const struct ov13850_mode *mode = ov13850->cur_mode;
+
+	mutex_lock(&ov13850->mutex);
+	fi->interval = mode->max_fps;
+	mutex_unlock(&ov13850->mutex);
+
+	return 0;
+}
+
+static void ov13850_get_module_inf(struct ov13850 *ov13850,
+				   struct rkmodule_inf *inf)
+{
+	memset(inf, 0, sizeof(*inf));
+	strlcpy(inf->base.sensor, OV13850_NAME, sizeof(inf->base.sensor));
+	strlcpy(inf->base.module, ov13850->module_name,
+		sizeof(inf->base.module));
+	strlcpy(inf->base.lens, ov13850->len_name, sizeof(inf->base.lens));
+}
+
+static long ov13850_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct ov13850 *ov13850 = to_ov13850(sd);
+	long ret = 0;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		ov13850_get_module_inf(ov13850, (struct rkmodule_inf *)arg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long ov13850_compat_ioctl32(struct v4l2_subdev *sd,
+				   unsigned int cmd, unsigned long arg)
+{
+	void __user *up = compat_ptr(arg);
+	struct rkmodule_inf *inf;
+	struct rkmodule_awb_cfg *cfg;
+	long ret;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		inf = kzalloc(sizeof(*inf), GFP_KERNEL);
+		if (!inf) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = ov13850_ioctl(sd, cmd, inf);
+		if (!ret)
+			ret = copy_to_user(up, inf, sizeof(*inf));
+		kfree(inf);
+		break;
+	case RKMODULE_AWB_CFG:
+		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
+		if (!cfg) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = copy_from_user(cfg, up, sizeof(*cfg));
+		if (!ret)
+			ret = ov13850_ioctl(sd, cmd, cfg);
+		kfree(cfg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+#endif
+
 static int __ov13850_start_stream(struct ov13850 *ov13850)
 {
 	int ret;
-
-	ret = ov13850_write_array(ov13850->client, ov13850_global_regs);
-	if (ret)
-		return ret;
 
 	ret = ov13850_write_array(ov13850->client, ov13850->cur_mode->reg_list);
 	if (ret)
@@ -935,6 +1036,44 @@ unlock_and_return:
 	return ret;
 }
 
+static int ov13850_s_power(struct v4l2_subdev *sd, int on)
+{
+	struct ov13850 *ov13850 = to_ov13850(sd);
+	struct i2c_client *client = ov13850->client;
+	int ret = 0;
+
+	mutex_lock(&ov13850->mutex);
+
+	/* If the power state is not modified - no work to do. */
+	if (ov13850->power_on == !!on)
+		goto unlock_and_return;
+
+	if (on) {
+		ret = pm_runtime_get_sync(&client->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(&client->dev);
+			goto unlock_and_return;
+		}
+
+		ret = ov13850_write_array(ov13850->client, ov13850_global_regs);
+		if (ret) {
+			v4l2_err(sd, "could not set init registers\n");
+			pm_runtime_put_noidle(&client->dev);
+			goto unlock_and_return;
+		}
+
+		ov13850->power_on = true;
+	} else {
+		pm_runtime_put(&client->dev);
+		ov13850->power_on = false;
+	}
+
+unlock_and_return:
+	mutex_unlock(&ov13850->mutex);
+
+	return ret;
+}
+
 /* Calculate the delay in us by clock rate and clock cycles */
 static inline u32 ov13850_cal_delay(u32 cycles)
 {
@@ -953,13 +1092,16 @@ static int __ov13850_power_on(struct ov13850 *ov13850)
 		if (ret < 0)
 			dev_err(dev, "could not set pins\n");
 	}
-
+	ret = clk_set_rate(ov13850->xvclk, OV13850_XVCLK_FREQ);
+	if (ret < 0)
+		dev_warn(dev, "Failed to set xvclk rate (24MHz)\n");
+	if (clk_get_rate(ov13850->xvclk) != OV13850_XVCLK_FREQ)
+		dev_warn(dev, "xvclk mismatched, modes are based on 24MHz\n");
 	ret = clk_prepare_enable(ov13850->xvclk);
 	if (ret < 0) {
 		dev_err(dev, "Failed to enable xvclk\n");
 		return ret;
 	}
-
 	if (!IS_ERR(ov13850->reset_gpio))
 		gpiod_set_value_cansleep(ov13850->reset_gpio, 0);
 
@@ -1049,6 +1191,22 @@ static int ov13850_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 }
 #endif
 
+static int ov13850_enum_frame_interval(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_frame_interval_enum *fie)
+{
+	if (fie->index >= ARRAY_SIZE(supported_modes))
+		return -EINVAL;
+
+	if (fie->code != MEDIA_BUS_FMT_SBGGR10_1X10)
+		return -EINVAL;
+
+	fie->width = supported_modes[fie->index].width;
+	fie->height = supported_modes[fie->index].height;
+	fie->interval = supported_modes[fie->index].max_fps;
+	return 0;
+}
+
 static const struct dev_pm_ops ov13850_pm_ops = {
 	SET_RUNTIME_PM_OPS(ov13850_runtime_suspend,
 			   ov13850_runtime_resume, NULL)
@@ -1060,18 +1218,29 @@ static const struct v4l2_subdev_internal_ops ov13850_internal_ops = {
 };
 #endif
 
+static const struct v4l2_subdev_core_ops ov13850_core_ops = {
+	.s_power = ov13850_s_power,
+	.ioctl = ov13850_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = ov13850_compat_ioctl32,
+#endif
+};
+
 static const struct v4l2_subdev_video_ops ov13850_video_ops = {
 	.s_stream = ov13850_s_stream,
+	.g_frame_interval = ov13850_g_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops ov13850_pad_ops = {
 	.enum_mbus_code = ov13850_enum_mbus_code,
 	.enum_frame_size = ov13850_enum_frame_sizes,
+	.enum_frame_interval = ov13850_enum_frame_interval,
 	.get_fmt = ov13850_get_fmt,
 	.set_fmt = ov13850_set_fmt,
 };
 
 static const struct v4l2_subdev_ops ov13850_subdev_ops = {
+	.core	= &ov13850_core_ops,
 	.video	= &ov13850_video_ops,
 	.pad	= &ov13850_pad_ops,
 };
@@ -1222,7 +1391,7 @@ static int ov13850_check_sensor_id(struct ov13850 *ov13850,
 			       OV13850_REG_VALUE_16BIT, &id);
 	if (id != CHIP_ID) {
 		dev_err(dev, "Unexpected sensor id(%06x), ret(%d)\n", id, ret);
-		return ret;
+		return -ENODEV;
 	}
 
 	ret = ov13850_read_reg(client, OV13850_CHIP_REVISION_REG,
@@ -1257,13 +1426,33 @@ static int ov13850_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
+	struct device_node *node = dev->of_node;
 	struct ov13850 *ov13850;
 	struct v4l2_subdev *sd;
+	char facing[2];
 	int ret;
+
+	dev_info(dev, "driver version: %02x.%02x.%02x",
+		DRIVER_VERSION >> 16,
+		(DRIVER_VERSION & 0xff00) >> 8,
+		DRIVER_VERSION & 0x00ff);
 
 	ov13850 = devm_kzalloc(dev, sizeof(*ov13850), GFP_KERNEL);
 	if (!ov13850)
 		return -ENOMEM;
+
+	ret = of_property_read_u32(node, RKMODULE_CAMERA_MODULE_INDEX,
+				   &ov13850->module_index);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_FACING,
+				       &ov13850->module_facing);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_NAME,
+				       &ov13850->module_name);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_LENS_NAME,
+				       &ov13850->len_name);
+	if (ret) {
+		dev_err(dev, "could not get module information!\n");
+		return -EINVAL;
+	}
 
 	ov13850->client = client;
 	ov13850->cur_mode = &supported_modes[0];
@@ -1273,13 +1462,6 @@ static int ov13850_probe(struct i2c_client *client,
 		dev_err(dev, "Failed to get xvclk\n");
 		return -EINVAL;
 	}
-	ret = clk_set_rate(ov13850->xvclk, OV13850_XVCLK_FREQ);
-	if (ret < 0) {
-		dev_err(dev, "Failed to set xvclk rate (24MHz)\n");
-		return ret;
-	}
-	if (clk_get_rate(ov13850->xvclk) != OV13850_XVCLK_FREQ)
-		dev_warn(dev, "xvclk mismatched, modes are based on 24MHz\n");
 
 	ov13850->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(ov13850->reset_gpio))
@@ -1338,7 +1520,16 @@ static int ov13850_probe(struct i2c_client *client,
 		goto err_power_off;
 #endif
 
-	ret = v4l2_async_register_subdev(sd);
+	memset(facing, 0, sizeof(facing));
+	if (strcmp(ov13850->module_facing, "back") == 0)
+		facing[0] = 'b';
+	else
+		facing[0] = 'f';
+
+	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
+		 ov13850->module_index, facing,
+		 OV13850_NAME, dev_name(sd->dev));
+	ret = v4l2_async_register_subdev_sensor_common(sd);
 	if (ret) {
 		dev_err(dev, "v4l2 async register subdev failed\n");
 		goto err_clean_entity;
@@ -1399,7 +1590,7 @@ static const struct i2c_device_id ov13850_match_id[] = {
 
 static struct i2c_driver ov13850_i2c_driver = {
 	.driver = {
-		.name = "ov13850",
+		.name = OV13850_NAME,
 		.pm = &ov13850_pm_ops,
 		.of_match_table = of_match_ptr(ov13850_of_match),
 	},

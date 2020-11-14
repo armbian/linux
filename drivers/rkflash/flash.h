@@ -40,6 +40,7 @@
 #define BLOCK_ERASE_CMD		0x60d0
 #define READ_CMD		0x0030
 #define READ_DP_OUT_CMD		0x05E0
+#define READ_ECC_STATUS_CMD	0x7A
 
 #define SAMSUNG			0x00	/* SAMSUNG */
 #define TOSHIBA			0x01	/* TOSHIBA */
@@ -117,16 +118,6 @@ struct NAND_PARA_INFO_T {
 	u8	bad_block_mode;
 	u8	multi_plane_mode;
 	u8	reversd2[6];	/* 32 bytes */
-};
-
-struct FLASH_INFO_T {
-	u16	block_size;
-	u8	ecc_bits;
-	u32	flash_size;
-	u16	page_size;
-	u8	access_time;
-	u8	manufacturer_name;
-	u8	flash_mask;
 };
 
 extern struct nand_phy_info	g_nand_phy_info;

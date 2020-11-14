@@ -1,18 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2017 Rockchip Electronics Co. Ltd.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Author: Wyon Bi <bivvy.bi@rock-chips.com>
  */
 
-#include "rk618_output.h"
+#include "rk618_dither.h"
 
 #define RK618_FRC_REG			0x0054
 #define FRC_DEN_INV			HIWORD_UPDATE(1, 6, 6)
@@ -26,20 +19,33 @@
 #define FRC_DITHER_ENABLE		HIWORD_UPDATE(1, 0, 0)
 #define FRC_DITHER_DISABLE		HIWORD_UPDATE(0, 0, 0)
 
-void rk618_dither_disable(struct rk618 *rk618)
+void rk618_frc_dither_init(struct rk618 *rk618, u32 bus_format)
 {
-	regmap_write(rk618->regmap, RK618_FRC_REG, FRC_DITHER_DISABLE);
-}
-EXPORT_SYMBOL_GPL(rk618_dither_disable);
+	u32 val;
 
-void rk618_dither_enable(struct rk618 *rk618)
-{
-	regmap_write(rk618->regmap, RK618_FRC_REG, FRC_DITHER_ENABLE);
-}
-EXPORT_SYMBOL_GPL(rk618_dither_enable);
+	switch (bus_format) {
+	case MEDIA_BUS_FMT_RGB666_1X18:
+	case MEDIA_BUS_FMT_RGB666_1X7X3_SPWG:
+		val = FRC_OUT_MODE_RGB666 | FRC_DITHER_DISABLE;
+		break;
+	case MEDIA_BUS_FMT_RGB666_1X24_CPADHI:
+	case MEDIA_BUS_FMT_RGB666_1X7X3_JEIDA:
+		val = FRC_OUT_MODE_RGB888 | FRC_DITHER_ENABLE;
+		break;
+	case MEDIA_BUS_FMT_RGB888_1X24:
+	case MEDIA_BUS_FMT_RGB888_1X7X4_JEIDA:
+	case MEDIA_BUS_FMT_RGB888_1X7X4_SPWG:
+	default:
+		val = FRC_OUT_MODE_RGB888 | FRC_DITHER_DISABLE;
+		break;
+	}
 
-void rk618_dither_frc_dclk_invert(struct rk618 *rk618)
+	regmap_write(rk618->regmap, RK618_FRC_REG, val);
+}
+EXPORT_SYMBOL_GPL(rk618_frc_dither_init);
+
+void rk618_frc_dclk_invert(struct rk618 *rk618)
 {
 	regmap_write(rk618->regmap, RK618_FRC_REG, FRC_DCLK_INV);
 }
-EXPORT_SYMBOL_GPL(rk618_dither_frc_dclk_invert);
+EXPORT_SYMBOL_GPL(rk618_frc_dclk_invert);

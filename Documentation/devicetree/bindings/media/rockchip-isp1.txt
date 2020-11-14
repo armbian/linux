@@ -6,8 +6,10 @@ which contains image processing, scaling, and compression funcitons.
 
 Required properties:
 - compatible: value should be one of the following
+	"rockchip,rk1808-rkisp1";
 	"rockchip,rk3288-rkisp1";
 	"rockchip,rk3326-rkisp1";
+	"rockchip,rk3368-rkisp1";
 	"rockchip,rk3399-rkisp1";
 - reg : offset and length of the register set for the device.
 - interrupts: should contain ISP interrupt.

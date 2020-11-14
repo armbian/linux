@@ -13,6 +13,7 @@
 #include <drm/rockchip_drm.h>
 #include <linux/dma-mapping.h>
 #include <linux/dma-buf.h>
+#include <linux/time.h>
 
 static const char miscdev_name[] = CAMSYS_MARVIN_DEVNAME;
 
@@ -566,7 +567,6 @@ static int camsys_mrv_clkin_cb(void *ptr, unsigned int on)
 				clk_prepare_enable(clk->pclk_dphytxrx);
 
 				clk_prepare_enable(clk->pclkin_isp);
-				clk_prepare_enable(clk->cif_clk_out);
 			} else {
 				clk_set_rate(clk->clk_isp0, isp_clk);
 				clk_prepare_enable(clk->hclk_isp0_noc);
@@ -699,8 +699,8 @@ static int camsys_mrv_clkout_cb(void *ptr, unsigned int on, unsigned int inclk)
 					inclk);
 	} else if (!on && clk->out_on) {
 		if (!IS_ERR_OR_NULL(clk->cif_clk_pll)) {
-			clk_set_parent(clk->cif_clk_out,
-				clk->cif_clk_pll);
+			/* just for closing clk which base on XIN24M */
+			clk_set_rate(clk->cif_clk_out, 36000000);
 		} else {
 			camsys_warn("%s clock out may be not off!",
 				dev_name(camsys_dev->miscdev.this_device));
@@ -724,6 +724,7 @@ static irqreturn_t camsys_mrv_irq(int irq, void *data)
 	unsigned int isp_mis, mipi_mis, mi_mis, *mis, jpg_mis, jpg_err_mis;
 	unsigned int mi_ris, mi_imis;
 	static unsigned int mipi_frame;
+	struct timeval tv = {0L, 0L};
 
 	isp_mis = __raw_readl((void volatile *)
 				(camsys_dev->devmems.registermem->vir_base +
@@ -803,6 +804,8 @@ static irqreturn_t camsys_mrv_irq(int irq, void *data)
 				}
 				case MRV_MI_MIS:
 				{
+					if (mi_mis & 0x1)
+						do_gettimeofday(&tv);
 					mis = &mi_mis;
 					break;
 				}
@@ -842,6 +845,7 @@ static irqreturn_t camsys_mrv_irq(int irq, void *data)
 						irqsta->sta.fe_id =
 							(mipi_frame >> 16)
 							& 0xFFFF;
+						irqsta->sta.reserved[0] = (tv.tv_sec * 1000LL + tv.tv_usec / 1000) & (0xffff);
 						list_del_init(&irqsta->list);
 						list_add_tail(&irqsta->list,
 							&irqpool->active);

@@ -223,7 +223,8 @@ static void rockchip_drm_output_poll_changed(struct drm_device *dev)
 
 static int rockchip_drm_bandwidth_atomic_check(struct drm_device *dev,
 					       struct drm_atomic_state *state,
-					       size_t *bandwidth)
+					       size_t *bandwidth,
+					       unsigned int *plane_num)
 {
 	struct rockchip_drm_private *priv = dev->dev_private;
 	struct drm_crtc_state *crtc_state;
@@ -232,11 +233,13 @@ static int rockchip_drm_bandwidth_atomic_check(struct drm_device *dev,
 	int i, ret = 0;
 
 	*bandwidth = 0;
+	*plane_num = 0;
 	for_each_crtc_in_state(state, crtc, crtc_state, i) {
 		funcs = priv->crtc_funcs[drm_crtc_index(crtc)];
 
 		if (funcs && funcs->bandwidth)
-			*bandwidth += funcs->bandwidth(crtc, crtc_state);
+			*bandwidth += funcs->bandwidth(crtc, crtc_state,
+						       plane_num);
 	}
 
 	/*
@@ -262,6 +265,7 @@ rockchip_atomic_commit_complete(struct rockchip_atomic_commit *commit)
 	struct drm_device *dev = commit->dev;
 	struct rockchip_drm_private *prv = dev->dev_private;
 	size_t bandwidth = commit->bandwidth;
+	unsigned int plane_num = commit->plane_num;
 
 	/*
 	 * TODO: do fence wait here.
@@ -296,7 +300,8 @@ rockchip_atomic_commit_complete(struct rockchip_atomic_commit *commit)
 			prv->devfreq = NULL;
 	}
 	if (prv->devfreq)
-		rockchip_dmcfreq_vop_bandwidth_update(prv->devfreq, bandwidth);
+		rockchip_dmcfreq_vop_bandwidth_update(prv->devfreq, bandwidth,
+						      plane_num);
 
 	drm_atomic_helper_commit_planes(dev, state, true);
 
@@ -329,6 +334,7 @@ static int rockchip_drm_atomic_commit(struct drm_device *dev,
 	struct rockchip_drm_private *private = dev->dev_private;
 	struct rockchip_atomic_commit *commit;
 	size_t bandwidth;
+	unsigned int plane_num;
 	int ret;
 
 	ret = drm_atomic_helper_setup_commit(state, false);
@@ -339,7 +345,8 @@ static int rockchip_drm_atomic_commit(struct drm_device *dev,
 	if (ret)
 		return ret;
 
-	ret = rockchip_drm_bandwidth_atomic_check(dev, state, &bandwidth);
+	ret = rockchip_drm_bandwidth_atomic_check(dev, state, &bandwidth,
+						  &plane_num);
 	if (ret) {
 		/*
 		 * TODO:
@@ -357,6 +364,7 @@ static int rockchip_drm_atomic_commit(struct drm_device *dev,
 	commit->dev = dev;
 	commit->state = state;
 	commit->bandwidth = bandwidth;
+	commit->plane_num = plane_num;
 
 	if (async) {
 		mutex_lock(&private->commit_lock);

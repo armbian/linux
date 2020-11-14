@@ -68,6 +68,8 @@ static enum cif_isp10_pix_fmt img_src_v4l2_subdev_pix_fmt2cif_isp10_pix_fmt(
 		return CIF_YUV400;
 	case MEDIA_BUS_FMT_Y10_1X10:
 		return CIF_Y10;
+	case MEDIA_BUS_FMT_Y12_1X12:
+		return CIF_Y12;
 	case MEDIA_BUS_FMT_YUYV8_1_5X8:
 	case MEDIA_BUS_FMT_YUYV8_2X8:
 	case MEDIA_BUS_FMT_YUYV10_2X10:
@@ -142,6 +144,8 @@ static int cif_isp10_pix_fmt2img_src_v4l2_subdev_pix_fmt(
 	switch (cif_isp10_pix_fmt) {
 	case CIF_Y10:
 		return MEDIA_BUS_FMT_Y10_1X10;
+	case CIF_Y12:
+		return MEDIA_BUS_FMT_Y12_1X12;
 	case CIF_YUV400:
 		return MEDIA_BUS_FMT_Y8_1X8;
 	case CIF_YUV422I:
@@ -224,6 +228,8 @@ static int cif_isp10_v4l2_cid2v4l2_cid(u32 cif_isp10_cid)
 		return V4L2_CID_VFLIP;
 	case CIF_ISP10_CID_MIN_BUFFER_FOR_CAPTURE:
 		return V4L2_CID_MIN_BUFFERS_FOR_CAPTURE;
+	case CIF_ISP10_CID_TEST_PATTERN:
+		return V4L2_CID_TEST_PATTERN;
 	default:
 		cif_isp10_pltfrm_pr_err(NULL,
 			"unknown/unsupported CIF ISP20 ID %d\n",
@@ -538,5 +544,15 @@ int cif_isp10_img_src_v4l2_subdev_g_frame_interval(
 err:
 	pr_err("img_src.%s ERR: failed with error %d\n", __func__, ret);
 	return ret;
+}
+
+int cif_isp10_img_src_v4l2_subdev_enum_frame_size(
+	void *img_src,
+	struct v4l2_subdev_frame_size_enum *fse)
+{
+	struct v4l2_subdev *subdev = img_src;
+
+	return v4l2_subdev_call(subdev, pad,
+		enum_frame_size, NULL, fse);
 }
 

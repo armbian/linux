@@ -195,7 +195,7 @@ config IMX_THERMAL
 	  passive trip is crossed.
 
 config SPEAR_THERMAL
-	bool "SPEAr thermal sensor driver"
+	tristate "SPEAr thermal sensor driver"
 	depends on PLAT_SPEAR || COMPILE_TEST
 	depends on OF
 	help
@@ -215,6 +215,7 @@ config ROCKCHIP_THERMAL
 config RK_VIRTUAL_THERMAL
 	tristate "rk_virtual thermal driver"
 	depends on ROCKCHIP_THERMAL
+	select POWER_SUPPLY
 	help
 	  Rk virtual thermal driver provides virtual temperature support for
 	  SOCs without tsadc module. It supports one critical trip point.
@@ -255,8 +256,8 @@ config DOVE_THERMAL
 	  framework.
 
 config DB8500_THERMAL
-	bool "DB8500 thermal management"
-	depends on ARCH_U8500
+	tristate "DB8500 thermal management"
+	depends on MFD_DB8500_PRCMU
 	default y
 	help
 	  Adds DB8500 thermal management implementation according to the thermal

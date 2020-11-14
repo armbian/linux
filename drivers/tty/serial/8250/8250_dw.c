@@ -64,7 +64,11 @@ struct dw8250_data {
 	struct clk		*pclk;
 	struct reset_control	*rst;
 	struct uart_8250_dma	dma;
-
+#ifdef CONFIG_ARCH_ROCKCHIP
+	int			irq;
+	int			irq_wake;
+	int			enable_wakeup;
+#endif
 	unsigned int		skip_autocfg:1;
 	unsigned int		uart_16550_compatible:1;
 };
@@ -244,7 +248,7 @@ static void dw8250_set_termios(struct uart_port *p, struct ktermios *termios,
 	struct dw8250_data *d = p->private_data;
 	unsigned int rate;
 #ifdef CONFIG_ARCH_ROCKCHIP
-	unsigned int div, rate_temp, diff;
+	unsigned int rate_temp, diff;
 #endif
 	int ret;
 
@@ -253,15 +257,14 @@ static void dw8250_set_termios(struct uart_port *p, struct ktermios *termios,
 
 	clk_disable_unprepare(d->clk);
 #ifdef CONFIG_ARCH_ROCKCHIP
-	if ((baud * 16) <= 4000000) {
-		/*
-		 * Make sure uart sclk is high enough
-		 */
-		div = 4000000 / baud / 16;
-		rate = baud * 16 * div;
-	} else {
+	if (baud <= 115200)
+		rate = 24000000;
+	else if (baud == 230400)
+		rate = baud * 16 * 2;
+	else if (baud == 1152000)
+		rate = baud * 16 * 2;
+	else
 		rate = baud * 16;
-	}
 
 	ret = clk_set_rate(d->clk, rate);
 	rate_temp = clk_get_rate(d->clk);
@@ -312,7 +315,7 @@ static bool dw8250_fallback_dma_filter(struct dma_chan *chan, void *param)
 
 static bool dw8250_idma_filter(struct dma_chan *chan, void *param)
 {
-	return param == chan->device->dev->parent;
+	return param == chan->device->dev;
 }
 
 static void dw8250_quirks(struct uart_port *p, struct dw8250_data *data)
@@ -343,7 +346,7 @@ static void dw8250_quirks(struct uart_port *p, struct dw8250_data *data)
 		data->uart_16550_compatible = true;
 	}
 
-	/* Platforms with iDMA */
+	/* Platforms with iDMA 64-bit */
 	if (platform_get_resource_byname(to_platform_device(p->dev),
 					 IORESOURCE_MEM, "lpss_priv")) {
 		data->dma.rx_param = p->dev->parent;
@@ -440,6 +443,9 @@ static int dw8250_probe(struct platform_device *pdev)
 
 	data->dma.fn = dw8250_fallback_dma_filter;
 	data->usr_reg = DW_UART_USR;
+#ifdef CONFIG_ARCH_ROCKCHIP
+	data->irq	= irq;
+#endif
 	p->private_data = data;
 
 	data->uart_16550_compatible = device_property_read_bool(p->dev,
@@ -479,6 +485,13 @@ static int dw8250_probe(struct platform_device *pdev)
 		data->msr_mask_off |= UART_MSR_RI;
 		data->msr_mask_off |= UART_MSR_TERI;
 	}
+
+#ifdef CONFIG_ARCH_ROCKCHIP
+	if (device_property_read_bool(p->dev, "wakeup-source"))
+		data->enable_wakeup = 1;
+	else
+		data->enable_wakeup = 0;
+#endif
 
 	/* Always ask for fixed clock rate from a property. */
 	device_property_read_u32(p->dev, "clock-frequency", &p->uartclk);
@@ -549,6 +562,11 @@ static int dw8250_probe(struct platform_device *pdev)
 		goto err_reset;
 	}
 
+#ifdef CONFIG_ARCH_ROCKCHIP
+	if (data->enable_wakeup)
+		device_init_wakeup(&pdev->dev, true);
+#endif
+
 	platform_set_drvdata(pdev, data);
 
 	pm_runtime_set_active(&pdev->dev);
@@ -588,6 +606,11 @@ static int dw8250_remove(struct platform_device *pdev)
 	if (!IS_ERR(data->clk))
 		clk_disable_unprepare(data->clk);
 
+#ifdef CONFIG_ARCH_ROCKCHIP
+	if (data->enable_wakeup)
+		device_init_wakeup(&pdev->dev, false);
+#endif
+
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
 
@@ -599,6 +622,13 @@ static int dw8250_suspend(struct device *dev)
 {
 	struct dw8250_data *data = dev_get_drvdata(dev);
 
+#ifdef CONFIG_ARCH_ROCKCHIP
+	if (device_may_wakeup(dev)) {
+		if (!enable_irq_wake(data->irq))
+			data->irq_wake = 1;
+		return 0;
+	}
+#endif
 	serial8250_suspend_port(data->line);
 
 	return 0;
@@ -608,6 +638,15 @@ static int dw8250_resume(struct device *dev)
 {
 	struct dw8250_data *data = dev_get_drvdata(dev);
 
+#ifdef CONFIG_ARCH_ROCKCHIP
+	if (device_may_wakeup(dev)) {
+		if (data->irq_wake) {
+			disable_irq_wake(data->irq);
+			data->irq_wake = 0;
+		}
+		return 0;
+	}
+#endif
 	serial8250_resume_port(data->line);
 
 	return 0;

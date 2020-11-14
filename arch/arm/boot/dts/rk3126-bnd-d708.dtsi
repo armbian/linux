@@ -237,6 +237,10 @@
 	};
 };
 
+&route_dsi {
+	status = "okay";
+};
+
 &dmc {
 	center-supply = <&vdd_log>;
 };
@@ -275,6 +279,11 @@
 
 		pwdn-gpios = <&gpio3 RK_PB3 GPIO_ACTIVE_HIGH>;
 
+		rockchip,camera-module-index = <1>;
+		rockchip,camera-module-facing = "front";
+		rockchip,camera-module-name = "CameraKing";
+		rockchip,camera-module-lens-name = "Largan";
+
 		port {
 			gc0329_out: endpoint {
 				remote-endpoint = <&cif_in_fcam>;
@@ -296,6 +305,11 @@
 		dvdd-supply = <&vcc18_cif>;
 
 		pwdn-gpios = <&gpio2 RK_PB7 GPIO_ACTIVE_HIGH>;
+
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "CameraKing";
+		rockchip,camera-module-lens-name = "Largan";
 
 		port {
 			gc2145_out: endpoint {
@@ -513,10 +527,6 @@
 	status = "okay";
 };
 
-&mipi_dphy {
-	status = "okay";
-};
-
 &nandc {
 	status = "okay";
 };
@@ -576,10 +586,6 @@
 };
 
 &rga {
-	status = "okay";
-};
-
-&route_dsi {
 	status = "okay";
 };
 

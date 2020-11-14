@@ -29,6 +29,7 @@
 #include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/version.h>
 #include <linux/soc/rockchip/rk_vendor_storage.h>
 
@@ -633,6 +634,13 @@ static int nand_remove_dev(struct nand_blk_dev *dev)
 
 int nand_blk_add_whole_disk(void)
 {
+	struct nand_part part;
+
+	part.offset = 0;
+	part.size = rk_ftl_get_capacity();
+	part.type = 0;
+	strncpy(part.name, "rknand", sizeof(part.name));
+	nand_add_dev(&mytr, &part);
 	return 0;
 }
 
@@ -669,6 +677,8 @@ static int nand_blk_register(struct nand_blk_ops *nandr)
 
 	queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, nandr->rq);
 	blk_queue_max_discard_sectors(nandr->rq, UINT_MAX >> 9);
+	/* discard_granularity config to one nand page size 32KB*/
+	nandr->rq->limits.discard_granularity = 64 << 9;
 
 	nandr->rq->queuedata = nandr;
 	INIT_LIST_HEAD(&nandr->devs);

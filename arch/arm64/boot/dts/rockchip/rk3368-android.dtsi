@@ -41,7 +41,7 @@
  */
 
 / {
-	chosen {
+	chosen: chosen {
 		bootargs = "earlycon=uart8250,mmio32,0xff690000 swiotlb=1 firmware_class.path=/system/vendor/firmware";
 	};
 
@@ -103,26 +103,7 @@
 	};
 
 	firmware {
-		android {
-			compatible = "android,firmware";
-			fstab {
-				compatible = "android,fstab";
-				system {
-					compatible = "android,system";
-					dev = "/dev/block/platform/ff0f0000.dwmmc/by-name/system";
-					type = "ext4";
-					mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
-					fsmgr_flags = "wait,verify";
-				};
-				vendor {
-					compatible = "android,vendor";
-					dev = "/dev/block/platform/ff0f0000.dwmmc/by-name/vendor";
-					type = "ext4";
-					mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
-					fsmgr_flags = "wait,verify";
-				};
-			};
-		};
+		firmware_android: android {};
 	};
 
 	rga@ff920000 {
@@ -217,6 +198,16 @@
 			charge_logo,mode = "center";
 			connect = <&vop_out_lvds>;
 		};
+
+		route_rgb: route-rgb {
+			status = "disabled";
+			logo,uboot = "logo.bmp";
+			logo,kernel = "logo_kernel.bmp";
+			logo,mode = "center";
+			charge_logo,mode = "center";
+			connect = <&vop_out_rgb>;
+		};
+
 	};
 };
 
@@ -272,6 +263,10 @@
 	status = "okay";
 };
 
+&video_phy {
+	status = "okay";
+};
+
 &usb_otg {
 	status = "okay";
 
@@ -304,8 +299,7 @@
 					<1 7 RK_FUNC_1 &pcfg_pull_none>,//cif_data9
 					<1 8 RK_FUNC_1 &pcfg_pull_none>,//cif_sync
 					<1 9 RK_FUNC_1 &pcfg_pull_none>,//cif_href
-					<1 10 RK_FUNC_1 &pcfg_pull_none>,//cif_clkin
-					<1 11 RK_FUNC_1 &pcfg_pull_none>;//cif_clkout
+					<1 10 RK_FUNC_1 &pcfg_pull_none>;//cif_clkin
 		};
 
 		isp_dvp_d0d1: isp-dvp-d0d1 {

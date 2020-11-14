@@ -2,23 +2,9 @@
 /*
  * GC2145 CMOS Image Sensor driver
  *
- * Copyright (C) 2015 Texas Instruments, Inc.
- *
- * Benoit Parrot <bparrot@ti.com>
- * Lad, Prabhakar <prabhakar.csengg@gmail.com>
- *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (C) 2018 Fuzhou Rockchip Electronics Co., Ltd.
+ * V0.0X01.0X01 add enum_frame_interval function.
+ * V0.0X01.0X02 add mipi svga 10fps.
  */
 
 #include <linux/clk.h>
@@ -38,7 +24,8 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/videodev2.h>
-
+#include <linux/version.h>
+#include <linux/rk-camera-module.h>
 #include <media/media-entity.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
@@ -49,14 +36,13 @@
 #include <media/v4l2-mediabus.h>
 #include <media/v4l2-subdev.h>
 
+#define DRIVER_VERSION			KERNEL_VERSION(0, 0x01, 0x2)
 #define DRIVER_NAME "gc2145"
 #define GC2145_PIXEL_RATE		(120 * 1000 * 1000)
 
 /*
  * GC2145 register definitions
  */
-#define REG_SOFTWARE_STANDBY		0xf2
-
 #define REG_SC_CHIP_ID_H		0xf0
 #define REG_SC_CHIP_ID_L		0xf1
 
@@ -73,7 +59,7 @@ struct sensor_register {
 struct gc2145_framesize {
 	u16 width;
 	u16 height;
-	u16 fps;
+	struct v4l2_fract max_fps;
 	u16 max_exp_lines;
 	const struct sensor_register *regs;
 };
@@ -111,16 +97,24 @@ struct gc2145 {
 	unsigned int xvclk_frequency;
 	struct clk *xvclk;
 	struct gpio_desc *pwdn_gpio;
+	struct gpio_desc *reset_gpio;
 	struct regulator_bulk_data supplies[GC2145_NUM_SUPPLIES];
 	struct mutex lock;
 	struct i2c_client *client;
 	struct v4l2_ctrl_handler ctrls;
 	struct v4l2_ctrl *link_frequency;
+	struct v4l2_fwnode_endpoint bus_cfg;
 	const struct gc2145_framesize *frame_size;
+	const struct gc2145_framesize *framesize_cfg;
+	unsigned int cfg_num;
 	int streaming;
+	u32 module_index;
+	const char *module_facing;
+	const char *module_name;
+	const char *len_name;
 };
 
-static const struct sensor_register gc2145_init_regs[] = {
+static const struct sensor_register gc2145_dvp_init_regs[] = {
 	{0xfe, 0xf0},
 	{0xfe, 0xf0},
 	{0xfe, 0xf0},
@@ -156,7 +150,7 @@ static const struct sensor_register gc2145_init_regs[] = {
 	{0x20, 0x03},
 	{0x21, 0x40},
 	{0x22, 0xa0},
-	{0x24, 0x16},
+	{0x24, 0x3f},
 	{0x25, 0x01},
 	{0x26, 0x10},
 	{0x2d, 0x60},
@@ -844,7 +838,7 @@ static const struct sensor_register gc2145_init_regs[] = {
 };
 
 /* Senor full resolution setting */
-static const struct sensor_register gc2145_full_regs[] = {
+static const struct sensor_register gc2145_dvp_full[] = {
 	{0xfe, 0x00},
 	{0xfd, 0x00},
 	{0xfa, 0x00},
@@ -889,7 +883,7 @@ static const struct sensor_register gc2145_full_regs[] = {
 };
 
 /* Preview resolution setting*/
-static const struct sensor_register gc2145_svga_regs_30fps[] = {
+static const struct sensor_register gc2145_dvp_svga_30fps[] = {
 	{0xfe, 0x00},
 	{0x05, 0x02},
 	{0x06, 0x20},
@@ -959,7 +953,7 @@ static const struct sensor_register gc2145_svga_regs_30fps[] = {
 };
 
 /* Preview resolution setting*/
-static const struct sensor_register gc2145_svga_regs_20fps[] = {
+static const struct sensor_register gc2145_dvp_svga_20fps[] = {
 	{0xfe, 0x00},
 	{0x05, 0x02},
 	{0x06, 0x20},
@@ -1010,23 +1004,1007 @@ static const struct sensor_register gc2145_svga_regs_20fps[] = {
 	{REG_NULL, 0x00},
 };
 
-static const struct gc2145_framesize gc2145_framesizes[] = {
+static const struct sensor_register gc2145_mipi_init_regs[] = {
+	{0xfe, 0xf0},
+	{0xfe, 0xf0},
+	{0xfe, 0xf0},
+	{0xfc, 0x06},
+	{0xf6, 0x00},
+	{0xf7, 0x1d},
+	{0xf8, 0x84},
+	{0xfa, 0x00},
+	{0xf9, 0x8e},
+	{0xf2, 0x00},
+	/*ISP reg*/
+	{0xfe, 0x00},
+	{0x03, 0x04},
+	{0x04, 0xe2},
+	{0x09, 0x00},
+	{0x0a, 0x00},
+	{0x0b, 0x00},
+	{0x0c, 0x00},
+	{0x0d, 0x04},
+	{0x0e, 0xc0},
+	{0x0f, 0x06},
+	{0x10, 0x52},
+	{0x12, 0x2e},
+	{0x17, 0x14},
+	{0x18, 0x22},
+	{0x19, 0x0e},
+	{0x1a, 0x01},
+	{0x1b, 0x4b},
+	{0x1c, 0x07},
+	{0x1d, 0x10},
+	{0x1e, 0x88},
+	{0x1f, 0x78},
+	{0x20, 0x03},
+	{0x21, 0x40},
+	{0x22, 0xa0},
+	{0x24, 0x16},
+	{0x25, 0x01},
+	{0x26, 0x10},
+	{0x2d, 0x60},
+	{0x30, 0x01},
+	{0x31, 0x90},
+	{0x33, 0x06},
+	{0x34, 0x01},
+	{0xfe, 0x00},
+	{0x80, 0x7f},
+	{0x81, 0x26},
+	{0x82, 0xfa},
+	{0x83, 0x00},
+	{0x84, 0x00},
+	{0x86, 0x02},
+	{0x88, 0x03},
+	{0x89, 0x03},
+	{0x85, 0x08},
+	{0x8a, 0x00},
+	{0x8b, 0x00},
+	{0xb0, 0x55},
+	{0xc3, 0x00},
+	{0xc4, 0x80},
+	{0xc5, 0x90},
+	{0xc6, 0x3b},
+	{0xc7, 0x46},
+	{0xec, 0x06},
+	{0xed, 0x04},
+	{0xee, 0x60},
+	{0xef, 0x90},
+	{0xb6, 0x01},
+	{0x90, 0x01},
+	{0x91, 0x00},
+	{0x92, 0x00},
+	{0x93, 0x00},
+	{0x94, 0x00},
+	{0x95, 0x04},
+	{0x96, 0xb0},
+	{0x97, 0x06},
+	{0x98, 0x40},
+	/*BLK*/
+	{0xfe, 0x00},
+	{0x40, 0x42},
+	{0x41, 0x00},
+	{0x43, 0x5b},
+	{0x5e, 0x00},
+	{0x5f, 0x00},
+	{0x60, 0x00},
+	{0x61, 0x00},
+	{0x62, 0x00},
+	{0x63, 0x00},
+	{0x64, 0x00},
+	{0x65, 0x00},
+	{0x66, 0x20},
+	{0x67, 0x20},
+	{0x68, 0x20},
+	{0x69, 0x20},
+	{0x76, 0x00},
+	{0x6a, 0x08},
+	{0x6b, 0x08},
+	{0x6c, 0x08},
+	{0x6d, 0x08},
+	{0x6e, 0x08},
+	{0x6f, 0x08},
+	{0x70, 0x08},
+	{0x71, 0x08},
+	{0x76, 0x00},
+	{0x72, 0xf0},
+	{0x7e, 0x3c},
+	{0x7f, 0x00},
+	{0xfe, 0x02},
+	{0x48, 0x15},
+	{0x49, 0x00},
+	{0x4b, 0x0b},
+	{0xfe, 0x00},
+	/*AEC*/
+	{0xfe, 0x01},
+	{0x01, 0x04},
+	{0x02, 0xc0},
+	{0x03, 0x04},
+	{0x04, 0x90},
+	{0x05, 0x30},
+	{0x06, 0x90},
+	{0x07, 0x30},
+	{0x08, 0x80},
+	{0x09, 0x00},
+	{0x0a, 0x82},
+	{0x0b, 0x11},
+	{0x0c, 0x10},
+	{0x11, 0x10},
+	{0x13, 0x7b},
+	{0x17, 0x00},
+	{0x1c, 0x11},
+	{0x1e, 0x61},
+	{0x1f, 0x35},
+	{0x20, 0x40},
+	{0x22, 0x40},
+	{0x23, 0x20},
+	{0xfe, 0x02},
+	{0x0f, 0x04},
+	{0xfe, 0x01},
+	{0x12, 0x35},
+	{0x15, 0xb0},
+	{0x10, 0x31},
+	{0x3e, 0x28},
+	{0x3f, 0xb0},
+	{0x40, 0x90},
+	{0x41, 0x0f},
+	/*INTPEE*/
+	{0xfe, 0x02},
+	{0x90, 0x6c},
+	{0x91, 0x03},
+	{0x92, 0xcb},
+	{0x94, 0x33},
+	{0x95, 0x84},
+	{0x97, 0x65},
+	{0xa2, 0x11},
+	{0xfe, 0x00},
+	/*DNDD*/
+	{0xfe, 0x02},
+	{0x80, 0xc1},
+	{0x81, 0x08},
+	{0x82, 0x05},
+	{0x83, 0x08},
+	{0x84, 0x0a},
+	{0x86, 0xf0},
+	{0x87, 0x50},
+	{0x88, 0x15},
+	{0x89, 0xb0},
+	{0x8a, 0x30},
+	{0x8b, 0x10},
+	/*ASDE*/
+	{0xfe, 0x01},
+	{0x21, 0x04},
+	{0xfe, 0x02},
+	{0xa3, 0x50},
+	{0xa4, 0x20},
+	{0xa5, 0x40},
+	{0xa6, 0x80},
+	{0xab, 0x40},
+	{0xae, 0x0c},
+	{0xb3, 0x46},
+	{0xb4, 0x64},
+	{0xb6, 0x38},
+	{0xb7, 0x01},
+	{0xb9, 0x2b},
+	{0x3c, 0x04},
+	{0x3d, 0x15},
+	{0x4b, 0x06},
+	{0x4c, 0x20},
+	{0xfe, 0x00},
+	/*GAMMA*/
+	/*gamma1*/
+	{0xfe, 0x02},
+	{0x10, 0x09},
+	{0x11, 0x0d},
+	{0x12, 0x13},
+	{0x13, 0x19},
+	{0x14, 0x27},
+	{0x15, 0x37},
+	{0x16, 0x45},
+	{0x17, 0x53},
+	{0x18, 0x69},
+	{0x19, 0x7d},
+	{0x1a, 0x8f},
+	{0x1b, 0x9d},
+	{0x1c, 0xa9},
+	{0x1d, 0xbd},
+	{0x1e, 0xcd},
+	{0x1f, 0xd9},
+	{0x20, 0xe3},
+	{0x21, 0xea},
+	{0x22, 0xef},
+	{0x23, 0xf5},
+	{0x24, 0xf9},
+	{0x25, 0xff},
+	{0xfe, 0x00},
+	{0xc6, 0x20},
+	{0xc7, 0x2b},
+	/*gamma2*/
+	{0xfe, 0x02},
+	{0x26, 0x0f},
+	{0x27, 0x14},
+	{0x28, 0x19},
+	{0x29, 0x1e},
+	{0x2a, 0x27},
+	{0x2b, 0x33},
+	{0x2c, 0x3b},
+	{0x2d, 0x45},
+	{0x2e, 0x59},
+	{0x2f, 0x69},
+	{0x30, 0x7c},
+	{0x31, 0x89},
+	{0x32, 0x98},
+	{0x33, 0xae},
+	{0x34, 0xc0},
+	{0x35, 0xcf},
+	{0x36, 0xda},
+	{0x37, 0xe2},
+	{0x38, 0xe9},
+	{0x39, 0xf3},
+	{0x3a, 0xf9},
+	{0x3b, 0xff},
+	/*YCP*/
+	{0xfe, 0x02},
+	{0xd1, 0x32},
+	{0xd2, 0x32},
+	{0xd3, 0x40},
+	{0xd6, 0xf0},
+	{0xd7, 0x10},
+	{0xd8, 0xda},
+	{0xdd, 0x14},
+	{0xde, 0x86},
+	{0xed, 0x80},
+	{0xee, 0x00},
+	{0xef, 0x3f},
+	{0xd8, 0xd8},
+	/*abs*/
+	{0xfe, 0x01},
+	{0x9f, 0x40},
+	/*LSC*/
+	{0xfe, 0x01},
+	{0xc2, 0x14},
+	{0xc3, 0x0d},
+	{0xc4, 0x0c},
+	{0xc8, 0x15},
+	{0xc9, 0x0d},
+	{0xca, 0x0a},
+	{0xbc, 0x24},
+	{0xbd, 0x10},
+	{0xbe, 0x0b},
+	{0xb6, 0x25},
+	{0xb7, 0x16},
+	{0xb8, 0x15},
+	{0xc5, 0x00},
+	{0xc6, 0x00},
+	{0xc7, 0x00},
+	{0xcb, 0x00},
+	{0xcc, 0x00},
+	{0xcd, 0x00},
+	{0xbf, 0x07},
+	{0xc0, 0x00},
+	{0xc1, 0x00},
+	{0xb9, 0x00},
+	{0xba, 0x00},
+	{0xbb, 0x00},
+	{0xaa, 0x01},
+	{0xab, 0x01},
+	{0xac, 0x00},
+	{0xad, 0x05},
+	{0xae, 0x06},
+	{0xaf, 0x0e},
+	{0xb0, 0x0b},
+	{0xb1, 0x07},
+	{0xb2, 0x06},
+	{0xb3, 0x17},
+	{0xb4, 0x0e},
+	{0xb5, 0x0e},
+	{0xd0, 0x09},
+	{0xd1, 0x00},
+	{0xd2, 0x00},
+	{0xd6, 0x08},
+	{0xd7, 0x00},
+	{0xd8, 0x00},
+	{0xd9, 0x00},
+	{0xda, 0x00},
+	{0xdb, 0x00},
+	{0xd3, 0x0a},
+	{0xd4, 0x00},
+	{0xd5, 0x00},
+	{0xa4, 0x00},
+	{0xa5, 0x00},
+	{0xa6, 0x77},
+	{0xa7, 0x77},
+	{0xa8, 0x77},
+	{0xa9, 0x77},
+	{0xa1, 0x80},
+	{0xa2, 0x80},
+
+	{0xfe, 0x01},
+	{0xdf, 0x0d},
+	{0xdc, 0x25},
+	{0xdd, 0x30},
+	{0xe0, 0x77},
+	{0xe1, 0x80},
+	{0xe2, 0x77},
+	{0xe3, 0x90},
+	{0xe6, 0x90},
+	{0xe7, 0xa0},
+	{0xe8, 0x90},
+	{0xe9, 0xa0},
+	{0xfe, 0x00},
+	/*AWB*/
+	{0xfe, 0x01},
+	{0x4f, 0x00},
+	{0x4f, 0x00},
+	{0x4b, 0x01},
+	{0x4f, 0x00},
+
+	{0x4c, 0x01},
+	{0x4d, 0x71},
+	{0x4e, 0x01},
+	{0x4c, 0x01},
+	{0x4d, 0x91},
+	{0x4e, 0x01},
+	{0x4c, 0x01},
+	{0x4d, 0x70},
+	{0x4e, 0x01},
+	{0x4c, 0x01},
+	{0x4d, 0x90},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0xb0},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0x8f},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0x6f},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0xaf},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0xd0},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0xf0},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0xcf},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0xef},
+	{0x4e, 0x02},
+	{0x4c, 0x01},
+	{0x4d, 0x6e},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x8e},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0xae},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0xce},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x4d},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x6d},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x8d},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0xad},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0xcd},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x4c},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x6c},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x8c},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0xac},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0xcc},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0xcb},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x4b},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x6b},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x8b},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0xab},
+	{0x4e, 0x03},
+	{0x4c, 0x01},
+	{0x4d, 0x8a},
+	{0x4e, 0x04},
+	{0x4c, 0x01},
+	{0x4d, 0xaa},
+	{0x4e, 0x04},
+	{0x4c, 0x01},
+	{0x4d, 0xca},
+	{0x4e, 0x04},
+	{0x4c, 0x01},
+	{0x4d, 0xca},
+	{0x4e, 0x04},
+	{0x4c, 0x01},
+	{0x4d, 0xc9},
+	{0x4e, 0x04},
+	{0x4c, 0x01},
+	{0x4d, 0x8a},
+	{0x4e, 0x04},
+	{0x4c, 0x01},
+	{0x4d, 0x89},
+	{0x4e, 0x04},
+	{0x4c, 0x01},
+	{0x4d, 0xa9},
+	{0x4e, 0x04},
+	{0x4c, 0x02},
+	{0x4d, 0x0b},
+	{0x4e, 0x05},
+	{0x4c, 0x02},
+	{0x4d, 0x0a},
+	{0x4e, 0x05},
+	{0x4c, 0x01},
+	{0x4d, 0xeb},
+	{0x4e, 0x05},
+	{0x4c, 0x01},
+	{0x4d, 0xea},
+	{0x4e, 0x05},
+	{0x4c, 0x02},
+	{0x4d, 0x09},
+	{0x4e, 0x05},
+	{0x4c, 0x02},
+	{0x4d, 0x29},
+	{0x4e, 0x05},
+	{0x4c, 0x02},
+	{0x4d, 0x2a},
+	{0x4e, 0x05},
+	{0x4c, 0x02},
+	{0x4d, 0x4a},
+	{0x4e, 0x05},
+	{0x4c, 0x02},
+	{0x4d, 0x8a},
+	{0x4e, 0x06},
+	{0x4c, 0x02},
+	{0x4d, 0x49},
+	{0x4e, 0x06},
+	{0x4c, 0x02},
+	{0x4d, 0x69},
+	{0x4e, 0x06},
+	{0x4c, 0x02},
+	{0x4d, 0x89},
+	{0x4e, 0x06},
+	{0x4c, 0x02},
+	{0x4d, 0xa9},
+	{0x4e, 0x06},
+	{0x4c, 0x02},
+	{0x4d, 0x48},
+	{0x4e, 0x06},
+	{0x4c, 0x02},
+	{0x4d, 0x68},
+	{0x4e, 0x06},
+	{0x4c, 0x02},
+	{0x4d, 0x69},
+	{0x4e, 0x06},
+	{0x4c, 0x02},
+	{0x4d, 0xca},
+	{0x4e, 0x07},
+	{0x4c, 0x02},
+	{0x4d, 0xc9},
+	{0x4e, 0x07},
+	{0x4c, 0x02},
+	{0x4d, 0xe9},
+	{0x4e, 0x07},
+	{0x4c, 0x03},
+	{0x4d, 0x09},
+	{0x4e, 0x07},
+	{0x4c, 0x02},
+	{0x4d, 0xc8},
+	{0x4e, 0x07},
+	{0x4c, 0x02},
+	{0x4d, 0xe8},
+	{0x4e, 0x07},
+	{0x4c, 0x02},
+	{0x4d, 0xa7},
+	{0x4e, 0x07},
+	{0x4c, 0x02},
+	{0x4d, 0xc7},
+	{0x4e, 0x07},
+	{0x4c, 0x02},
+	{0x4d, 0xe7},
+	{0x4e, 0x07},
+	{0x4c, 0x03},
+	{0x4d, 0x07},
+	{0x4e, 0x07},
+
+	{0x4f, 0x01},
+	{0x50, 0x80},
+	{0x51, 0xa8},
+	{0x52, 0x47},
+	{0x53, 0x38},
+	{0x54, 0xc7},
+	{0x56, 0x0e},
+	{0x58, 0x08},
+	{0x5b, 0x00},
+	{0x5c, 0x74},
+	{0x5d, 0x8b},
+	{0x61, 0xdb},
+	{0x62, 0xb8},
+	{0x63, 0x86},
+	{0x64, 0xc0},
+	{0x65, 0x04},
+	{0x67, 0xa8},
+	{0x68, 0xb0},
+	{0x69, 0x00},
+	{0x6a, 0xa8},
+	{0x6b, 0xb0},
+	{0x6c, 0xaf},
+	{0x6d, 0x8b},
+	{0x6e, 0x50},
+	{0x6f, 0x18},
+	{0x73, 0xf0},
+	{0x70, 0x0d},
+	{0x71, 0x60},
+	{0x72, 0x80},
+	{0x74, 0x01},
+	{0x75, 0x01},
+	{0x7f, 0x0c},
+	{0x76, 0x70},
+	{0x77, 0x58},
+	{0x78, 0xa0},
+	{0x79, 0x5e},
+	{0x7a, 0x54},
+	{0x7b, 0x58},
+	{0xfe, 0x00},
+	/*CC*/
+	{0xfe, 0x02},
+	{0xc0, 0x01},
+	{0xc1, 0x44},
+	{0xc2, 0xfd},
+	{0xc3, 0x04},
+	{0xc4, 0xF0},
+	{0xc5, 0x48},
+	{0xc6, 0xfd},
+	{0xc7, 0x46},
+	{0xc8, 0xfd},
+	{0xc9, 0x02},
+	{0xca, 0xe0},
+	{0xcb, 0x45},
+	{0xcc, 0xec},
+	{0xcd, 0x48},
+	{0xce, 0xf0},
+	{0xcf, 0xf0},
+	{0xe3, 0x0c},
+	{0xe4, 0x4b},
+	{0xe5, 0xe0},
+	/*ABS*/
+	{0xfe, 0x01},
+	{0x9f, 0x40},
+	{0xfe, 0x00},
+	/*OUTPUT*/
+	{0xfe, 0x00},
+	{0xf2, 0x00},
+
+	/*frame rate 50Hz*/
+	{0xfe, 0x00},
+	{0x05, 0x01},
+	{0x06, 0x56},
+	{0x07, 0x00},
+	{0x08, 0x32},
+	{0xfe, 0x01},
+	{0x25, 0x00},
+	{0x26, 0xfa},
+
+	{0x27, 0x04},
+	{0x28, 0xe2},
+	{0x29, 0x06},
+	{0x2a, 0xd6},
+	{0x2b, 0x07},
+	{0x2c, 0xd0},
+	{0x2d, 0x0b},
+	{0x2e, 0xb8},
+	{0xfe, 0x00},
+
+	{0xfe, 0x02},
+	{0x40, 0xbf},
+	{0x46, 0xcf},
+	{0xfe, 0x00},
+
+	{0xfe, 0x03},
+	{0x02, 0x22},
+	{0x03, 0x10},
+	{0x04, 0x10},
+	{0x05, 0x00},
+	{0x06, 0x88},
+	{0x01, 0x83},
+	{0x10, 0x84},
+	{0x11, 0x1e},
+	{0x12, 0x80},
+	{0x13, 0x0c},
+	{0x15, 0x10},
+	{0x17, 0xf0},
+	{0x21, 0x10},
+	{0x22, 0x04},
+	{0x23, 0x10},
+	{0x24, 0x10},
+	{0x25, 0x10},
+	{0x26, 0x05},
+	{0x29, 0x03},
+	{0x2a, 0x0a},
+	{0x2b, 0x06},
+	{0xfe, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static const struct sensor_register gc2145_mipi_full[] = {
+	{0xfe, 0x00},
+	{0x05, 0x01},
+	{0x06, 0x56},
+	{0x07, 0x00},
+	{0x08, 0x32},
+	{0xfe, 0x01},
+	{0x25, 0x00},
+	{0x26, 0xfa},
+
+	{0x27, 0x04},
+	{0x28, 0xe2},
+	{0x29, 0x04},
+	{0x2a, 0xe2},
+	{0x2b, 0x04},
+	{0x2c, 0xe2},
+	{0x2d, 0x04},
+	{0x2e, 0xe2},
+	{0xfe, 0x00},
+
+	{0xfe, 0x00},
+	{0xfd, 0x00},
+	{0xfa, 0x11},
+	{0x18, 0x22},
+	/*crop window*/
+	{0xfe, 0x00},
+	{0x90, 0x01},
+	{0x91, 0x00},
+	{0x92, 0x00},
+	{0x93, 0x00},
+	{0x94, 0x00},
+	{0x95, 0x04},
+	{0x96, 0xb0},
+	{0x97, 0x06},
+	{0x98, 0x40},
+	{0x99, 0x11},
+	{0x9a, 0x06},
+	/*AWB*/
+	{0xfe, 0x00},
+	{0xec, 0x06},
+	{0xed, 0x04},
+	{0xee, 0x60},
+	{0xef, 0x90},
+	{0xfe, 0x01},
+	{0x74, 0x01},
+
+	{0xfe, 0x00},
+	{0x7e, 0x3c},
+	{0x7f, 0x00},
+	{0xfe, 0x01},
+	{0xa0, 0x03},
+
+	/*AEC*/
+	{0xfe, 0x01},
+	{0x01, 0x04},
+	{0x02, 0xc0},
+	{0x03, 0x04},
+	{0x04, 0x90},
+	{0x05, 0x30},
+	{0x06, 0x90},
+	{0x07, 0x30},
+	{0x08, 0x80},
+	{0x0a, 0x82},
+	{0x1b, 0x01},
+	{0xfe, 0x00},
+	{0xfe, 0x01},
+	{0x21, 0x15},
+	{0xfe, 0x00},
+	{0x20, 0x15},
+	{0xfe, 0x03},
+	{0x12, 0x80},
+	{0x13, 0x0c},
+	{0x04, 0x01},
+	{0x05, 0x00},
+	{0xfe, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static const struct sensor_register gc2145_mipi_svga_10fps[] = {
+	/*frame rate 50Hz*/
+	{0xfe, 0x00},
+	{0x05, 0x04},
+	{0x06, 0x40},
+	{0x07, 0x07},
+	{0x08, 0x40},
+	{0xb6, 0x01},
+	{0xfd, 0x03},
+	{0xfa, 0x00},
+	{0x18, 0x42},
+	/*crop window*/
+	{0xfe, 0x00},
+	{0x90, 0x01},
+	{0x91, 0x00},
+	{0x92, 0x00},
+	{0x93, 0x00},
+	{0x94, 0x00},
+	{0x95, 0x02},
+	{0x96, 0x58},
+	{0x97, 0x03},
+	{0x98, 0x20},
+	{0x99, 0x11},
+	{0x9a, 0x06},
+	/*AWB*/
+	{0xfe, 0x00},
+	{0xec, 0x02},
+	{0xed, 0x02},
+	{0xee, 0x30},
+	{0xef, 0x48},
+	{0xfe, 0x02},
+	{0x9d, 0x08},
+	{0xfe, 0x01},
+	{0x74, 0x00},
+
+	{0xfe, 0x00},
+	{0x7e, 0x00},
+	{0x7f, 0x60},
+	{0xfe, 0x01},
+	{0xa0, 0x0b},
+	/*AEC*/
+	{0xfe, 0x01},
+	{0x01, 0x04},
+	{0x02, 0x60},
+	{0x03, 0x02},
+	{0x04, 0x48},
+	{0x05, 0x18},
+	{0x06, 0x50},
+	{0x07, 0x10},
+	{0x08, 0x38},
+	{0x0a, 0xc0},
+	{0x1b, 0x04},
+	{0x21, 0x04},
+	{0xfe, 0x00},
+	{0x20, 0x03},
+	{0xfe, 0x03},
+	{0x12, 0x40},
+	{0x13, 0x06},
+	{0x04, 0x01},
+	{0x05, 0x00},
+	{0xfe, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static const struct sensor_register gc2145_mipi_svga_20fps[] = {
+	/*frame rate 50Hz*/
+	{0xfe, 0x00},
+	{0x05, 0x02},
+	{0x06, 0x20},
+	{0x07, 0x03},
+	{0x08, 0x80},
+	{0xb6, 0x01},
+	{0xfd, 0x03},
+	{0xfa, 0x00},
+	{0x18, 0x42},
+	/*crop window*/
+	{0xfe, 0x00},
+	{0x90, 0x01},
+	{0x91, 0x00},
+	{0x92, 0x00},
+	{0x93, 0x00},
+	{0x94, 0x00},
+	{0x95, 0x02},
+	{0x96, 0x58},
+	{0x97, 0x03},
+	{0x98, 0x20},
+	{0x99, 0x11},
+	{0x9a, 0x06},
+	/*AWB*/
+	{0xfe, 0x00},
+	{0xec, 0x02},
+	{0xed, 0x02},
+	{0xee, 0x30},
+	{0xef, 0x48},
+	{0xfe, 0x02},
+	{0x9d, 0x08},
+	{0xfe, 0x01},
+	{0x74, 0x00},
+
+	{0xfe, 0x00},
+	{0x7e, 0x00},
+	{0x7f, 0x60},
+	{0xfe, 0x01},
+	{0xa0, 0x0b},
+	/*AEC*/
+	{0xfe, 0x01},
+	{0x01, 0x04},
+	{0x02, 0x60},
+	{0x03, 0x02},
+	{0x04, 0x48},
+	{0x05, 0x18},
+	{0x06, 0x50},
+	{0x07, 0x10},
+	{0x08, 0x38},
+	{0x0a, 0xc0},
+	{0x1b, 0x04},
+	{0x21, 0x04},
+	{0xfe, 0x00},
+	{0x20, 0x03},
+	{0xfe, 0x03},
+	{0x12, 0x40},
+	{0x13, 0x06},
+	{0x04, 0x01},
+	{0x05, 0x00},
+	{0xfe, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static const struct sensor_register gc2145_mipi_svga_30fps[] = {
+	/*frame rate 50Hz*/
+	{0xfe, 0x00},
+	{0x05, 0x02},
+	{0x06, 0x20},
+	{0x07, 0x00},
+	{0x08, 0xb8},
+	{0xfe, 0x01},
+	{0x25, 0x01},
+	{0x26, 0xac},
+
+	{0x27, 0x05},/* 4e2 pad */
+	{0x28, 0x04},
+	{0x29, 0x05},/* 6d6 pad */
+	{0x2a, 0x04},
+	{0x2b, 0x05},/* 7d0 pad */
+	{0x2c, 0x04},
+	{0x2d, 0x05},
+	{0x2e, 0x04},
+	{0xfe, 0x00},
+
+	{0xfe, 0x00},
+	{0xfd, 0x01},
+	{0xfa, 0x00},
+	{0x18, 0x62},
+	{0xfd, 0x03},
+	/*crop window*/
+	{0xfe, 0x00},
+	{0x90, 0x01},
+	{0x91, 0x00},
+	{0x92, 0x00},
+	{0x93, 0x00},
+	{0x94, 0x00},
+	{0x95, 0x02},
+	{0x96, 0x58},
+	{0x97, 0x03},
+	{0x98, 0x20},
+	{0x99, 0x11},
+	{0x9a, 0x06},
+	/*AWB*/
+	{0xfe, 0x00},
+	{0xec, 0x02},
+	{0xed, 0x02},
+	{0xee, 0x30},
+	{0xef, 0x48},
+	{0xfe, 0x02},
+	{0x9d, 0x08},
+	{0xfe, 0x01},
+	{0x74, 0x00},
+
+	{0xfe, 0x00},
+	{0x7e, 0x00},
+	{0x7f, 0x60},
+	{0xfe, 0x01},
+	{0xa0, 0x0b},
+	/*AEC*/
+	{0xfe, 0x01},
+	{0x01, 0x04},
+	{0x02, 0x60},
+	{0x03, 0x02},
+	{0x04, 0x48},
+	{0x05, 0x18},
+	{0x06, 0x50},
+	{0x07, 0x10},
+	{0x08, 0x38},
+	{0x0a, 0xc0},
+	{0x1b, 0x04},
+	{0x21, 0x04},
+	{0xfe, 0x00},
+	{0x20, 0x03},
+	{0xfe, 0x03},
+	{0x12, 0x40},
+	{0x13, 0x06},
+	{0x04, 0x01},
+	{0x05, 0x00},
+	{0xfe, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static const struct gc2145_framesize gc2145_dvp_framesizes[] = {
 	{ /* SVGA */
 		.width		= 800,
 		.height		= 600,
-		.fps		= 20,
-		.regs		= gc2145_svga_regs_20fps,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 200000,
+		},
+		.regs		= gc2145_dvp_svga_20fps,
 	}, { /* SVGA */
 		.width		= 800,
 		.height		= 600,
-		.fps		= 30,
-		.regs		= gc2145_svga_regs_30fps,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 300000,
+		},
+		.regs		= gc2145_dvp_svga_30fps,
 	}, { /* FULL */
 		.width		= 1600,
 		.height		= 1200,
-		.fps		= 20,
-		.regs		= gc2145_full_regs,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 200000,
+		},
+		.regs		= gc2145_dvp_full,
 	}
+};
+
+static const struct gc2145_framesize gc2145_mipi_framesizes[] = {
+	{ /* SVGA */
+		.width		= 800,
+		.height		= 600,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 100000,
+		},
+		.regs		= gc2145_mipi_svga_10fps,
+	}, { /* SVGA */
+		.width		= 800,
+		.height		= 600,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 200000,
+		},
+		.regs		= gc2145_mipi_svga_20fps,
+	}, { /* SVGA */
+		.width		= 800,
+		.height		= 600,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 300000,
+		},
+		.regs		= gc2145_mipi_svga_30fps,
+	}, { /* FULL */
+		.width		= 1600,
+		.height		= 1200,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 100000,
+		},
+		.regs		= gc2145_mipi_full,
+	}
+};
+
+static const s64 link_freq_menu_items[] = {
+	240000000
 };
 
 static const struct gc2145_pixfmt gc2145_formats[] = {
@@ -1046,6 +2024,8 @@ static int gc2145_write(struct i2c_client *client, u8 reg, u8 val)
 	struct i2c_msg msg;
 	u8 buf[2];
 	int ret;
+
+	dev_dbg(&client->dev, "write reg(0x%x val:0x%x)!\n", reg, val);
 
 	buf[0] = reg & 0xFF;
 	buf[1] = val;
@@ -1115,10 +2095,11 @@ static int gc2145_write_array(struct i2c_client *client,
 	return ret;
 }
 
-static void gc2145_get_default_format(struct v4l2_mbus_framefmt *format)
+static void gc2145_get_default_format(struct gc2145 *gc2145,
+				      struct v4l2_mbus_framefmt *format)
 {
-	format->width = gc2145_framesizes[0].width;
-	format->height = gc2145_framesizes[0].height;
+	format->width = gc2145->framesize_cfg[0].width;
+	format->height = gc2145->framesize_cfg[0].height;
 	format->colorspace = V4L2_COLORSPACE_SRGB;
 	format->code = gc2145_formats[0].code;
 	format->field = V4L2_FIELD_NONE;
@@ -1127,11 +2108,19 @@ static void gc2145_get_default_format(struct v4l2_mbus_framefmt *format)
 static void gc2145_set_streaming(struct gc2145 *gc2145, int on)
 {
 	struct i2c_client *client = gc2145->client;
-	int ret;
+	int ret = 0;
+	u8 val;
 
 	dev_dbg(&client->dev, "%s: on: %d\n", __func__, on);
 
-	ret = gc2145_write(client, REG_SOFTWARE_STANDBY, on);
+	if (gc2145->bus_cfg.bus_type == V4L2_MBUS_CSI2) {
+		val = on ? 0x94 : 0x84;
+		ret = gc2145_write(client, 0xfe, 0x03);
+		ret |= gc2145_write(client, 0x10, val);
+	} else {
+		val = on ? 0x0f : 0;
+		ret = gc2145_write(client, 0xf2, val);
+	}
 	if (ret)
 		dev_err(&client->dev, "gc2145 soft standby failed\n");
 }
@@ -1160,12 +2149,13 @@ static int gc2145_enum_frame_sizes(struct v4l2_subdev *sd,
 				   struct v4l2_subdev_pad_config *cfg,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
+	struct gc2145 *gc2145 = to_gc2145(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int i = ARRAY_SIZE(gc2145_formats);
 
 	dev_dbg(&client->dev, "%s:\n", __func__);
 
-	if (fse->index >= ARRAY_SIZE(gc2145_framesizes))
+	if (fse->index >= gc2145->cfg_num)
 		return -EINVAL;
 
 	while (--i)
@@ -1174,9 +2164,9 @@ static int gc2145_enum_frame_sizes(struct v4l2_subdev *sd,
 
 	fse->code = gc2145_formats[i].code;
 
-	fse->min_width  = gc2145_framesizes[fse->index].width;
+	fse->min_width  = gc2145->framesize_cfg[fse->index].width;
 	fse->max_width  = fse->min_width;
-	fse->max_height = gc2145_framesizes[fse->index].height;
+	fse->max_height = gc2145->framesize_cfg[fse->index].height;
 	fse->min_height = fse->max_height;
 
 	return 0;
@@ -1216,13 +2206,14 @@ static int gc2145_get_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static void __gc2145_try_frame_size_fps(struct v4l2_mbus_framefmt *mf,
+static void __gc2145_try_frame_size_fps(struct gc2145 *gc2145,
+					struct v4l2_mbus_framefmt *mf,
 					const struct gc2145_framesize **size,
 					unsigned int fps)
 {
-	const struct gc2145_framesize *fsize = &gc2145_framesizes[0];
+	const struct gc2145_framesize *fsize = &gc2145->framesize_cfg[0];
 	const struct gc2145_framesize *match = NULL;
-	unsigned int i = ARRAY_SIZE(gc2145_framesizes);
+	unsigned int i = gc2145->cfg_num;
 	unsigned int min_err = UINT_MAX;
 
 	while (i--) {
@@ -1236,13 +2227,14 @@ static void __gc2145_try_frame_size_fps(struct v4l2_mbus_framefmt *mf,
 	}
 
 	if (!match) {
-		match = &gc2145_framesizes[0];
+		match = &gc2145->framesize_cfg[0];
 	} else {
-		fsize = &gc2145_framesizes[0];
-		for (i = 0; i < ARRAY_SIZE(gc2145_framesizes); i++) {
+		fsize = &gc2145->framesize_cfg[0];
+		for (i = 0; i < gc2145->cfg_num; i++) {
 			if (fsize->width == match->width &&
 			    fsize->height == match->height &&
-			    fps >= fsize->fps)
+			    fps >= DIV_ROUND_CLOSEST(fsize->max_fps.denominator,
+				fsize->max_fps.numerator))
 				match = fsize;
 
 			fsize++;
@@ -1269,7 +2261,7 @@ static int gc2145_set_fmt(struct v4l2_subdev *sd,
 
 	dev_dbg(&client->dev, "%s enter\n", __func__);
 
-	__gc2145_try_frame_size_fps(mf, &size, gc2145->fps);
+	__gc2145_try_frame_size_fps(gc2145, mf, &size, gc2145->fps);
 
 	while (--index >= 0)
 		if (gc2145_formats[index].code == mf->code)
@@ -1299,7 +2291,6 @@ static int gc2145_set_fmt(struct v4l2_subdev *sd,
 
 		gc2145->frame_size = size;
 		gc2145->format = fmt->format;
-
 	}
 
 	mutex_unlock(&gc2145->lock);
@@ -1312,7 +2303,11 @@ static int gc2145_s_stream(struct v4l2_subdev *sd, int on)
 	struct gc2145 *gc2145 = to_gc2145(sd);
 	int ret = 0;
 
-	dev_dbg(&client->dev, "%s: on: %d\n", __func__, on);
+	dev_info(&client->dev, "%s: on: %d, %dx%d@%d\n", __func__, on,
+		gc2145->frame_size->width,
+		gc2145->frame_size->height,
+		DIV_ROUND_CLOSEST(gc2145->frame_size->max_fps.denominator,
+				  gc2145->frame_size->max_fps.numerator));
 
 	mutex_lock(&gc2145->lock);
 
@@ -1323,28 +2318,16 @@ static int gc2145_s_stream(struct v4l2_subdev *sd, int on)
 
 	if (!on) {
 		/* Stop Streaming Sequence */
-		gc2145_set_streaming(gc2145, 0x00);
+		gc2145_set_streaming(gc2145, on);
 		gc2145->streaming = on;
-		if (!IS_ERR(gc2145->pwdn_gpio)) {
-			gpiod_set_value_cansleep(gc2145->pwdn_gpio, 1);
-			usleep_range(2000, 5000);
-		}
 		goto unlock;
 	}
-	if (!IS_ERR(gc2145->pwdn_gpio)) {
-		gpiod_set_value_cansleep(gc2145->pwdn_gpio, 0);
-		usleep_range(2000, 5000);
-	}
-
-	ret = gc2145_write_array(client, gc2145_init_regs);
-	if (ret)
-		goto unlock;
 
 	ret = gc2145_write_array(client, gc2145->frame_size->regs);
 	if (ret)
 		goto unlock;
 
-	gc2145_set_streaming(gc2145, 0x0f);
+	gc2145_set_streaming(gc2145, on);
 	gc2145->streaming = on;
 
 unlock:
@@ -1386,13 +2369,14 @@ static const char * const gc2145_test_pattern_menu[] = {
 #ifdef CONFIG_VIDEO_V4L2_SUBDEV_API
 static int gc2145_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
+	struct gc2145 *gc2145 = to_gc2145(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *format =
 				v4l2_subdev_get_try_format(sd, fh->pad, 0);
 
 	dev_dbg(&client->dev, "%s:\n", __func__);
 
-	gc2145_get_default_format(format);
+	gc2145_get_default_format(gc2145, format);
 
 	return 0;
 }
@@ -1401,10 +2385,19 @@ static int gc2145_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 static int gc2145_g_mbus_config(struct v4l2_subdev *sd,
 				struct v4l2_mbus_config *config)
 {
-	config->type = V4L2_MBUS_PARALLEL;
-	config->flags = V4L2_MBUS_HSYNC_ACTIVE_HIGH |
-			V4L2_MBUS_VSYNC_ACTIVE_LOW |
-			V4L2_MBUS_PCLK_SAMPLE_RISING;
+	struct gc2145 *gc2145 = to_gc2145(sd);
+
+	if (gc2145->bus_cfg.bus_type == V4L2_MBUS_CSI2) {
+		config->type = V4L2_MBUS_CSI2;
+		config->flags = V4L2_MBUS_CSI2_1_LANE |
+						V4L2_MBUS_CSI2_CHANNEL_0 |
+						V4L2_MBUS_CSI2_CONTINUOUS_CLOCK;
+	} else {
+		config->type = V4L2_MBUS_PARALLEL;
+		config->flags = V4L2_MBUS_HSYNC_ACTIVE_HIGH |
+				V4L2_MBUS_VSYNC_ACTIVE_LOW |
+				V4L2_MBUS_PCLK_SAMPLE_RISING;
+	}
 
 	return 0;
 }
@@ -1415,8 +2408,7 @@ static int gc2145_g_frame_interval(struct v4l2_subdev *sd,
 	struct gc2145 *gc2145 = to_gc2145(sd);
 
 	mutex_lock(&gc2145->lock);
-	fi->interval.numerator = 10000;
-	fi->interval.denominator = gc2145->fps * 10000;
+	fi->interval = gc2145->frame_size->max_fps;
 	mutex_unlock(&gc2145->lock);
 
 	return 0;
@@ -1433,16 +2425,23 @@ static int gc2145_s_frame_interval(struct v4l2_subdev *sd,
 	int ret = 0;
 
 	dev_dbg(&client->dev, "Setting %d/%d frame interval\n",
-		 fi->interval.numerator, fi->interval.denominator);
+		fi->interval.numerator, fi->interval.denominator);
 
 	mutex_lock(&gc2145->lock);
+
 	if (gc2145->format.width == 1600)
 		goto unlock;
+
 	fps = DIV_ROUND_CLOSEST(fi->interval.denominator,
 				fi->interval.numerator);
 	mf = gc2145->format;
-	__gc2145_try_frame_size_fps(&mf, &size, fps);
+	__gc2145_try_frame_size_fps(gc2145, &mf, &size, fps);
+
 	if (gc2145->frame_size != size) {
+		dev_info(&client->dev, "%s match wxh@FPS is %dx%d@%d\n",
+			__func__, size->width, size->height,
+			DIV_ROUND_CLOSEST(size->max_fps.denominator,
+				size->max_fps.numerator));
 		ret = gc2145_write_array(client, size->regs);
 		if (ret)
 			goto unlock;
@@ -1455,10 +2454,147 @@ unlock:
 	return ret;
 }
 
+static void gc2145_get_module_inf(struct gc2145 *gc2145,
+				  struct rkmodule_inf *inf)
+{
+	memset(inf, 0, sizeof(*inf));
+	strlcpy(inf->base.sensor, DRIVER_NAME, sizeof(inf->base.sensor));
+	strlcpy(inf->base.module, gc2145->module_name,
+		sizeof(inf->base.module));
+	strlcpy(inf->base.lens, gc2145->len_name, sizeof(inf->base.lens));
+}
+
+static long gc2145_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
+{
+	struct gc2145 *gc2145 = to_gc2145(sd);
+	long ret = 0;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		gc2145_get_module_inf(gc2145, (struct rkmodule_inf *)arg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long gc2145_compat_ioctl32(struct v4l2_subdev *sd,
+				  unsigned int cmd, unsigned long arg)
+{
+	void __user *up = compat_ptr(arg);
+	struct rkmodule_inf *inf;
+	struct rkmodule_awb_cfg *cfg;
+	long ret;
+
+	switch (cmd) {
+	case RKMODULE_GET_MODULE_INFO:
+		inf = kzalloc(sizeof(*inf), GFP_KERNEL);
+		if (!inf) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = gc2145_ioctl(sd, cmd, inf);
+		if (!ret)
+			ret = copy_to_user(up, inf, sizeof(*inf));
+		kfree(inf);
+		break;
+	case RKMODULE_AWB_CFG:
+		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
+		if (!cfg) {
+			ret = -ENOMEM;
+			return ret;
+		}
+
+		ret = copy_from_user(cfg, up, sizeof(*cfg));
+		if (!ret)
+			ret = gc2145_ioctl(sd, cmd, cfg);
+		kfree(cfg);
+		break;
+	default:
+		ret = -ENOIOCTLCMD;
+		break;
+	}
+
+	return ret;
+}
+#endif
+
+static int gc2145_init(struct v4l2_subdev *sd, u32 val)
+{
+	int ret;
+	struct gc2145 *gc2145 = to_gc2145(sd);
+	struct i2c_client *client = gc2145->client;
+
+	dev_info(&client->dev, "%s(%d)\n", __func__, __LINE__);
+
+	/* soft reset */
+	ret = gc2145_write(client, 0xfe, 0xf0);
+	if (gc2145->bus_cfg.bus_type == V4L2_MBUS_CSI2)
+		ret = gc2145_write_array(client, gc2145_mipi_init_regs);
+	else
+		ret = gc2145_write_array(client, gc2145_dvp_init_regs);
+
+	return ret;
+}
+
+static int gc2145_power(struct v4l2_subdev *sd, int on)
+{
+	int ret;
+	struct gc2145 *gc2145 = to_gc2145(sd);
+	struct i2c_client *client = gc2145->client;
+	struct device *dev = &gc2145->client->dev;
+
+	dev_info(&client->dev, "%s(%d) on(%d)\n", __func__, __LINE__, on);
+	if (on) {
+		if (!IS_ERR(gc2145->pwdn_gpio)) {
+			gpiod_set_value_cansleep(gc2145->pwdn_gpio, 0);
+			usleep_range(2000, 5000);
+		}
+		ret = gc2145_init(sd, 0);
+		usleep_range(10000, 20000);
+		if (ret)
+			dev_err(dev, "init error\n");
+	} else {
+		if (!IS_ERR(gc2145->pwdn_gpio)) {
+			gpiod_set_value_cansleep(gc2145->pwdn_gpio, 1);
+			usleep_range(2000, 5000);
+		}
+	}
+	return 0;
+}
+
+static int gc2145_enum_frame_interval(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_pad_config *cfg,
+				       struct v4l2_subdev_frame_interval_enum *fie)
+{
+	struct gc2145 *gc2145 = to_gc2145(sd);
+
+	if (fie->index >= gc2145->cfg_num)
+		return -EINVAL;
+
+	if (fie->code != MEDIA_BUS_FMT_UYVY8_2X8)
+		return -EINVAL;
+
+	fie->width = gc2145->framesize_cfg[fie->index].width;
+	fie->height = gc2145->framesize_cfg[fie->index].height;
+	fie->interval = gc2145->framesize_cfg[fie->index].max_fps;
+	return 0;
+}
+
 static const struct v4l2_subdev_core_ops gc2145_subdev_core_ops = {
 	.log_status = v4l2_ctrl_subdev_log_status,
 	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
 	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
+	.ioctl = gc2145_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = gc2145_compat_ioctl32,
+#endif
+	.s_power = gc2145_power,
 };
 
 static const struct v4l2_subdev_video_ops gc2145_subdev_video_ops = {
@@ -1471,6 +2607,7 @@ static const struct v4l2_subdev_video_ops gc2145_subdev_video_ops = {
 static const struct v4l2_subdev_pad_ops gc2145_subdev_pad_ops = {
 	.enum_mbus_code = gc2145_enum_mbus_code,
 	.enum_frame_size = gc2145_enum_frame_sizes,
+	.enum_frame_interval = gc2145_enum_frame_interval,
 	.get_fmt = gc2145_get_fmt,
 	.set_fmt = gc2145_set_fmt,
 };
@@ -1524,6 +2661,14 @@ static int __gc2145_power_on(struct gc2145 *gc2145)
 	int ret;
 	struct device *dev = &gc2145->client->dev;
 
+	dev_info(dev, "%s(%d)\n", __func__, __LINE__);
+	if (!IS_ERR(gc2145->reset_gpio)) {
+		gpiod_set_value_cansleep(gc2145->reset_gpio, 0);
+		usleep_range(2000, 5000);
+		gpiod_set_value_cansleep(gc2145->reset_gpio, 1);
+		usleep_range(2000, 5000);
+	}
+
 	if (!IS_ERR(gc2145->xvclk)) {
 		ret = clk_set_rate(gc2145->xvclk, 24000000);
 		if (ret < 0)
@@ -1537,7 +2682,7 @@ static int __gc2145_power_on(struct gc2145 *gc2145)
 
 	if (!IS_ERR(gc2145->supplies)) {
 		ret = regulator_bulk_enable(GC2145_NUM_SUPPLIES,
-			gc2145->supplies);
+					    gc2145->supplies);
 		if (ret < 0)
 			dev_info(dev, "Failed to enable regulators\n");
 
@@ -1546,6 +2691,11 @@ static int __gc2145_power_on(struct gc2145 *gc2145)
 
 	if (!IS_ERR(gc2145->pwdn_gpio)) {
 		gpiod_set_value_cansleep(gc2145->pwdn_gpio, 0);
+		usleep_range(2000, 5000);
+	}
+
+	if (!IS_ERR(gc2145->reset_gpio)) {
+		gpiod_set_value_cansleep(gc2145->reset_gpio, 0);
 		usleep_range(2000, 5000);
 	}
 
@@ -1561,12 +2711,15 @@ static int __gc2145_power_on(struct gc2145 *gc2145)
 
 static void __gc2145_power_off(struct gc2145 *gc2145)
 {
+	dev_info(&gc2145->client->dev, "%s(%d)\n", __func__, __LINE__);
 	if (!IS_ERR(gc2145->xvclk))
 		clk_disable_unprepare(gc2145->xvclk);
 	if (!IS_ERR(gc2145->supplies))
 		regulator_bulk_disable(GC2145_NUM_SUPPLIES, gc2145->supplies);
 	if (!IS_ERR(gc2145->pwdn_gpio))
 		gpiod_set_value_cansleep(gc2145->pwdn_gpio, 1);
+	if (!IS_ERR(gc2145->reset_gpio))
+		gpiod_set_value_cansleep(gc2145->reset_gpio, 0);
 }
 
 static int gc2145_configure_regulators(struct gc2145 *gc2145)
@@ -1584,11 +2737,36 @@ static int gc2145_configure_regulators(struct gc2145 *gc2145)
 static int gc2145_parse_of(struct gc2145 *gc2145)
 {
 	struct device *dev = &gc2145->client->dev;
+	struct device_node *endpoint;
 	int ret;
+
+	endpoint = of_graph_get_next_endpoint(dev->of_node, NULL);
+	if (!endpoint) {
+		dev_err(dev, "Failed to get endpoint\n");
+		return -EINVAL;
+	}
+
+	ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(endpoint),
+					 &gc2145->bus_cfg);
+	if (ret) {
+		dev_err(dev, "Failed to parse endpoint\n");
+		of_node_put(endpoint);
+		return ret;
+	}
+	if (gc2145->bus_cfg.bus_type == V4L2_MBUS_CSI2) {
+		gc2145->framesize_cfg = gc2145_mipi_framesizes;
+		gc2145->cfg_num = ARRAY_SIZE(gc2145_mipi_framesizes);
+	} else {
+		gc2145->framesize_cfg = gc2145_dvp_framesizes;
+		gc2145->cfg_num = ARRAY_SIZE(gc2145_dvp_framesizes);
+	}
 
 	gc2145->pwdn_gpio = devm_gpiod_get(dev, "pwdn", GPIOD_OUT_LOW);
 	if (IS_ERR(gc2145->pwdn_gpio))
 		dev_info(dev, "Failed to get pwdn-gpios, maybe no use\n");
+	gc2145->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(gc2145->reset_gpio))
+		dev_info(dev, "Failed to get reset-gpios, maybe no use\n");
 
 	ret = gc2145_configure_regulators(gc2145);
 	if (ret)
@@ -1600,13 +2778,34 @@ static int gc2145_parse_of(struct gc2145 *gc2145)
 static int gc2145_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
+	struct device *dev = &client->dev;
+	struct device_node *node = dev->of_node;
 	struct v4l2_subdev *sd;
 	struct gc2145 *gc2145;
+	char facing[2];
 	int ret;
+
+	dev_info(dev, "driver version: %02x.%02x.%02x",
+		 DRIVER_VERSION >> 16,
+		 (DRIVER_VERSION & 0xff00) >> 8,
+		 DRIVER_VERSION & 0x00ff);
 
 	gc2145 = devm_kzalloc(&client->dev, sizeof(*gc2145), GFP_KERNEL);
 	if (!gc2145)
 		return -ENOMEM;
+
+	ret = of_property_read_u32(node, RKMODULE_CAMERA_MODULE_INDEX,
+				   &gc2145->module_index);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_FACING,
+				       &gc2145->module_facing);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_MODULE_NAME,
+				       &gc2145->module_name);
+	ret |= of_property_read_string(node, RKMODULE_CAMERA_LENS_NAME,
+				       &gc2145->len_name);
+	if (ret) {
+		dev_err(dev, "could not get module information!\n");
+		return -EINVAL;
+	}
 
 	gc2145->client = client;
 	gc2145->xvclk = devm_clk_get(&client->dev, "xvclk");
@@ -1615,20 +2814,24 @@ static int gc2145_probe(struct i2c_client *client,
 		return -EINVAL;
 	}
 
-	gc2145_parse_of(gc2145);
+	ret = gc2145_parse_of(gc2145);
+	if (ret != 0)
+		return -EINVAL;
 
 	gc2145->xvclk_frequency = clk_get_rate(gc2145->xvclk);
 	if (gc2145->xvclk_frequency < 6000000 ||
 	    gc2145->xvclk_frequency > 27000000)
 		return -EINVAL;
 
-	v4l2_ctrl_handler_init(&gc2145->ctrls, 2);
+	v4l2_ctrl_handler_init(&gc2145->ctrls, 3);
 	gc2145->link_frequency =
 			v4l2_ctrl_new_std(&gc2145->ctrls, &gc2145_ctrl_ops,
 					  V4L2_CID_PIXEL_RATE, 0,
 					  GC2145_PIXEL_RATE, 1,
 					  GC2145_PIXEL_RATE);
 
+	v4l2_ctrl_new_int_menu(&gc2145->ctrls, NULL, V4L2_CID_LINK_FREQ,
+			       0, 0, link_freq_menu_items);
 	v4l2_ctrl_new_std_menu_items(&gc2145->ctrls, &gc2145_ctrl_ops,
 				     V4L2_CID_TEST_PATTERN,
 				     ARRAY_SIZE(gc2145_test_pattern_menu) - 1,
@@ -1663,17 +2866,27 @@ static int gc2145_probe(struct i2c_client *client,
 
 	mutex_init(&gc2145->lock);
 
-	gc2145_get_default_format(&gc2145->format);
-	gc2145->frame_size = &gc2145_framesizes[0];
-	gc2145->format.width = gc2145_framesizes[0].width;
-	gc2145->format.height = gc2145_framesizes[0].height;
-	gc2145->fps = gc2145_framesizes[0].fps;
+	gc2145_get_default_format(gc2145, &gc2145->format);
+	gc2145->frame_size = &gc2145->framesize_cfg[0];
+	gc2145->format.width = gc2145->framesize_cfg[0].width;
+	gc2145->format.height = gc2145->framesize_cfg[0].height;
+	gc2145->fps = DIV_ROUND_CLOSEST(gc2145->framesize_cfg[0].max_fps.denominator,
+			gc2145->framesize_cfg[0].max_fps.numerator);
 
 	ret = gc2145_detect(gc2145);
 	if (ret < 0)
 		goto error;
 
-	ret = v4l2_async_register_subdev(&gc2145->sd);
+	memset(facing, 0, sizeof(facing));
+	if (strcmp(gc2145->module_facing, "back") == 0)
+		facing[0] = 'b';
+	else
+		facing[0] = 'f';
+
+	snprintf(sd->name, sizeof(sd->name), "m%02d_%s_%s %s",
+		 gc2145->module_index, facing,
+		 DRIVER_NAME, dev_name(sd->dev));
+	ret = v4l2_async_register_subdev_sensor_common(sd);
 	if (ret)
 		goto error;
 

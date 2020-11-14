@@ -47,26 +47,7 @@
 
 / {
 	firmware {
-		android {
-			compatible = "android,firmware";
-			fstab {
-				compatible = "android,fstab";
-				system {
-					compatible = "android,system";
-					dev = "/dev/block/by-name/system";
-					type = "ext4";
-					mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
-					fsmgr_flags = "wait";
-				};
-				vendor {
-					compatible = "android,vendor";
-					dev = "/dev/block/by-name/vendor";
-					type = "ext4";
-					mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
-					fsmgr_flags = "wait";
-				};
-			};
-		};
+		firmware_android: android {};
 	};
 
 	chosen {
@@ -108,7 +89,7 @@
 			SYS_STATUS_REBOOT	396000
 			SYS_STATUS_SUSPEND	192000
 			SYS_STATUS_VIDEO_1080P	300000
-			SYS_STATUS_VIDEO_4K	396000
+			SYS_STATUS_VIDEO_4K	528000
 			SYS_STATUS_VIDEO_4K_10B	528000
 			SYS_STATUS_PERFORMANCE	528000
 			SYS_STATUS_BOOST	396000
@@ -263,6 +244,15 @@
 				charge_logo,mode = "center";
 				connect = <&vopb_out_hdmi>;
 			};
+
+			route_rgb: route-rgb {
+				status = "disabled";
+				logo,uboot = "logo.bmp";
+				logo,kernel = "logo_kernel.bmp";
+				logo,mode = "center";
+				charge_logo,mode = "center";
+				connect = <&vopl_out_rgb>;
+			};
 		};
 	};
 
@@ -369,24 +359,6 @@
 		clock-names = "clk_nandc", "hclk_nandc";
 		status = "okay";
 	};
-
-	hdmi_analog_sound: hdmi-analog-sound {
-		status = "disabled";
-		compatible = "rockchip,rk3288-hdmi-analog",
-				"rockchip,rk3368-hdmi-analog";
-		rockchip,model = "rockchip,rt5640-codec";
-		rockchip,cpu = <&i2s>;
-		rockchip,codec = <&rt5640>, <&hdmi>;
-		rockchip,widgets =
-			"Microphone", "Microphone Jack",
-			"Headphone", "Headphone Jack";
-		rockchip,routing =
-			"MIC1", "Microphone Jack",
-			"MIC2", "Microphone Jack",
-			"Microphone Jack", "micbias1",
-			"Headphone Jack", "HPOL",
-			"Headphone Jack", "HPOR";
-	};
 };
 
 &cpu0 {
@@ -438,7 +410,13 @@
 	compatible = "rockchip,rga2";
 	clocks = <&cru ACLK_RGA>, <&cru HCLK_RGA>, <&cru SCLK_RGA>;
 	clock-names = "aclk_rga", "hclk_rga", "clk_rga";
+	assigned-clocks = <&cru ACLK_RGA>, <&cru SCLK_RGA>;
+	assigned-clock-rates = <300000000>, <300000000>;
 	dma-coherent;
+};
+
+&uart2 {
+	status = "disabled";
 };
 
 &usb_otg {
@@ -451,6 +429,10 @@
 	reset-names = "otg_ahb", "otg_phy", "otg_controller";
 	/*0 - Normal, 1 - Force Host, 2 - Force Device*/
 	rockchip,usb-mode = <0>;
+};
+
+&video_phy {
+	status = "okay";
 };
 
 &pinctrl {

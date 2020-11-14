@@ -183,7 +183,6 @@ struct thermal_attr {
  * @lock:	lock to protect thermal_instances list
  * @node:	node in thermal_tz_list (in thermal_core.c)
  * @poll_queue:	delayed work for polling
- * @thermal_notifier_list: list head of thermal notifier
  */
 struct thermal_zone_device {
 	int id;
@@ -214,9 +213,6 @@ struct thermal_zone_device {
 	struct mutex lock;
 	struct list_head node;
 	struct delayed_work poll_queue;
-#ifdef CONFIG_ARCH_ROCKCHIP
-	struct srcu_notifier_head thermal_notifier_list;
-#endif
 };
 
 /**
@@ -300,14 +296,20 @@ struct thermal_zone_params {
 	 */
 	s32 k_po;
 
+	bool is_k_po_available;
+
 	/*
 	 * Proportional parameter of the PID controller when
 	 * undershooting
 	 */
 	s32 k_pu;
 
+	bool is_k_pu_available;
+
 	/* Integral parameter of the PID controller */
 	s32 k_i;
+
+	bool is_k_i_available;
 
 	/* Derivative parameter of the PID controller */
 	s32 k_d;

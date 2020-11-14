@@ -13,6 +13,7 @@
 
 &firmware_android {
 	compatible = "android,firmware";
+	boot_devices = "ff390000.dwmmc,ff3b0000.nandc";
 	vbmeta {
 		compatible = "android,vbmeta";
 		parts = "vbmeta,boot,system,vendor,dtbo";
@@ -21,7 +22,7 @@
 		compatible = "android,fstab";
 		vendor {
 			compatible = "android,vendor";
-			dev = "/dev/block/platform/ff390000.dwmmc/by-name/vendor";
+			dev = "/dev/block/by-name/vendor";
 			type = "ext4";
 			mnt_flags = "ro,barrier=1,inode_readahead_blks=8";
 			fsmgr_flags = "wait,avb";
@@ -32,7 +33,7 @@
 &i2c2 {
 	status = "okay";
 
-	gc0312@21 {
+	gc0312: gc0312@21 {
 		status = "okay";
 		compatible = "galaxycore,gc0312";
 		reg = <0x21>;
@@ -47,6 +48,10 @@
 		dvdd-supply = <&vcc1v8_dvp>;
 
 		pwdn-gpios = <&gpio2 14 GPIO_ACTIVE_HIGH>;
+		rockchip,camera-module-index = <1>;
+		rockchip,camera-module-facing = "front";
+		rockchip,camera-module-name = "CameraKing";
+		rockchip,camera-module-lens-name = "Largan";
 
 		port {
 			gc0312_out: endpoint {
@@ -55,7 +60,7 @@
 		};
 	};
 
-	gc2145@3c {
+	gc2145: gc2145@3c {
 		status = "okay";
 		compatible = "galaxycore,gc2145";
 		reg = <0x3c>;
@@ -70,6 +75,10 @@
 		dvdd-supply = <&vcc1v8_dvp>;
 
 		pwdn-gpios = <&gpio2 13 GPIO_ACTIVE_HIGH>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "CameraKing";
+		rockchip,camera-module-lens-name = "Largan";
 
 		port {
 			gc2145_out: endpoint {
