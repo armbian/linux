@@ -1,0 +1,64 @@
+name: "Mirror linux-stable from kernel.org"
+
+# Exact mirror of the kernel.org linux-stable tree (every branch + tag) into
+# this repo, so Armbian can fetch mainline/stable kernels from a GitHub mirror
+# we control instead of the gregkh mirror (whose linux-*.y branches lag).
+# The heavy clone/push runs on GitHub's runners.
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 minutes
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
+
+jobs:
+  sync:
+    if: ${{ github.repository_owner == 'armbian' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: "Mirror every branch + tag from kernel.org"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          target="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          # Seed from our own mirror (fast, same host) to stay incremental;
+          # fall back to a full clone from upstream on the first run.
+          git clone --mirror "${target}" m.git || git clone --mirror "${UPSTREAM}" m.git
+          cd m.git
+          git remote add up "${UPSTREAM}" 2>/dev/null || git remote set-url up "${UPSTREAM}"
+
+          # Pull every branch and tag from upstream.
+          git fetch --force --prune --tags up '+refs/heads/*:refs/heads/*'
+
+          # Push an exact copy of upstream's branches + tags. No blanket
+          # --prune on refs/heads/* so the 'armbian-mirror' branch (this
+          # workflow) survives; linux-* and tags are pruned to stay exact.
+          git push --force          "${target}" 'refs/heads/master:refs/heads/master'
+          git push --force --prune  "${target}" 'refs/heads/linux-*:refs/heads/linux-*'
+          git push --force --prune  "${target}" 'refs/tags/*:refs/tags/*'
+
+          echo "linux-6.18.y -> $(git rev-parse refs/heads/linux-6.18.y 2>/dev/null || echo n/a)" >> "$GITHUB_STEP_SUMMARY"
+
+  # GitHub disables scheduled workflows after 60 days of "inactivity", and
+  # GITHUB_TOKEN pushes do not count — so re-arm the schedule every run, or the
+  # mirror silently goes stale (exactly the gregkh failure mode).
+  keepalive:
+    if: ${{ github.repository_owner == 'armbian' }}
+    needs: sync
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: liskin/gh-workflow-keepalive@f72ff1a1336129f29bf0166c0fd0ca6cf1bcb38c # v1.2.1
