@@ -3,7 +3,6 @@ name: "Mirror linux-stable from kernel.org"
 # Exact mirror of the kernel.org linux-stable tree (every branch + tag) into
 # this repo, so Armbian can fetch mainline/stable kernels from a GitHub mirror
 # we control instead of the gregkh mirror (whose linux-*.y branches lag).
-# The heavy clone/push runs on GitHub's runners.
 on:
   schedule:
     - cron: "*/30 * * * *"   # every 30 minutes
@@ -37,22 +36,30 @@ jobs:
           git clone --mirror "${target}" m.git || git clone --mirror "${UPSTREAM}" m.git
           cd m.git
           git remote add up "${UPSTREAM}" 2>/dev/null || git remote set-url up "${UPSTREAM}"
-
-          # Pull every branch and tag from upstream.
           git fetch --force --prune --tags up '+refs/heads/*:refs/heads/*'
 
-          # Push an exact copy of upstream's branches + tags. No blanket
-          # --prune on refs/heads/* so the 'armbian-mirror' branch (this
-          # workflow) survives; linux-* and tags are pruned to stay exact.
+          # GitHub refuses a single multi-GB push (HTTP 500 / disconnect). If the
+          # mirror has no master yet, seed master's history in commit-chunks so
+          # each pack stays small; every other branch then shares that history and
+          # pushes as a tiny delta. Subsequent runs skip this entirely.
+          if ! git ls-remote --exit-code "${target}" refs/heads/master >/dev/null 2>&1; then
+            echo "First seed: pushing master history in chunks..."
+            mapfile -t C < <(git rev-list --reverse --first-parent master)
+            total=${#C[@]}; step=5000
+            for ((i=step; i<total; i+=step)); do
+              echo "  master: ${i}/${total}"
+              git push --quiet --force "${target}" "${C[$i]}:refs/heads/master"
+            done
+          fi
+
+          # Now an exact copy of every branch + tag. No blanket --prune on
+          # refs/heads/* so the 'armbian-mirror' branch (this workflow) survives.
           git push --force          "${target}" 'refs/heads/master:refs/heads/master'
           git push --force --prune  "${target}" 'refs/heads/linux-*:refs/heads/linux-*'
           git push --force --prune  "${target}" 'refs/tags/*:refs/tags/*'
 
           echo "linux-6.18.y -> $(git rev-parse refs/heads/linux-6.18.y 2>/dev/null || echo n/a)" >> "$GITHUB_STEP_SUMMARY"
 
-  # GitHub disables scheduled workflows after 60 days of "inactivity", and
-  # GITHUB_TOKEN pushes do not count — so re-arm the schedule every run, or the
-  # mirror silently goes stale (exactly the gregkh failure mode).
   keepalive:
     if: ${{ github.repository_owner == 'armbian' }}
     needs: sync
