@@ -56,7 +56,13 @@ jobs:
           # refs/heads/* so the 'armbian-mirror' branch (this workflow) survives.
           git push --force          "${target}" 'refs/heads/master:refs/heads/master'
           git push --force --prune  "${target}" 'refs/heads/linux-*:refs/heads/linux-*'
-          git push --force --prune  "${target}" 'refs/tags/*:refs/tags/*'
+          # Tags in batches — pushing ~11.6k refs at once exceeds GitHub's limit.
+          # Objects already arrived with the branches, so these are cheap ref updates.
+          mapfile -t T < <(git for-each-ref --format='%(refname)' refs/tags)
+          for ((i=0; i<${#T[@]}; i+=2000)); do
+            echo "  tags: ${i}/${#T[@]}"
+            git push --force "${target}" "${T[@]:i:2000}"
+          done
 
           echo "linux-6.18.y -> $(git rev-parse refs/heads/linux-6.18.y 2>/dev/null || echo n/a)" >> "$GITHUB_STEP_SUMMARY"
 
